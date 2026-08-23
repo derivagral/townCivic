@@ -4,6 +4,7 @@ import { config } from '../config.ts';
 import {
   countEvents,
   facetCounts,
+  getAttachment,
   getEvent,
   latestEventTimestamp,
   listSourceRows,
@@ -14,7 +15,7 @@ import { hasSampleData } from '../commands/seed.ts';
 import { CHANNEL_DESCRIPTIONS, isChannel } from '../taxonomy.ts';
 import { STYLES } from './styles.ts';
 import { EMPTY_FILTERS, renderEvent, renderFeedIndex, renderIndex, renderSources } from './views.ts';
-import type { Filters } from './views.ts';
+import type { Filters, NoticeView } from './views.ts';
 import { feedTitle, renderAtom, renderJsonFeed } from './feeds.ts';
 
 const PAGE_SIZE = 60;
@@ -136,7 +137,17 @@ export function createApp(db: Db, options: AppOptions = {}) {
   app.get('/event/:id', (c) => {
     const row = getEvent(db, c.req.param('id'));
     if (!row) return c.notFound();
-    return c.html(renderEvent(row, hasSampleData(db), label));
+
+    const attachment = getAttachment(db, row.id);
+    let notice: NoticeView | null = null;
+    if (attachment?.notice) {
+      try {
+        notice = JSON.parse(attachment.notice) as NoticeView;
+      } catch {
+        notice = null;
+      }
+    }
+    return c.html(renderEvent(row, hasSampleData(db), label, notice));
   });
 
   app.get('/sources', (c) =>

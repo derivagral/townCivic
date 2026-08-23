@@ -12,3 +12,20 @@ the web UI shows a standing banner while any sample event is in the database.
 
 To work with real records, run `towncivic verify` and then `towncivic ingest`
 against the live site.
+
+## `meeting-notice.pdf`
+
+A minimal AcroForm PDF with the same field names as the Town Clerk's real
+template (`BOARDCOMMITTEE`, `DATE`, `TIME`, `AGENDA`, `PostTime`, …). It exists
+so the PDF extraction tests can run offline without committing a real public
+record as a test artifact.
+
+Regenerate it with:
+
+```bash
+node fixtures/tools/make-meeting-notice.mjs
+```
+
+The addresses in it (271 Pleasant Street, 14 Adams Street) are invented, and the
+page text deliberately includes the town hall address so the venue filter has
+something to exclude.

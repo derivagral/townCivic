@@ -6,6 +6,7 @@ import { config } from './config.ts';
 import { getDb, closeDb } from './db/index.ts';
 import { syncSources, loadSources, listJurisdictions } from './registry/index.ts';
 import { ingest } from './pipeline/ingest.ts';
+import { extractDocuments } from './pipeline/extract.ts';
 import { verify } from './commands/verify.ts';
 import { discover, toRegistrySnippet } from './commands/discover.ts';
 import { seed, clearSampleData, hasSampleData } from './commands/seed.ts';
@@ -19,6 +20,7 @@ Usage: towncivic <command> [options]
 Commands
   seed                 Load synthetic development fixtures so the UI has data
   ingest               Fetch every enabled source and normalize what changed
+  extract              Open the linked PDFs and read agendas, locations and subjects
   verify               Check every registered URL against the live site
   discover             Probe the CivicPlus site for boards and feeds not yet registered
   serve                Run the web UI and the Atom / JSON feeds
@@ -35,7 +37,8 @@ Options
   --dry-run            Parse and report without writing events
   --json               Machine-readable output
   --port <n>           Port for serve (default: ${config.port})
-  --limit <n>          Row limit for events
+  --limit <n>          Row limit for events / documents to extract
+  --since <date>       Only extract records dated on or after this ISO date
 
 Examples
   npm run seed && npm run serve
@@ -54,6 +57,7 @@ const { values, positionals } = parseArgs({
     json: { type: 'boolean', default: false },
     port: { type: 'string' },
     limit: { type: 'string' },
+    since: { type: 'string' },
     help: { type: 'boolean', default: false },
   },
 });
@@ -123,6 +127,39 @@ async function main(): Promise<number> {
         console.log(`\n${failed.length} of ${reports.length} sources failed.`);
       }
       return failed.length === reports.length && reports.length > 0 ? 1 : 0;
+    }
+
+    case 'extract': {
+      const db = getDb();
+      let structured = 0;
+      const reports = await extractDocuments(db, {
+        jurisdiction,
+        ...(sourceIds.length ? { sourceIds } : {}),
+        ...(values.force ? { force: true } : {}),
+        ...(values.limit ? { limit: Number(values.limit) } : {}),
+        ...(values.since ? { since: values.since } : {}),
+        onProgress(report) {
+          if (report.structured) structured++;
+          if (values.json) return;
+          const detail = report.ok
+            ? `${String(report.pages).padStart(2)}p  ${String(report.agendaItems).padStart(2)} items  ` +
+              `${report.structured ? '\u001b[32mstructured\u001b[0m' : dim('text only ')}` +
+              (report.subjects.length ? `  ${dim(report.subjects.slice(0, 3).join(', '))}` : '')
+            : `\u001b[31m${report.error ?? 'failed'}\u001b[0m`;
+          console.log(`${check(report.ok)}  ${report.title.slice(0, 46).padEnd(46)} ${detail}`);
+        },
+      });
+      if (values.json) {
+        console.log(JSON.stringify(reports, null, 2));
+        return 0;
+      }
+      const failed = reports.filter((r) => !r.ok).length;
+      const scanned = reports.filter((r) => r.likelyScanned).length;
+      console.log(
+        `\n${reports.length} documents: ${structured} structured, ${reports.length - structured - failed} text only, ${failed} failed.`,
+      );
+      if (scanned) console.log(dim(`${scanned} look scanned and would need OCR.`));
+      return failed === reports.length && reports.length > 0 ? 1 : 0;
     }
 
     case 'verify': {

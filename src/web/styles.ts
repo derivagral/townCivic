@@ -169,6 +169,10 @@ table.sources td.url { word-break: break-all; font-size: 12.5px; }
 .detail dt { color: var(--muted); font-size: 12.5px; padding-top: 2px; }
 .detail dd { margin: 0; word-break: break-word; }
 .detail .actions { margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap; }
+.agenda { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.agenda h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 10px; }
+.agenda ol { margin: 0; padding-left: 22px; font-size: 14.5px; }
+.agenda li { margin-bottom: 6px; }
 .detail .actions a {
   padding: 8px 14px; border: 1px solid var(--line); border-radius: 8px;
   text-decoration: none; font-size: 14px; background: var(--bg);

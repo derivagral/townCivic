@@ -91,6 +91,29 @@ export function canonicalBody(name: string): string {
 }
 
 /**
+ * Municipal buildings, which are where meetings happen rather than what they
+ * are about.
+ *
+ * Every meeting notice carries the Town Clerk's address in its template, so
+ * without this every record in the town would list "525 Canton Avenue" as a
+ * subject and the one address that actually matters would be lost in it.
+ */
+export const VENUE_ADDRESSES = [
+  '525 Canton Avenue',
+  '515 Canton Avenue',
+  '40 Highland Street',
+  '1 Wharf Street',
+];
+
+export function isVenueAddress(address: string): boolean {
+  const normalized = address
+    .toLowerCase()
+    .replace(/\bave\b\.?/g, 'avenue')
+    .replace(/\bst\b\.?/g, 'street');
+  return VENUE_ADDRESSES.some((venue) => normalized.startsWith(venue.toLowerCase()));
+}
+
+/**
  * How a public body's name maps into the taxonomy.
  *
  * Used both for the static registry and for anything `discover` turns up, so a

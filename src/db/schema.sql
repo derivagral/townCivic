@@ -93,6 +93,11 @@ CREATE TABLE IF NOT EXISTS events (
   revision      INTEGER NOT NULL DEFAULT 1,
   subjects      TEXT NOT NULL DEFAULT '[]',
   tags          TEXT NOT NULL DEFAULT '[]',
+  -- text extracted from the linked document, denormalized here so one FTS index
+  -- covers both the listing metadata and the contents of the PDF
+  doc_text      TEXT,
+  -- when the document behind this record was last extracted
+  extracted_at  TEXT,
   -- precedence of the source that currently owns this record; a lower-numbered
   -- source may take it over, a higher-numbered one may not
   precedence    INTEGER NOT NULL DEFAULT 50,
@@ -107,25 +112,49 @@ CREATE INDEX IF NOT EXISTS idx_events_body     ON events(body);
 CREATE INDEX IF NOT EXISTS idx_events_pubdate  ON events(published_at DESC);
 
 -- Free-text search over the parts a person would actually search.
+-- `doc_text` is what makes searching an agenda's contents work: "39 Frothingham"
+-- appears only inside the notice PDF, never in the listing row.
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
-  title, summary, subjects, agency,
+  title, summary, subjects, agency, doc_text,
   content = 'events',
   content_rowid = 'rowid'
 );
 
 CREATE TRIGGER IF NOT EXISTS events_fts_insert AFTER INSERT ON events BEGIN
-  INSERT INTO events_fts(rowid, title, summary, subjects, agency)
-  VALUES (new.rowid, new.title, new.summary, new.subjects, new.agency);
+  INSERT INTO events_fts(rowid, title, summary, subjects, agency, doc_text)
+  VALUES (new.rowid, new.title, new.summary, new.subjects, new.agency, new.doc_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS events_fts_delete AFTER DELETE ON events BEGIN
-  INSERT INTO events_fts(events_fts, rowid, title, summary, subjects, agency)
-  VALUES ('delete', old.rowid, old.title, old.summary, old.subjects, old.agency);
+  INSERT INTO events_fts(events_fts, rowid, title, summary, subjects, agency, doc_text)
+  VALUES ('delete', old.rowid, old.title, old.summary, old.subjects, old.agency, old.doc_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS events_fts_update AFTER UPDATE ON events BEGIN
-  INSERT INTO events_fts(events_fts, rowid, title, summary, subjects, agency)
-  VALUES ('delete', old.rowid, old.title, old.summary, old.subjects, old.agency);
-  INSERT INTO events_fts(rowid, title, summary, subjects, agency)
-  VALUES (new.rowid, new.title, new.summary, new.subjects, new.agency);
+  INSERT INTO events_fts(events_fts, rowid, title, summary, subjects, agency, doc_text)
+  VALUES ('delete', old.rowid, old.title, old.summary, old.subjects, old.agency, old.doc_text);
+  INSERT INTO events_fts(rowid, title, summary, subjects, agency, doc_text)
+  VALUES (new.rowid, new.title, new.summary, new.subjects, new.agency, new.doc_text);
 END;
+
+-- One row per document actually fetched and parsed. The bytes themselves stay
+-- in the content-addressed store; this records what came out of them.
+CREATE TABLE IF NOT EXISTS attachments (
+  id             TEXT PRIMARY KEY,          -- sha256 of the file
+  event_id       TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  url            TEXT NOT NULL,
+  content_type   TEXT,
+  bytes          INTEGER NOT NULL,
+  path           TEXT,                      -- relative path in the document store
+  pages          INTEGER,
+  chars_per_page INTEGER,
+  likely_scanned INTEGER NOT NULL DEFAULT 0,
+  -- AcroForm field values, verbatim. The structured payload of a notice.
+  fields         TEXT NOT NULL DEFAULT '{}',
+  -- Parsed meeting notice, when the document is one.
+  notice         TEXT,
+  extracted_at   TEXT NOT NULL,
+  error          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_event ON attachments(event_id);

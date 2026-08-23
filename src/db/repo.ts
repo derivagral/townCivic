@@ -26,7 +26,32 @@ export interface EventRow {
   tags: string;
   content_hash: string;
   raw: string;
+  doc_text: string | null;
+  extracted_at: string | null;
   source_label?: string;
+}
+
+/** What extraction found in the document behind a record. */
+export interface AttachmentRow {
+  id: string;
+  event_id: string;
+  url: string;
+  content_type: string | null;
+  bytes: number;
+  path: string | null;
+  pages: number | null;
+  chars_per_page: number | null;
+  likely_scanned: number;
+  fields: string;
+  notice: string | null;
+  extracted_at: string;
+  error: string | null;
+}
+
+export function getAttachment(db: Db, eventId: string): AttachmentRow | undefined {
+  return db
+    .prepare('SELECT * FROM attachments WHERE event_id = ? ORDER BY extracted_at DESC LIMIT 1')
+    .get(eventId) as unknown as AttachmentRow | undefined;
 }
 
 export interface SourceRow {

@@ -27,13 +27,34 @@ export function openDb(dbPath: string = config.dbPath): DatabaseSync {
 const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'sources', column: 'precedence', definition: 'INTEGER NOT NULL DEFAULT 50' },
   { table: 'events', column: 'precedence', definition: 'INTEGER NOT NULL DEFAULT 50' },
+  { table: 'events', column: 'doc_text', definition: 'TEXT' },
+  { table: 'events', column: 'extracted_at', definition: 'TEXT' },
 ];
+
+/** Columns the FTS index is expected to carry, in order. */
+const FTS_COLUMNS = ['title', 'summary', 'subjects', 'agency', 'doc_text'];
 
 function migrate(db: DatabaseSync): void {
   for (const { table, column, definition } of ADDED_COLUMNS) {
     const columns = db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[];
     if (columns.some((c) => c.name === column)) continue;
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+
+  // An FTS5 table cannot gain a column in place. When the shape changes, drop
+  // and rebuild it — it is a derived index over `events`, so nothing is lost.
+  const ftsColumns = db.prepare('PRAGMA table_info(events_fts)').all() as unknown as { name: string }[];
+  const missing = FTS_COLUMNS.some((name) => !ftsColumns.some((c) => c.name === name));
+  if (ftsColumns.length && missing) {
+    db.exec(`
+      DROP TRIGGER IF EXISTS events_fts_insert;
+      DROP TRIGGER IF EXISTS events_fts_delete;
+      DROP TRIGGER IF EXISTS events_fts_update;
+      DROP TABLE IF EXISTS events_fts;
+    `);
+    // Re-running the schema recreates the table and its triggers.
+    db.exec(fs.readFileSync(SCHEMA_PATH, 'utf8'));
+    db.exec(`INSERT INTO events_fts(events_fts) VALUES ('rebuild')`);
   }
 }
 

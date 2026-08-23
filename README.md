@@ -17,14 +17,17 @@ The system answers four questions, and only these four:
 
 There is **no model in the loop.** Classification is a table of regular expressions
 you can read in one sitting (`src/pipeline/classify.ts`). A surprising result is
-always reproducible and always fixable in one place. Document extraction and event
-linking are deliberately deferred — see [Deliberately not built yet](#deliberately-not-built-yet).
+always reproducible and always fixable in one place. That includes reading the
+agendas: Milton's notices are fillable PDFs, so the agenda arrives as a *named
+form field* — structured data, not prose. See
+[Reading the documents](#reading-the-documents).
 
 ## Quick start
 
 ```bash
 npm install
 npm run ingest     # fetch every enabled source (~20 requests, about a minute)
+npm run extract    # open the linked PDFs and read what the meetings are about
 npm run serve      # http://localhost:8787
 ```
 
@@ -92,6 +95,7 @@ npx tsx src/cli.ts <command>
 | Command | What it does |
 | --- | --- |
 | `ingest` | Fetch every enabled source, normalize, store what changed |
+| `extract` | Open the linked PDFs and read agendas, locations, posting times and subjects |
 | `verify` | Check every registered URL against the live site |
 | `discover` | Probe the CivicPlus site for boards and feeds not yet registered |
 | `serve` | Web UI plus Atom and JSON feeds |
@@ -100,7 +104,7 @@ npx tsx src/cli.ts <command>
 | `clear-samples` | Delete everything loaded from fixtures |
 
 Useful flags: `--source <id>` (repeatable), `--all` (include disabled),
-`--force` (ignore ETag), `--dry-run`, `--json`.
+`--force` (ignore ETag / re-extract), `--dry-run`, `--limit <n>`, `--since <date>`, `--json`.
 
 ### `discover` is the reason the ids are right
 
@@ -180,14 +184,111 @@ bid updated) or a no-op. Revisions bump `revision` and set `revised_at`.
 
 ```
 Board of Appeals — Agenda, September 10, 2026
-  channel      land-use          occurred    2026-09-10   (meeting date, from the URL)
-  event_type   meeting_agenda    published   2026-09-04   (posted date — Open Meeting Law notice)
-  body         Board of Appeals  source      milton-ma:agenda:board-of-appeals
+  channel      land-use          meets       2026-09-10 7:00 PM   (from the notice)
+  event_type   meeting_agenda    posted      2026-08-17 2:55 PM   (by the Town Clerk)
+  body         Board of Appeals  subjects    39 Frothingham Street
+  source       milton-ma:agenda:board-of-appeals
   url          https://www.miltonma.gov/AgendaCenter/ViewFile/Agenda/_09102026-6844
+
+  Upon the Application of Zachary & Alexa Rouleau (represented by Attorney
+  Marion McEttrick) at 39 Frothingham Street dated July 29, 2026, seeking a
+  Special Permit to build a two-story addition … The property is in a
+  Residence C Zoning District.
 ```
 
-The **meeting date and the posted date are separate facts**, and the gap between
-them is what makes a notice timely under the Open Meeting Law.
+The **meeting time and the posting time are separate facts**, and the gap between
+them is what makes a notice timely under the Open Meeting Law. Both come from the
+document; the listing row knows neither.
+
+## Reading the documents
+
+`ingest` records *that* a meeting exists. `extract` opens the PDF behind it and
+records what it is **about** — which is where the useful part of civic
+information actually lives.
+
+This is the part that looked like it would need a model. It does not.
+
+### Milton's notices are structured data
+
+The Town Clerk files meeting notices on a **fillable AcroForm template**, so a
+modern notice carries named fields rather than prose:
+
+```
+BOARDCOMMITTEE   Zoning Board of Appeals
+DATE / TIME      September 10, 2026 / 7:00 PM
+BUILDING / ROOM  Milton Town Hall / Carol Blute Conference Room
+AGENDA           Upon the Application of … at 39 Frothingham Street …
+                 seeking a Special Permit to build a two-story addition …
+PostTime         08/17/2026 02:55 pm
+Posting Authority  Susan M Galvin
+```
+
+Every fact townCivic shows comes from a labelled field. No summarization, no
+inference, nothing to hallucinate — and `PostTime` gives the Open Meeting Law
+48-hour clock to the minute.
+
+### Where this lands on OSS and cost
+
+**Entirely free and open source, with no service to sign up for.**
+
+| | |
+| --- | --- |
+| Library | [`pdfjs-dist`](https://github.com/mozilla/pdf.js) — Mozilla's pdf.js, **Apache-2.0** |
+| Runtime | Pure JavaScript. No native build, no system package, works anywhere Node does |
+| OCR | **Not needed.** A survey of the archive from 2017 to 2026 found essentially no scanned documents |
+| Model / API | None. Zero inference cost, zero per-document cost |
+
+Alternatives considered and rejected: Poppler's `pdftotext` gives excellent
+layout but is GPL and needs a system binary; `mupdf.js` is AGPL; hosted
+document-AI services cost money per page for a job that named form fields
+already answer exactly.
+
+If a town *did* scan its minutes, the honest additions are `tesseract.js`
+(Apache-2.0, WASM, no native dep) or system Tesseract. townCivic does not
+silently pretend a scan is empty — the extractor flags `likelyScanned` when the
+text layer is too thin, so the gap is visible rather than invisible.
+
+### What it actually gets
+
+Measured over the 72 most recent documents:
+
+| | |
+| --- | --- |
+| Structured AcroForm notices | 48 of 60 sampled (80%) |
+| Records with a parsed agenda | 60 |
+| Records with an exact clerk posting time | 72 (100%) |
+| Extraction failures | 0 |
+| Detected as scanned | 2 — both from the *regional* school district, which does not use Milton's template |
+
+Real addresses now attached to records: 39 Frothingham Street, 350 Blue Hill
+Avenue, 53 Lawrence Road, 303 Adams Street, 77 Morton Road, 64 Park Street …
+and warrant articles as `Article 4`, `Article 5`.
+
+### Three document shapes, all handled
+
+1. **AcroForm notice** (agendas since roughly 2021) — named fields; the best case.
+2. **Plain-text PDF** (minutes, and older agendas) — text layer only; structure
+   inferred from the text, and the record is marked unstructured rather than
+   pretending otherwise.
+3. **HTML** — some pre-2018 Agenda Center links serve a web page. The `?html=true`
+   parameter is stripped to ask for the file; if HTML comes back anyway, its text
+   is kept so search still reaches it.
+
+Extracted text is denormalized onto the record and indexed in FTS5, so searching
+`Frothingham`, `MBTA` or `special permit` now hits **inside** the PDFs — none of
+those strings appear anywhere in the listing HTML.
+
+### Deliberately conservative
+
+- The venue is not a subject. Every notice carries the clerk's address in its
+  template, so without a filter every record in town would be tagged
+  `525 Canton Avenue` and the one address that matters would be buried.
+- Boilerplate is not a summary. "Call to Order", "Public Comment" and
+  "Adjournment" appear on every agenda; the summary skips them unless they are
+  all there is.
+- Nothing overwrites a fact the listing already established unless the document
+  is more precise — the notice's exact start time replaces a date-only guess,
+  but a missing field never blanks a known value.
 
 ## Feeds
 
@@ -219,27 +320,43 @@ that should move behind an interface when a second town lands.
 
 These are staged, not forgotten:
 
-- **PDF text extraction.** The single biggest limitation today. Real Agenda Center
-  rows carry only a date and a link — the subject matter (*"variance to reduce the
-  rear setback from 20′ to 11′ at 271 Pleasant St"*) is inside the PDF. Subject and
-  address extraction is written and tested, and returns almost nothing on live data
-  for exactly this reason. This is the next thing worth building.
 - **Event linking into timelines.** `application filed → hearing scheduled →
-  continued → approved 4–1 → appealed`. Needs the PDF text above first.
+  continued → approved 4–1 → appealed`. The extraction work above is the
+  prerequisite, and now that agendas resolve to street addresses this is the
+  natural next step: group records by subject and order them by date.
 - **The bylaw lifecycle.** `town meeting adopts → clerk submits within 30 days →
   AG decides within 90`. The AG Municipal Law Unit source is registered and
   disabled pending a form-driving adapter.
+- **Minutes are only text.** Agendas are structured; minutes are prose, so votes
+  ("approved 4–1") and conditions are not parsed out yet. This is the one place a
+  model would genuinely earn its keep — and it would run as an *indexer* over
+  stored documents, never as the authority.
 - **Courts.** Registered as a channel, no sources. It needs an aggressive
   inclusion filter — the town as a party, a local official sued in official
   capacity, a challenge to a local decision — so it stays *the town's legal
   surface* and never becomes a courthouse blotter.
-- **An LLM indexing step.** Only ever as an indexer over stored documents, never
-  as the authority. The raw document, its extracted text and its URL stay attached.
+- **OCR.** Not needed for Milton today. `likelyScanned` flags the handful of
+  image-only documents rather than silently returning nothing, so the day it
+  matters it will be visible.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request:
+
+- **check** — `npm ci`, typecheck, Prettier, and the full test suite.
+- **smoke** — seeds the fixtures on a clean checkout, starts the server, and
+  requests the timeline, a channel view, the source registry and the Atom feed.
+
+Both jobs are fully offline, so CI never touches the town's servers and a red
+build is a real regression rather than someone else's outage.
+
+A `SessionStart` hook in `.claude/hooks/session-start.sh` installs dependencies
+so a fresh remote checkout can run tests and linters immediately.
 
 ## Development
 
 ```bash
-npm test           # 36 tests, no network
+npm test           # 55 tests, no network
 npm run typecheck
 npm run format
 ```

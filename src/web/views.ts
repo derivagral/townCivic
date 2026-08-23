@@ -1,7 +1,7 @@
 import type { EventRow, SourceRow } from '../db/repo.ts';
 import { CHANNELS, CHANNEL_DESCRIPTIONS, CHANNEL_LABELS, EVENT_TYPE_LABELS } from '../taxonomy.ts';
 import type { Channel } from '../taxonomy.ts';
-import { dayKey, formatDate, formatDayHeading, relativeDays } from '../util/dates.ts';
+import { dayKey, formatDate, formatDayHeading, hasRealTime, relativeDays } from '../util/dates.ts';
 
 export function escapeHtml(input: unknown): string {
   return String(input ?? '')
@@ -139,8 +139,9 @@ function eventCard(row: EventRow, filters: Filters): string {
     : escapeHtml(row.agency);
   const sourceLink = `<a href="${escapeHtml(toggle(filters, 'source', row.source_id))}">${escapeHtml(row.source_label ?? row.source_id)}</a>`;
 
+  // Show a clock time only when the document actually gave us one.
   const when = row.occurred_at
-    ? `${formatDate(row.occurred_at)}`
+    ? formatDate(row.occurred_at, hasRealTime(row.occurred_at) ? { hour: 'numeric', minute: '2-digit' } : {})
     : row.published_at
       ? `posted ${formatDate(row.published_at)}`
       : '';
@@ -296,7 +297,23 @@ ${
   });
 }
 
-export function renderEvent(row: EventRow, sampleData: boolean, jurisdictionLabel: string): string {
+/** The parsed meeting notice, as stored on the attachment row. */
+export interface NoticeView {
+  location?: string | null;
+  timeText?: string | null;
+  agendaItems?: string[];
+  postedAt?: string | null;
+  postingAuthority?: string | null;
+  remoteLink?: string | null;
+  structured?: boolean;
+}
+
+export function renderEvent(
+  row: EventRow,
+  sampleData: boolean,
+  jurisdictionLabel: string,
+  notice: NoticeView | null = null,
+): string {
   const subjects = parseJsonArray(row.subjects);
   const tags = parseJsonArray(row.tags);
   const kind = EVENT_TYPE_LABELS[row.event_type as keyof typeof EVENT_TYPE_LABELS] ?? row.event_type;
@@ -307,8 +324,20 @@ export function renderEvent(row: EventRow, sampleData: boolean, jurisdictionLabe
     ['Body', row.body ?? row.agency],
     ['Agency', row.agency],
     ['Level', row.level],
-    ['Occurred', formatDate(row.occurred_at) || '—'],
-    ['Published', formatDate(row.published_at) || '—'],
+    [
+      'Meets',
+      formatDate(
+        row.occurred_at,
+        hasRealTime(row.occurred_at)
+          ? { weekday: 'long', hour: 'numeric', minute: '2-digit' }
+          : { weekday: 'long' },
+      ) || '—',
+    ],
+    ...(notice?.location ? ([['Location', notice.location]] as [string, string][]) : []),
+    ['Posted by clerk', formatDate(row.published_at, { hour: 'numeric', minute: '2-digit' }) || '—'],
+    ...(notice?.postingAuthority
+      ? ([['Posting authority', notice.postingAuthority]] as [string, string][])
+      : []),
     ['First seen', formatDate(row.first_seen_at, { hour: 'numeric', minute: '2-digit' })],
     ['Last seen', formatDate(row.last_seen_at, { hour: 'numeric', minute: '2-digit' })],
     ['Revision', String(row.revision)],
@@ -317,14 +346,28 @@ export function renderEvent(row: EventRow, sampleData: boolean, jurisdictionLabe
     ['Tags', tags.length ? tags.join(', ') : '—'],
   ];
 
+  // The agenda is the point: it is what the meeting is actually about, and it
+  // exists only inside the notice PDF.
+  const agenda = notice?.agendaItems?.length
+    ? `<section class="agenda">
+         <h2>Agenda <span class="pill">read from the notice</span></h2>
+         <ol>${notice.agendaItems.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ol>
+       </section>`
+    : row.extracted_at
+      ? `<p class="count" style="margin-top:18px">No agenda items were listed in the document.</p>`
+      : `<p class="count" style="margin-top:18px">Document not read yet — run <code>npm run extract</code>.</p>`;
+
   const body = `<div class="detail">
-  <div class="meta" style="margin-bottom:10px">${badge(row)}<span class="badge kind">${escapeHtml(kind)}</span></div>
+  <div class="meta" style="margin-bottom:10px">${badge(row)}<span class="badge kind">${escapeHtml(kind)}</span>
+    ${subjects.map((s) => `<span class="badge subject">${escapeHtml(s)}</span>`).join('')}</div>
   <h1>${escapeHtml(row.title)}</h1>
   ${row.summary ? `<p>${escapeHtml(row.summary)}</p>` : ''}
   <div class="actions">
     <a href="${escapeHtml(row.url)}" rel="noopener noreferrer">Open primary source ↗</a>
     ${row.document_url && row.document_url !== row.url ? `<a href="${escapeHtml(row.document_url)}" rel="noopener noreferrer">Open document ↗</a>` : ''}
+    ${notice?.remoteLink ? `<a href="${escapeHtml(notice.remoteLink)}" rel="noopener noreferrer">Join remotely ↗</a>` : ''}
   </div>
+  ${agenda}
   <dl>${rows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join('')}</dl>
 </div>`;
 
