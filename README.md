@@ -18,8 +18,8 @@ The system answers four questions, and only these four:
 There is **no model in the loop.** Classification is a table of regular expressions
 you can read in one sitting (`src/pipeline/classify.ts`). A surprising result is
 always reproducible and always fixable in one place. That includes reading the
-agendas: Milton's notices are fillable PDFs, so the agenda arrives as a *named
-form field* — structured data, not prose. See
+agendas: Milton's notices are fillable PDFs, so the agenda arrives as a _named
+form field_ — structured data, not prose. See
 [Reading the documents](#reading-the-documents).
 
 ## Quick start
@@ -65,12 +65,12 @@ plus the site-wide index, bid postings and the news flash.
 
 ### Source tiers
 
-| Tier | What | Status |
-| --- | --- | --- |
-| 1 | The town itself — Agenda Center, bids, news flash | **Live**, 17 sources |
-| 2 | State systems queried for the town — AG Municipal Law Unit, COMMBUYS | Registered, disabled, needs form-driving adapters |
-| 3 | Federal actions resolving to the municipality | Not started |
-| 4 | Town-controlled social accounts | Not started; discovery only, never canonical |
+| Tier | What                                                                 | Status                                            |
+| ---- | -------------------------------------------------------------------- | ------------------------------------------------- |
+| 1    | The town itself — Agenda Center, bids, news flash                    | **Live**, 17 sources                              |
+| 2    | State systems queried for the town — AG Municipal Law Unit, COMMBUYS | Registered, disabled, needs form-driving adapters |
+| 3    | Federal actions resolving to the municipality                        | Not started                                       |
+| 4    | Town-controlled social accounts                                      | Not started; discovery only, never canonical      |
 
 Everything registered lives in `src/registry/milton-ma.ts` — one file, reviewed by
 a human. `discover` proposes additions; it never writes them.
@@ -92,16 +92,16 @@ watch a second feed to avoid missing things.
 npx tsx src/cli.ts <command>
 ```
 
-| Command | What it does |
-| --- | --- |
-| `ingest` | Fetch every enabled source, normalize, store what changed |
-| `extract` | Open the linked PDFs and read agendas, locations, posting times and subjects |
-| `verify` | Check every registered URL against the live site |
-| `discover` | Probe the CivicPlus site for boards and feeds not yet registered |
-| `serve` | Web UI plus Atom and JSON feeds |
-| `seed` | Load synthetic fixtures |
-| `sources` / `events` | Print the registry / recent records |
-| `clear-samples` | Delete everything loaded from fixtures |
+| Command              | What it does                                                                 |
+| -------------------- | ---------------------------------------------------------------------------- |
+| `ingest`             | Fetch every enabled source, normalize, store what changed                    |
+| `extract`            | Open the linked PDFs and read agendas, locations, posting times and subjects |
+| `verify`             | Check every registered URL against the live site                             |
+| `discover`           | Probe the CivicPlus site for boards and feeds not yet registered             |
+| `serve`              | Web UI plus Atom and JSON feeds                                              |
+| `seed`               | Load synthetic fixtures                                                      |
+| `sources` / `events` | Print the registry / recent records                                          |
+| `clear-samples`      | Delete everything loaded from fixtures                                       |
 
 Useful flags: `--source <id>` (repeatable), `--all` (include disabled),
 `--force` (ignore ETag / re-extract), `--dry-run`, `--limit <n>`, `--since <date>`, `--json`.
@@ -158,12 +158,12 @@ collapse into one record.
 
 When two sources carry the same record, `precedence` settles it — lower wins:
 
-| | |
-| --- | --- |
-| 10 | A board's own listing |
-| 20 | The site-wide index |
-| 30–40 | News flash, calendar |
-| 90 | Peripheral accounts (future) |
+|       |                              |
+| ----- | ---------------------------- |
+| 10    | A board's own listing        |
+| 20    | The site-wide index          |
+| 30–40 | News flash, calendar         |
+| 90    | Peripheral accounts (future) |
 
 A weaker source confirms a record still exists and nothing more. This is
 order-independent, so repeated ingests never ping-pong ownership between two
@@ -202,7 +202,7 @@ document; the listing row knows neither.
 
 ## Reading the documents
 
-`ingest` records *that* a meeting exists. `extract` opens the PDF behind it and
+`ingest` records _that_ a meeting exists. `extract` opens the PDF behind it and
 records what it is **about** — which is where the useful part of civic
 information actually lives.
 
@@ -231,19 +231,19 @@ inference, nothing to hallucinate — and `PostTime` gives the Open Meeting Law
 
 **Entirely free and open source, with no service to sign up for.**
 
-| | |
-| --- | --- |
-| Library | [`pdfjs-dist`](https://github.com/mozilla/pdf.js) — Mozilla's pdf.js, **Apache-2.0** |
-| Runtime | Pure JavaScript. No native build, no system package, works anywhere Node does |
-| OCR | **Not needed.** A survey of the archive from 2017 to 2026 found essentially no scanned documents |
-| Model / API | None. Zero inference cost, zero per-document cost |
+|             |                                                                                                  |
+| ----------- | ------------------------------------------------------------------------------------------------ |
+| Library     | [`pdfjs-dist`](https://github.com/mozilla/pdf.js) — Mozilla's pdf.js, **Apache-2.0**             |
+| Runtime     | Pure JavaScript. No native build, no system package, works anywhere Node does                    |
+| OCR         | **Not needed.** A survey of the archive from 2017 to 2026 found essentially no scanned documents |
+| Model / API | None. Zero inference cost, zero per-document cost                                                |
 
 Alternatives considered and rejected: Poppler's `pdftotext` gives excellent
 layout but is GPL and needs a system binary; `mupdf.js` is AGPL; hosted
 document-AI services cost money per page for a job that named form fields
 already answer exactly.
 
-If a town *did* scan its minutes, the honest additions are `tesseract.js`
+If a town _did_ scan its minutes, the honest additions are `tesseract.js`
 (Apache-2.0, WASM, no native dep) or system Tesseract. townCivic does not
 silently pretend a scan is empty — the extractor flags `likelyScanned` when the
 text layer is too thin, so the gap is visible rather than invisible.
@@ -252,13 +252,13 @@ text layer is too thin, so the gap is visible rather than invisible.
 
 Measured over the 72 most recent documents:
 
-| | |
-| --- | --- |
-| Structured AcroForm notices | 48 of 60 sampled (80%) |
-| Records with a parsed agenda | 60 |
-| Records with an exact clerk posting time | 72 (100%) |
-| Extraction failures | 0 |
-| Detected as scanned | 2 — both from the *regional* school district, which does not use Milton's template |
+|                                          |                                                                                    |
+| ---------------------------------------- | ---------------------------------------------------------------------------------- |
+| Structured AcroForm notices              | 48 of 60 sampled (80%)                                                             |
+| Records with a parsed agenda             | 60                                                                                 |
+| Records with an exact clerk posting time | 72 (100%)                                                                          |
+| Extraction failures                      | 0                                                                                  |
+| Detected as scanned                      | 2 — both from the _regional_ school district, which does not use Milton's template |
 
 Real addresses now attached to records: 39 Frothingham Street, 350 Blue Hill
 Avenue, 53 Lawrence Road, 303 Adams Street, 77 Morton Road, 64 Park Street …
@@ -321,20 +321,20 @@ that should move behind an interface when a second town lands.
 These are staged, not forgotten:
 
 - **Event linking into timelines.** `application filed → hearing scheduled →
-  continued → approved 4–1 → appealed`. The extraction work above is the
+continued → approved 4–1 → appealed`. The extraction work above is the
   prerequisite, and now that agendas resolve to street addresses this is the
   natural next step: group records by subject and order them by date.
 - **The bylaw lifecycle.** `town meeting adopts → clerk submits within 30 days →
-  AG decides within 90`. The AG Municipal Law Unit source is registered and
+AG decides within 90`. The AG Municipal Law Unit source is registered and
   disabled pending a form-driving adapter.
 - **Minutes are only text.** Agendas are structured; minutes are prose, so votes
   ("approved 4–1") and conditions are not parsed out yet. This is the one place a
-  model would genuinely earn its keep — and it would run as an *indexer* over
+  model would genuinely earn its keep — and it would run as an _indexer_ over
   stored documents, never as the authority.
 - **Courts.** Registered as a channel, no sources. It needs an aggressive
   inclusion filter — the town as a party, a local official sued in official
-  capacity, a challenge to a local decision — so it stays *the town's legal
-  surface* and never becomes a courthouse blotter.
+  capacity, a challenge to a local decision — so it stays _the town's legal
+  surface_ and never becomes a courthouse blotter.
 - **OCR.** Not needed for Milton today. `likelyScanned` flags the handful of
   image-only documents rather than silently returning nothing, so the day it
   matters it will be visible.
