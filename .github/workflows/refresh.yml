@@ -1,0 +1,101 @@
+name: Refresh
+
+# The ingest → analyse cycle, run on a schedule.
+#
+# Twice a day, deliberately. Milton posts meeting notices under a 48-hour clock,
+# so a 12-hour worst case still leaves a day and a half of notice — and these
+# are small municipal servers. Hourly would buy nothing and cost them something.
+#
+# The database is a cache, not a source of truth: the raw document store is the
+# authority, and everything else can be rebuilt from it. So this restores the
+# previous run's database, updates it, and publishes it as an artifact. Nothing
+# is committed back to the repository — a binary that changes twice a day does
+# not belong in git history.
+
+on:
+  schedule:
+    # 07:10 and 19:10 UTC. Offset off the hour because the top of the hour is
+    # the busiest slot on GitHub's scheduler and the least reliable.
+    - cron: '10 7,19 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Ignore stored ETags and refetch everything'
+        type: boolean
+        default: false
+
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    name: ingest, extract, link
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # Restoring the previous database is what makes this incremental:
+      # conditional GETs cost the town nothing for pages that have not changed,
+      # and `extract` only opens documents it has not already read.
+      - name: Restore the previous database
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: towncivic-db-${{ github.run_id }}
+          restore-keys: |
+            towncivic-db-
+
+      - name: Ingest
+        run: npm run ingest
+
+      # Documents are the slow part. Cap each run so a first run over a
+      # nine-year archive spreads across several runs instead of timing out.
+      - name: Extract documents
+        run: npm run extract -- --limit 150
+
+      - name: Link records into timelines
+        run: npm run link
+
+      - name: Read minutes
+        run: npm run interpret
+
+      # The only step that talks to anyone other than the town.
+      - name: Geocode new addresses
+        run: npm run geocode -- --limit 50
+        continue-on-error: true
+
+      - name: Save the database
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: towncivic-db-${{ github.run_id }}
+
+      # Runs even when a step above failed, so a broken run still reports what
+      # state it left things in. The exit code is the alarm: a red job here
+      # means a source is failing or has gone quiet.
+      - name: Status
+        if: always()
+        run: npm run status
+
+      - name: Publish the database
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: towncivic-db
+          path: data/towncivic.db
+          retention-days: 14
+          if-no-files-found: warn

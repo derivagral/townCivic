@@ -28,6 +28,7 @@ form field_ — structured data, not prose. See
 npm install
 npm run ingest     # fetch every enabled source (~20 requests, about a minute)
 npm run extract    # open the linked PDFs and read what the meetings are about
+npm run link       # group records about the same property into timelines
 npm run serve      # http://localhost:8787
 ```
 
@@ -96,6 +97,10 @@ npx tsx src/cli.ts <command>
 | -------------------- | ---------------------------------------------------------------------------- |
 | `ingest`             | Fetch every enabled source, normalize, store what changed                    |
 | `extract`            | Open the linked PDFs and read agendas, locations, posting times and subjects |
+| `link`               | Group records about the same property or article into timelines              |
+| `interpret`          | Read votes and dispositions out of the prose in minutes                      |
+| `geocode`            | Resolve linked addresses to coordinates for the map                          |
+| `status`             | Pipeline counts and source health; exits non-zero on a problem               |
 | `verify`             | Check every registered URL against the live site                             |
 | `discover`           | Probe the CivicPlus site for boards and feeds not yet registered             |
 | `serve`              | Web UI plus Atom and JSON feeds                                              |
@@ -104,7 +109,12 @@ npx tsx src/cli.ts <command>
 | `clear-samples`      | Delete everything loaded from fixtures                                       |
 
 Useful flags: `--source <id>` (repeatable), `--all` (include disabled),
-`--force` (ignore ETag / re-extract), `--dry-run`, `--limit <n>`, `--since <date>`, `--json`.
+`--force` (ignore ETag / re-extract), `--dry-run`, `--limit <n>`, `--since <date>`,
+`--provider <name>`, `--json`.
+
+The first three are the pipeline, and they run in that order because each
+depends on what the one before it wrote. `link` and `interpret` touch nothing
+outside the database.
 
 ### `discover` is the reason the ids are right
 
@@ -143,7 +153,10 @@ normalize + classify — deterministic rules, no model
 dedupe by precedence
      ↓
 SQLite (node:sqlite, FTS5)
-     ↓
+     ↓                    ↘
+     ↓                     link → matters and timelines → geocode → map
+     ↓                     interpret → derived readings, separately indexed
+     ↓                    ↙
 Atom / JSON Feed + web UI
 ```
 
@@ -290,16 +303,198 @@ those strings appear anywhere in the listing HTML.
   is more precise — the notice's exact start time replaces a date-only guess,
   but a missing field never blanks a known value.
 
+## Timelines
+
+`ingest` records that a meeting exists and `extract` records what it is about.
+`link` answers the question those two leave open: **which of these records are
+about the same thing?**
+
+A **matter** is the thing the town is deciding about, as opposed to any one
+meeting about it — a property, a warrant article, a procurement. Group by matter
+and order by date and the sequence falls out:
+
+```
+271 Pleasant Street                                          Property · Decided
+  Mar 3   Application filed    Board of Appeals — Agenda
+          ↳ Upon the Application of A. Resident at 271 Pleasant St …
+  Apr 7   Hearing scheduled    Board of Appeals — Agenda
+          ↳ Public hearing on the variance sought at 271 Pleasant Street.
+  May 5   Continued            Board of Appeals — Agenda
+          ↳ Continued hearing, 271 Pleasant Street.
+  Jun 2   Decided              Board of Appeals — Minutes
+          ↳ The variance at 271 Pleasant Street was approved 4-1.
+```
+
+### There is no ID to link on
+
+Worth stating plainly, because it determined the design. CivicPlus assigns
+`_09142026-7480` per **file**, and Milton's notice template has no docket field,
+so nothing in the source data says these four meetings concern the same house.
+The only handle is the subject string the extractor already pulls out.
+
+So linking is a **normalization**, not a clustering algorithm — the same choice
+the classifier makes. `271 Pleasant St`, `271 Pleasant St.` and
+`271A Pleasant Street` reduce to one key; `14 Adams Street` and `40 Adams Street`
+never do. A canonical key is reproducible and wrong in ways you can see. Fuzzy
+matching would quietly merge two neighbouring properties, and nothing in the
+output would tell you it had happened.
+
+The cost is the opposite failure: two spellings a human would call one matter
+stay apart. That is the failure to prefer — a missing link shows up as a short
+timeline, an invented one shows up as nothing at all.
+
+Three kinds are keyed:
+
+| Kind        | Key                | Note                                                             |
+| ----------- | ------------------ | ---------------------------------------------------------------- |
+| Property    | normalized address | Street types expanded, unit letters dropped                      |
+| Article     | year + number      | Article 14 of the fall warrant is not Article 14 the next spring |
+| Procurement | bid number         | Learned from postings that label it, then matched bare           |
+
+That last one closes the loop procurement usually loses. The bid posting says
+`Bid No. SB26-9`; four weeks later a Select Board agenda says only
+`award of contract, SB26-9`. Matching a bare `XX00-0` everywhere would sweep in
+fiscal-year codes and statute cites, so instead the linker collects the numbers
+the town has _already published under a label_ and matches those. The vocabulary
+comes from the town.
+
+### Stages are read, and they show their working
+
+`filed → scheduled → heard → continued → decided → withdrawn`, from a table of
+regular expressions in `src/matters/stages.ts`. Two things keep it honest:
+
+- **The reading is scoped to the sentence naming the subject.** An agenda covers
+  six unrelated properties; without scoping, one item approved 4–1 would mark
+  every other item on the night "decided".
+- **Every link stores the phrase it was read from**, and the timeline shows it.
+  A surprising stage traces to the words that caused it.
+
+Nothing here is a legal determination. The linked primary source is.
+
+## Map
+
+`/map` plots every property the town has a record about, sized by how many
+records mention it and coloured by channel. Addresses become coordinates in
+their own stage — `geocode` — because it is the only part of the pipeline that
+asks anything of a service other than the town.
+
+|           |                                                                                                             |
+| --------- | ----------------------------------------------------------------------------------------------------------- |
+| Geocoder  | [US Census Bureau](https://geocoding.geo.census.gov/) — public, free, **no API key**, results public domain |
+| Caching   | Permanent. A street address does not move, and a definite miss is cached too                                |
+| Rendering | Server-rendered SVG. No tiles, no JavaScript, no external requests                                          |
+| Failures  | Named on the page, not dropped — an address missing from a map is a gap in it                               |
+
+Two things it deliberately does not do. It does not draw a street basemap: a
+borrowed one would imply a precision the geocoding does not have, since a pin is
+a guess at a street address rather than a parcel. And it fences results to a
+bounding box around Milton — there is a Milton in Vermont, New Hampshire and
+Florida, and a confident answer in the wrong one is worse than no answer.
+
+The honest upgrade is MassGIS, which publishes the statewide parcel layer. That
+would resolve a land-use record to the **parcel** it is actually about. This is
+the version that works without downloading a shapefile.
+
+## Derived readings
+
+Agendas are structured data, so `extract` gets everything out of them. Minutes
+are prose, and the votes and conditions in them are the part of the civic record
+people most want and least often get.
+
+`interpret` is the seam where a model is allowed in — and the design is about
+making sure it stays a _seam_:
+
+- Readings go in their own table, with their own FTS index. The default search
+  is over what the town published; derived text is opted into with a checkbox.
+- They render in a visibly separate block labelled **not the record**.
+- They never overwrite a parsed fact, and dropping the whole table changes
+  nothing about what townCivic reports the town did.
+- Each row records the provider, model, prompt version, and a hash of the
+  document it read — so a re-extraction makes a reading stale rather than
+  silently wrong.
+
+Two providers ship:
+
+| Provider    | Needs                         | What it is                                              |
+| ----------- | ----------------------------- | ------------------------------------------------------- |
+| `rules`     | nothing — the default         | Regular expressions for recorded votes and continuances |
+| `anthropic` | `ANTHROPIC_API_KEY` + the SDK | A model reading minutes for dispositions                |
+
+`rules` is not a placeholder. It is the floor: it costs nothing to run over the
+whole archive, and whatever a model adds has to beat it. Having both makes that
+comparable rather than assumed.
+
+```bash
+npm run interpret                                  # rules, no key, no cost
+npx tsx src/cli.ts interpret --provider anthropic  # opt in
+```
+
+`@anthropic-ai/sdk` is **not** a dependency and is loaded dynamically, so the
+quick start stays "npm install, npm run ingest" with no account to create.
+
+## Accounts
+
+A proof of concept, answering one question: _what do **I** want to see?_ Sign up,
+follow a property, a board, a channel or a search, and get a personal Atom feed
+that is the union of them.
+
+Following a matter is the point — it tracks a property across whichever board
+takes it up next, which is exactly what channel and board filters cannot do.
+
+The security primitives are real: scrypt with a per-user salt, constant-time
+comparison, an opaque `HttpOnly` `SameSite=Lax` session cookie, a per-session
+CSRF token on every state change, no open redirect on login, and one error
+message whether the account is missing or the password is wrong.
+
+**What is missing, and would have to exist first:** email verification, password
+reset, rate limiting and lockout, a second factor, and any account-recovery path
+at all. Set `TOWNCIVIC_SECURE_COOKIES=1` for anything served over HTTPS. The
+personal feed URL contains a bearer token — rotatable, not the password, and a
+secret.
+
+Alerts are recorded but not sent. The `alerts` column carries the intent; there
+is no sender. The honest description of alerts today is "an Atom feed you can
+point anything at".
+
+Accounts are also the one thing in the database that is not derived. If you run
+them, `data/towncivic.db` stops being disposable.
+
+## Operations
+
+Full detail in **[docs/operations.md](docs/operations.md)** — the three
+deployment shapes, a systemd unit, and what to watch.
+
+The short version: `.github/workflows/refresh.yml` runs the cycle twice a day,
+restores the previous database from the Actions cache, and publishes it as an
+artifact. Twice a day is deliberate — meeting notices run on a 48-hour clock, so
+a 12-hour worst case still leaves a day and a half, and these are small
+municipal servers.
+
+`status` is the whole monitoring story:
+
+```bash
+npm run status                            # human-readable
+npm run status -- --json | jq .problems   # exits non-zero on a problem
+```
+
+It is built around the _quiet_ failure. A crawler that errors is obvious; a
+crawler that keeps returning 200 while the town silently stops publishing looks
+exactly like a quiet week. So `status` reports when each source last produced
+something **new**, not just whether the last fetch succeeded — with a 60-day
+threshold, because boards meet monthly and take August off.
+
 ## Feeds
 
 ```
 /feeds/all.atom          /feeds/all.json
 /feeds/land-use.atom     /feeds/money.atom     /feeds/meetings.atom    …
+/feeds/all.atom?matter=<id>                    one property, whoever publishes it
+/feeds/my/<token>.atom                         one reader's subscriptions
 ```
 
-Add `?source=`, `?body=` or `?q=` to narrow any feed the same way the web filters
-do. JSON Feed entries carry a `_towncivic` object with the jurisdiction, source
-level, agency, body, channel, event type and permalink.
+Add `?source=`, `?body=`, `?q=` or `?matter=` to narrow any feed the same way the
+web filters do. JSON Feed entries carry a `_towncivic` object with the
+jurisdiction, source level, agency, body, channel, event type and permalink.
 
 ## Adding a town
 
@@ -320,17 +515,18 @@ that should move behind an interface when a second town lands.
 
 These are staged, not forgotten:
 
-- **Event linking into timelines.** `application filed → hearing scheduled →
-continued → approved 4–1 → appealed`. The extraction work above is the
-  prerequisite, and now that agendas resolve to street addresses this is the
-  natural next step: group records by subject and order them by date.
 - **The bylaw lifecycle.** `town meeting adopts → clerk submits within 30 days →
 AG decides within 90`. The AG Municipal Law Unit source is registered and
-  disabled pending a form-driving adapter.
-- **Minutes are only text.** Agendas are structured; minutes are prose, so votes
-  ("approved 4–1") and conditions are not parsed out yet. This is the one place a
-  model would genuinely earn its keep — and it would run as an _indexer_ over
-  stored documents, never as the authority.
+  disabled pending a form-driving adapter. Article matters already hold one end
+  of it.
+- **Sending an alert.** Subscriptions and the personal feed work; nothing mails
+  or pushes. That needs a sender, a digest schedule, and an unsubscribe path
+  that works without signing in.
+- **Accounts that could face the internet.** See [Accounts](#accounts) for the
+  list — email verification, password reset, rate limiting, recovery.
+- **Parcels rather than points.** The map geocodes to a street address. MassGIS
+  publishes the statewide parcel layer, which is what a land-use record is
+  actually about.
 - **Courts.** Registered as a channel, no sources. It needs an aggressive
   inclusion filter — the town as a party, a local official sued in official
   capacity, a challenge to a local decision — so it stays _the town's legal
@@ -338,14 +534,22 @@ AG decides within 90`. The AG Municipal Law Unit source is registered and
 - **OCR.** Not needed for Milton today. `likelyScanned` flags the handful of
   image-only documents rather than silently returning nothing, so the day it
   matters it will be visible.
+- **A second town.** Per-jurisdiction classification still lives in the Milton
+  registry module and is imported directly by `src/pipeline/normalize.ts`. The
+  matter keys and the map's bounding box are now in the same position. That
+  import is the one thing that should move behind an interface first.
 
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every pull request:
 
 - **check** — `npm ci`, typecheck, Prettier, and the full test suite.
-- **smoke** — seeds the fixtures on a clean checkout, starts the server, and
-  requests the timeline, a channel view, the source registry and the Atom feed.
+- **smoke** — seeds the fixtures on a clean checkout, links them into timelines,
+  starts the server, and requests the feed, a channel view, the timelines index,
+  a matter, the map, the source registry and the Atom feed.
+
+`.github/workflows/refresh.yml` runs the live cycle on a schedule — see
+[Operations](#operations).
 
 Both jobs are fully offline, so CI never touches the town's servers and a red
 build is a real regression rather than someone else's outage.
@@ -369,7 +573,14 @@ every agenda, bid and notice in them is made up. See `fixtures/README.md`.
 
 All optional, all environment variables: `TOWNCIVIC_DATA_DIR`, `TOWNCIVIC_DB`,
 `PORT`, `TOWNCIVIC_BASE_URL`, `TOWNCIVIC_USER_AGENT`, `TOWNCIVIC_TIMEOUT_MS`,
-`TOWNCIVIC_HOST_DELAY_MS`, `TOWNCIVIC_MAX_RETRIES`, `TOWNCIVIC_JURISDICTION`.
+`TOWNCIVIC_HOST_DELAY_MS`, `TOWNCIVIC_MAX_RETRIES`, `TOWNCIVIC_JURISDICTION`,
+`TOWNCIVIC_SECURE_COOKIES`. `ANTHROPIC_API_KEY` is read only by
+`interpret --provider anthropic`.
+
+`TOWNCIVIC_SECURE_COOKIES=1` marks the session cookie `Secure`. It is off by
+default so `npm run serve` works on localhost, where a `Secure` cookie is never
+sent and signing in would appear to fail silently. Turn it on for anything
+served over HTTPS.
 
 The crawler identifies itself honestly, waits between requests to the same host,
 and sends conditional requests. `HTTPS_PROXY` / `HTTP_PROXY` are honoured — Node's
