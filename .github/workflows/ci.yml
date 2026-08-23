@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same branch makes an in-flight run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: typecheck, format, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          # node:sqlite needs >= 22.5; the repo targets the 22 line.
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Check formatting
+        run: npm run format:check
+
+      # The suite runs entirely against local fixtures, so CI never reaches out
+      # to the town's servers. A red test here is a real regression.
+      - name: Test
+        run: npm test
+
+  smoke:
+    name: seed and serve
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # End-to-end proof that a fresh checkout can build a database and answer
+      # requests, without touching the network.
+      - name: Seed fixtures
+        run: npm run seed
+
+      - name: Serve and check routes
+        run: |
+          npm run serve -- --port 8787 &
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8787/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+          set -e
+          curl -fsS http://localhost:8787/healthz > /dev/null
+          curl -fsS "http://localhost:8787/?channel=land-use" > /dev/null
+          curl -fsS http://localhost:8787/sources > /dev/null
+          curl -fsS http://localhost:8787/feeds/all.atom | head -c 200
+          echo
+          echo "routes OK"

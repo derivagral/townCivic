@@ -1,0 +1,453 @@
+import type { EventRow, SourceRow } from '../db/repo.ts';
+import { CHANNELS, CHANNEL_DESCRIPTIONS, CHANNEL_LABELS, EVENT_TYPE_LABELS } from '../taxonomy.ts';
+import type { Channel } from '../taxonomy.ts';
+import { dayKey, formatDate, formatDayHeading, hasRealTime, relativeDays } from '../util/dates.ts';
+
+export function escapeHtml(input: unknown): string {
+  return String(input ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+export interface Filters {
+  channel?: string;
+  source?: string;
+  body?: string;
+  level?: string;
+  q?: string;
+  when: 'all' | 'upcoming' | 'past';
+  page: number;
+}
+
+export const EMPTY_FILTERS: Filters = { when: 'all', page: 1 };
+
+/** Build a URL for the current filters with one or more values replaced. */
+export function href(filters: Filters, patch: Partial<Filters> = {}, path = '/'): string {
+  const next = { ...filters, ...patch };
+  const params = new URLSearchParams();
+  if (next.channel) params.set('channel', next.channel);
+  if (next.source) params.set('source', next.source);
+  if (next.body) params.set('body', next.body);
+  if (next.level) params.set('level', next.level);
+  if (next.q) params.set('q', next.q);
+  if (next.when !== 'all') params.set('when', next.when);
+  if (next.page > 1) params.set('page', String(next.page));
+  const qs = params.toString();
+  return qs ? `${path}?${qs}` : path;
+}
+
+/** Toggle a facet: clicking the active value clears it. */
+function toggle(filters: Filters, key: 'source' | 'body' | 'level', value: string): string {
+  return href(filters, { [key]: filters[key] === value ? undefined : value, page: 1 });
+}
+
+function parseJsonArray(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+export interface Facet {
+  value: string;
+  n: number;
+  label?: string;
+}
+
+export interface LayoutOptions {
+  title: string;
+  jurisdictionLabel: string;
+  filters: Filters;
+  sampleData: boolean;
+  body: string;
+  aside?: string;
+  feedUrl?: string;
+}
+
+export function layout(options: LayoutOptions): string {
+  const { filters } = options;
+  const tabs = [
+    { value: '', label: 'Everything' },
+    ...CHANNELS.map((c) => ({ value: c, label: CHANNEL_LABELS[c] })),
+  ]
+    .map((tab) => {
+      const on = (filters.channel ?? '') === tab.value;
+      const url = href(filters, { channel: tab.value || undefined, page: 1 });
+      return `<a class="${on ? 'on' : ''}" href="${escapeHtml(url)}">${escapeHtml(tab.label)}</a>`;
+    })
+    .join('');
+
+  const banner = options.sampleData
+    ? `<div class="banner"><strong>Sample data.</strong> Some entries below were loaded from synthetic fixtures for development
+       and are <strong>not</strong> records of anything the town actually did. Run <code>npm run ingest</code> against the live
+       site, then <code>npx tsx src/cli.ts clear-samples</code>, to work with real records.</div>`
+    : '';
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(options.title)}</title>
+<link rel="stylesheet" href="/styles.css">
+${options.feedUrl ? `<link rel="alternate" type="application/atom+xml" title="${escapeHtml(options.title)}" href="${escapeHtml(options.feedUrl)}">` : ''}
+</head>
+<body>
+<header class="site">
+  <div class="wrap">
+    <div class="brand">
+      <h1><a href="/">townCivic</a></h1>
+      <span class="tag">${escapeHtml(options.jurisdictionLabel)} · primary-source civic record</span>
+      <span class="spacer"></span>
+      <span class="util"><a href="/sources">Sources</a><a href="/feeds">Feeds</a></span>
+    </div>
+    <nav class="channels">${tabs}</nav>
+  </div>
+</header>
+<div class="wrap">
+  ${banner}
+  ${options.aside ? `<div class="layout"><aside>${options.aside}</aside><main>${options.body}</main></div>` : `<main>${options.body}</main>`}
+  <footer class="site">
+    <p>Every entry links to the primary source. townCivic does not summarize, editorialize, or decide what is newsworthy —
+       it records what was published, by whom, and when.</p>
+    <p><a href="/feeds">Atom &amp; JSON feeds</a> · <a href="/sources">Source registry</a></p>
+  </footer>
+</div>
+</body>
+</html>`;
+}
+
+function badge(row: EventRow): string {
+  const channel = row.channel as Channel;
+  return `<span class="badge ch ch-${escapeHtml(channel)}">${escapeHtml(CHANNEL_LABELS[channel] ?? channel)}</span>`;
+}
+
+function eventCard(row: EventRow, filters: Filters): string {
+  const subjects = parseJsonArray(row.subjects)
+    .slice(0, 4)
+    .map((s) => `<span class="badge subject">${escapeHtml(s)}</span>`)
+    .join('');
+
+  const kind = EVENT_TYPE_LABELS[row.event_type as keyof typeof EVENT_TYPE_LABELS] ?? row.event_type;
+  const bodyLink = row.body
+    ? `<a href="${escapeHtml(toggle(filters, 'body', row.body))}">${escapeHtml(row.body)}</a>`
+    : escapeHtml(row.agency);
+  const sourceLink = `<a href="${escapeHtml(toggle(filters, 'source', row.source_id))}">${escapeHtml(row.source_label ?? row.source_id)}</a>`;
+
+  // Show a clock time only when the document actually gave us one.
+  const when = row.occurred_at
+    ? formatDate(row.occurred_at, hasRealTime(row.occurred_at) ? { hour: 'numeric', minute: '2-digit' } : {})
+    : row.published_at
+      ? `posted ${formatDate(row.published_at)}`
+      : '';
+
+  const revised =
+    row.revision > 1
+      ? `<span class="dot">·</span><span title="This item changed after it was first seen">revised</span>`
+      : '';
+
+  return `<article class="event p-${escapeHtml(row.priority)}">
+  <h4><a href="/event/${escapeHtml(row.id)}">${escapeHtml(row.title)}</a></h4>
+  ${row.summary ? `<p class="summary">${escapeHtml(row.summary)}</p>` : ''}
+  <div class="meta">
+    ${badge(row)}
+    <span class="badge kind">${escapeHtml(kind)}</span>
+    ${subjects}
+    <span class="dot">·</span>${bodyLink}
+    <span class="dot">·</span>${sourceLink}
+    ${when ? `<span class="dot">·</span><span>${escapeHtml(when)}</span>` : ''}
+    ${revised}
+  </div>
+</article>`;
+}
+
+function dayGroups(rows: EventRow[], filters: Filters, upcoming: boolean): string {
+  const groups = new Map<string, EventRow[]>();
+  for (const row of rows) {
+    const key = dayKey(row.occurred_at ?? row.published_at ?? row.first_seen_at);
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(row);
+    else groups.set(key, [row]);
+  }
+
+  return [...groups.entries()]
+    .map(([key, items]) => {
+      const days = relativeDays(`${key}T12:00:00Z`);
+      const relative =
+        days === 0 ? ' · today' : days === 1 ? ' · tomorrow' : days === -1 ? ' · yesterday' : '';
+      return `<section class="daygroup${upcoming ? ' upcoming' : ''}">
+  <h3>${escapeHtml(formatDayHeading(key))}${escapeHtml(relative)}</h3>
+  ${items.map((row) => eventCard(row, filters)).join('\n')}
+</section>`;
+    })
+    .join('\n');
+}
+
+/** A facet list capped for display, plus how many values did not fit. */
+export interface FacetGroup {
+  shown: Facet[];
+  hidden: number;
+}
+
+export interface IndexViewModel {
+  filters: Filters;
+  upcoming: EventRow[];
+  past: EventRow[];
+  total: number;
+  facets: { sources: FacetGroup; bodies: FacetGroup; levels: FacetGroup };
+  sampleData: boolean;
+  jurisdictionLabel: string;
+  pageSize: number;
+  feedUrl: string;
+}
+
+function facetGroup(
+  heading: string,
+  key: 'source' | 'body' | 'level',
+  group: FacetGroup,
+  filters: Filters,
+): string {
+  if (!group.shown.length) return '';
+  const items = group.shown
+    .map((facet) => {
+      const on = filters[key] === facet.value;
+      return `<li><a class="${on ? 'on' : ''}" href="${escapeHtml(toggle(filters, key, facet.value))}">
+        <span>${escapeHtml(facet.label ?? facet.value)}</span><span class="n">${facet.n}</span></a></li>`;
+    })
+    .join('');
+  // Long tails are real here — Milton has 78 boards — so say what was left out
+  // rather than silently truncating, and point at search for the rest.
+  const more = group.hidden ? `<li class="more"><span>+ ${group.hidden} more — use search</span></li>` : '';
+  return `<div class="group"><h2>${escapeHtml(heading)}</h2><ul>${items}${more}</ul></div>`;
+}
+
+export function renderIndex(model: IndexViewModel): string {
+  const { filters } = model;
+
+  const aside = `
+<form class="search" action="/" method="get">
+  <input type="search" name="q" value="${escapeHtml(filters.q ?? '')}" placeholder="Search records" aria-label="Search records">
+  ${filters.channel ? `<input type="hidden" name="channel" value="${escapeHtml(filters.channel)}">` : ''}
+  <button type="submit">Go</button>
+</form>
+${facetGroup('Board or department', 'body', model.facets.bodies, filters)}
+${facetGroup('Source', 'source', model.facets.sources, filters)}
+${facetGroup('Level of government', 'level', model.facets.levels, filters)}
+${
+  filters.source || filters.body || filters.level || filters.q
+    ? `<div class="group"><a href="${escapeHtml(href({ ...EMPTY_FILTERS, channel: filters.channel }))}">Clear filters</a></div>`
+    : ''
+}`;
+
+  const modes = (['all', 'upcoming', 'past'] as const)
+    .map((mode) => {
+      const label = mode === 'all' ? 'All' : mode === 'upcoming' ? 'Upcoming' : 'Past';
+      const on = filters.when === mode;
+      return `<a class="${on ? 'on' : ''}" href="${escapeHtml(href(filters, { when: mode, page: 1 }))}">${label}</a>`;
+    })
+    .join('');
+
+  const channelNote = filters.channel
+    ? `<p class="count">${escapeHtml(CHANNEL_DESCRIPTIONS[filters.channel as Channel] ?? '')}</p>`
+    : '';
+
+  const empty =
+    !model.upcoming.length && !model.past.length
+      ? `<div class="empty">
+           <p>No records match these filters.</p>
+           <p>If the database is empty, load the development fixtures with <code>npm run seed</code>,
+              or fetch the live site with <code>npm run ingest</code>.</p>
+         </div>`
+      : '';
+
+  const body = `
+<div class="toolbar">
+  <strong>${model.total.toLocaleString('en-US')}</strong>
+  <span class="count">record${model.total === 1 ? '' : 's'}${filters.q ? ` matching “${escapeHtml(filters.q)}”` : ''}</span>
+  ${channelNote}
+  <span class="modes">${modes}</span>
+</div>
+${model.upcoming.length ? `<h2 class="count" style="margin:22px 0 0;font-size:13px;text-transform:uppercase;letter-spacing:.07em;">Upcoming</h2>${dayGroups(model.upcoming, filters, true)}` : ''}
+${model.past.length ? `${model.upcoming.length ? `<h2 class="count" style="margin:34px 0 0;font-size:13px;text-transform:uppercase;letter-spacing:.07em;">Already happened</h2>` : ''}${dayGroups(model.past, filters, false)}` : ''}
+${empty}
+${
+  model.past.length >= model.pageSize || filters.page > 1
+    ? `<div class="pager">
+        ${filters.page > 1 ? `<a href="${escapeHtml(href(filters, { page: filters.page - 1 }))}">← Newer</a>` : ''}
+        ${model.past.length >= model.pageSize ? `<a href="${escapeHtml(href(filters, { page: filters.page + 1 }))}">Older →</a>` : ''}
+      </div>`
+    : ''
+}`;
+
+  return layout({
+    title: filters.channel
+      ? `${CHANNEL_LABELS[filters.channel as Channel] ?? filters.channel} — townCivic`
+      : `townCivic — ${model.jurisdictionLabel}`,
+    jurisdictionLabel: model.jurisdictionLabel,
+    filters,
+    sampleData: model.sampleData,
+    body,
+    aside,
+    feedUrl: model.feedUrl,
+  });
+}
+
+/** The parsed meeting notice, as stored on the attachment row. */
+export interface NoticeView {
+  location?: string | null;
+  timeText?: string | null;
+  agendaItems?: string[];
+  postedAt?: string | null;
+  postingAuthority?: string | null;
+  remoteLink?: string | null;
+  structured?: boolean;
+}
+
+export function renderEvent(
+  row: EventRow,
+  sampleData: boolean,
+  jurisdictionLabel: string,
+  notice: NoticeView | null = null,
+): string {
+  const subjects = parseJsonArray(row.subjects);
+  const tags = parseJsonArray(row.tags);
+  const kind = EVENT_TYPE_LABELS[row.event_type as keyof typeof EVENT_TYPE_LABELS] ?? row.event_type;
+
+  const rows: [string, string][] = [
+    ['Channel', CHANNEL_LABELS[row.channel as Channel] ?? row.channel],
+    ['Record type', kind],
+    ['Body', row.body ?? row.agency],
+    ['Agency', row.agency],
+    ['Level', row.level],
+    [
+      'Meets',
+      formatDate(
+        row.occurred_at,
+        hasRealTime(row.occurred_at)
+          ? { weekday: 'long', hour: 'numeric', minute: '2-digit' }
+          : { weekday: 'long' },
+      ) || '—',
+    ],
+    ...(notice?.location ? ([['Location', notice.location]] as [string, string][]) : []),
+    ['Posted by clerk', formatDate(row.published_at, { hour: 'numeric', minute: '2-digit' }) || '—'],
+    ...(notice?.postingAuthority
+      ? ([['Posting authority', notice.postingAuthority]] as [string, string][])
+      : []),
+    ['First seen', formatDate(row.first_seen_at, { hour: 'numeric', minute: '2-digit' })],
+    ['Last seen', formatDate(row.last_seen_at, { hour: 'numeric', minute: '2-digit' })],
+    ['Revision', String(row.revision)],
+    ['Source', row.source_label ?? row.source_id],
+    ['Subjects', subjects.length ? subjects.join(', ') : '—'],
+    ['Tags', tags.length ? tags.join(', ') : '—'],
+  ];
+
+  // The agenda is the point: it is what the meeting is actually about, and it
+  // exists only inside the notice PDF.
+  const agenda = notice?.agendaItems?.length
+    ? `<section class="agenda">
+         <h2>Agenda <span class="pill">read from the notice</span></h2>
+         <ol>${notice.agendaItems.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ol>
+       </section>`
+    : row.extracted_at
+      ? `<p class="count" style="margin-top:18px">No agenda items were listed in the document.</p>`
+      : `<p class="count" style="margin-top:18px">Document not read yet — run <code>npm run extract</code>.</p>`;
+
+  const body = `<div class="detail">
+  <div class="meta" style="margin-bottom:10px">${badge(row)}<span class="badge kind">${escapeHtml(kind)}</span>
+    ${subjects.map((s) => `<span class="badge subject">${escapeHtml(s)}</span>`).join('')}</div>
+  <h1>${escapeHtml(row.title)}</h1>
+  ${row.summary ? `<p>${escapeHtml(row.summary)}</p>` : ''}
+  <div class="actions">
+    <a href="${escapeHtml(row.url)}" rel="noopener noreferrer">Open primary source ↗</a>
+    ${row.document_url && row.document_url !== row.url ? `<a href="${escapeHtml(row.document_url)}" rel="noopener noreferrer">Open document ↗</a>` : ''}
+    ${notice?.remoteLink ? `<a href="${escapeHtml(notice.remoteLink)}" rel="noopener noreferrer">Join remotely ↗</a>` : ''}
+  </div>
+  ${agenda}
+  <dl>${rows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join('')}</dl>
+</div>`;
+
+  return layout({
+    title: `${row.title} — townCivic`,
+    jurisdictionLabel,
+    filters: EMPTY_FILTERS,
+    sampleData,
+    body,
+  });
+}
+
+export function renderSources(sources: SourceRow[], sampleData: boolean, jurisdictionLabel: string): string {
+  const rows = sources
+    .map(
+      (source) => `<tr>
+  <td><strong>${escapeHtml(source.label)}</strong><br><span class="badge kind">${escapeHtml(source.adapter)}</span> <span class="pill">tier ${source.tier}</span></td>
+  <td class="url"><a href="${escapeHtml(source.url)}" rel="noopener noreferrer">${escapeHtml(source.url)}</a></td>
+  <td>${escapeHtml(CHANNEL_LABELS[source.channel as Channel] ?? source.channel)}</td>
+  <td><span class="pill ${source.confidence === 'verified' ? 'ok' : ''}">${escapeHtml(source.confidence)}</span>
+      ${source.enabled ? '' : '<span class="pill off">disabled</span>'}</td>
+  <td>${source.last_fetch_at ? `${escapeHtml(formatDate(source.last_fetch_at, { hour: 'numeric', minute: '2-digit' }))}${source.last_status ? ` · ${source.last_status}` : ''}` : 'never'}
+      ${source.last_error ? `<br><span style="color:#a1483f">${escapeHtml(source.last_error)}</span>` : ''}</td>
+</tr>`,
+    )
+    .join('');
+
+  const body = `<div class="detail">
+  <h1>Source registry</h1>
+  <p>Every record in townCivic comes from one of these. <em>Confidence</em> says whether the URL has been confirmed
+     against the live site — run <code>npm run verify</code> to check them all, and <code>npm run discover</code>
+     to find boards and feeds the registry does not know about yet.</p>
+  <table class="sources">
+    <thead><tr><th>Source</th><th>URL</th><th>Default channel</th><th>Status</th><th>Last fetch</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+</div>`;
+
+  return layout({
+    title: 'Sources — townCivic',
+    jurisdictionLabel,
+    filters: EMPTY_FILTERS,
+    sampleData,
+    body,
+  });
+}
+
+export function renderFeedIndex(sampleData: boolean, jurisdictionLabel: string, baseUrl: string): string {
+  const items = [
+    { value: 'all', label: 'Everything' },
+    ...CHANNELS.map((c) => ({ value: c, label: CHANNEL_LABELS[c] })),
+  ]
+    .map(
+      (entry) => `<tr>
+      <td><strong>${escapeHtml(entry.label)}</strong><br><span class="count" style="font-size:12.5px;color:var(--muted)">${escapeHtml(
+        entry.value === 'all'
+          ? 'Every channel except routine administration.'
+          : CHANNEL_DESCRIPTIONS[entry.value as Channel],
+      )}</span></td>
+      <td class="url"><a href="/feeds/${escapeHtml(entry.value)}.atom">${escapeHtml(baseUrl)}/feeds/${escapeHtml(entry.value)}.atom</a></td>
+      <td class="url"><a href="/feeds/${escapeHtml(entry.value)}.json">JSON Feed</a></td>
+    </tr>`,
+    )
+    .join('');
+
+  const body = `<div class="detail">
+  <h1>Feeds</h1>
+  <p>Atom and JSON Feed for each channel. Add <code>?source=</code>, <code>?body=</code> or <code>?q=</code> to any feed
+     URL to narrow it the same way the web filters do.</p>
+  <table class="sources">
+    <thead><tr><th>Channel</th><th>Atom</th><th>JSON</th></tr></thead>
+    <tbody>${items}</tbody>
+  </table>
+</div>`;
+
+  return layout({
+    title: 'Feeds — townCivic',
+    jurisdictionLabel,
+    filters: EMPTY_FILTERS,
+    sampleData,
+    body,
+  });
+}
