@@ -13,6 +13,7 @@ import { PROVIDERS, interpretDocuments, isProvider } from './pipeline/interpret.
 import { verify } from './commands/verify.ts';
 import { discover, toRegistrySnippet } from './commands/discover.ts';
 import { status } from './commands/status.ts';
+import { fetchBoundary } from './commands/boundary.ts';
 import { seed, clearSampleData, hasSampleData } from './commands/seed.ts';
 import { createApp } from './web/server.ts';
 import { countEvents, queryEvents } from './db/repo.ts';
@@ -30,6 +31,7 @@ Commands
   geocode              Resolve linked addresses to coordinates for the map
   verify               Check every registered URL against the live site
   status               Report pipeline counts, source health and staleness (exit 1 on a problem)
+  boundary             Refetch the town outline from MassGIS (maintenance; commit the result)
   discover             Probe the CivicPlus site for boards and feeds not yet registered
   serve                Run the web UI and the Atom / JSON feeds
   sources              Print the source registry
@@ -358,6 +360,7 @@ async function main(): Promise<number> {
       console.log(
         `${report.events} records · ${report.matters} matters · ` +
           `${report.placed.resolved}/${report.placed.total} addresses placed · ` +
+          `${report.boundary ? `outline ${report.boundary.points} pts` : '[33mno outline[0m'} · ` +
           `${report.interpretations} derived reading${report.interpretations === 1 ? '' : 's'}`,
       );
       console.log(
@@ -385,6 +388,35 @@ async function main(): Promise<number> {
         console.log(`\n[32mNothing to look at.[0m`);
       }
       return report.ok ? 0 : 1;
+    }
+
+    case 'boundary': {
+      const report = await fetchBoundary({
+        jurisdiction,
+        ...(values['dry-run'] ? { dryRun: true } : {}),
+      });
+      if (values.json) {
+        console.log(JSON.stringify(report, null, 2));
+        return report.ok ? 0 : 1;
+      }
+      if (!report.ok) {
+        console.error(`[31m${report.error ?? 'failed'}[0m`);
+        return 1;
+      }
+      const area = report.landAreaSqM ? `  ${(report.landAreaSqM / 2_589_988).toFixed(2)} sq mi of land` : '';
+      console.log(
+        `${check(true)}  ${report.jurisdiction.padEnd(14)} ${report.change.padEnd(9)} ` +
+          `${report.polygons} polygon(s), ${report.points} points, ${(report.bytes / 1024).toFixed(1)} KB${area}`,
+      );
+      console.log(dim(`  ${report.file}`));
+      if (report.change === 'unchanged') {
+        console.log(dim('  Identical to what is committed — nothing to do.'));
+      } else if (values['dry-run']) {
+        console.log(dim('  Dry run; nothing written.'));
+      } else {
+        console.log(dim('  Written. Review the diff before committing — this is source data.'));
+      }
+      return 0;
     }
 
     case 'sources': {

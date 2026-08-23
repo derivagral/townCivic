@@ -3,6 +3,8 @@ import { config } from '../config.ts';
 import { censusUrl, parseCensusResponse } from '../geo/census.ts';
 import { MILTON_BBOX, withinBox } from '../geo/project.ts';
 import type { BoundingBox } from '../geo/project.ts';
+import { loadBoundary, pointInBoundary } from '../geo/boundary.ts';
+import type { Boundary } from '../geo/boundary.ts';
 
 /**
  * Resolve address matters to coordinates, once each, and remember the answer.
@@ -19,7 +21,12 @@ export interface GeocodeOptions {
   /** Town and state to qualify a bare street address with. */
   town?: string;
   state?: string;
-  /** Reject results outside this box. Defaults to Milton's. */
+  /**
+   * Reject results outside the town's own outline. Defaults to the committed
+   * boundary for the jurisdiction, and falls back to `box` where none exists.
+   */
+  boundary?: Boundary | null;
+  /** The fence used when there is no boundary for this jurisdiction. */
   box?: BoundingBox;
   /** Re-resolve matters that already have a place. */
   force?: boolean;
@@ -96,6 +103,16 @@ export async function geocodeMatters(db: Db, options: GeocodeOptions = {}): Prom
   const town = options.town ?? 'Milton';
   const state = options.state ?? 'MA';
 
+  // The town's real outline where we have one; the rectangle only as a fallback
+  // for a jurisdiction whose boundary has not been fetched yet.
+  const boundary =
+    options.boundary !== undefined
+      ? options.boundary
+      : loadBoundary(options.jurisdiction ?? config.defaultJurisdiction);
+
+  const insideTown = (point: { lat: number; lon: number }) =>
+    boundary ? pointInBoundary(point, boundary) : withinBox(point, box);
+
   const reports: GeocodeReport[] = [];
 
   for (const candidate of selectCandidates(db, options)) {
@@ -112,9 +129,12 @@ export async function geocodeMatters(db: Db, options: GeocodeOptions = {}): Prom
       if (!match) {
         report.error = 'no match';
         record(db, candidate.id, { lat: null, lon: null, matched: null, failure: 'no match' });
-      } else if (!withinBox(match, box)) {
-        // There is a Milton in Vermont, New Hampshire, Florida and several other
-        // states. A confident answer in the wrong one is worse than no answer.
+      } else if (!insideTown(match)) {
+        // Two different mistakes this catches. There is a Milton in Vermont,
+        // New Hampshire and Florida, so a geocoder can answer confidently about
+        // the wrong state entirely. And Milton borders Boston, Quincy, Canton
+        // and Randolph, so a street that continues over the line can resolve to
+        // a house that is not in this town. Only the outline catches the second.
         report.error = `outside ${town} (${match.lat.toFixed(4)}, ${match.lon.toFixed(4)})`;
         record(db, candidate.id, {
           lat: null,

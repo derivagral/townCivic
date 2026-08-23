@@ -1,6 +1,8 @@
 import { escapeHtml } from './views.ts';
 import { MILTON_BBOX, fitBox, project, round, scaleBar, viewportFor } from '../geo/project.ts';
 import type { LatLon } from '../geo/project.ts';
+import { boundaryBox, boundarySvgPath } from '../geo/boundary.ts';
+import type { Boundary } from '../geo/boundary.ts';
 import { CHANNEL_LABELS } from '../taxonomy.ts';
 import type { Channel } from '../taxonomy.ts';
 import { STAGE_LABELS, isStage } from '../matters/stages.ts';
@@ -14,8 +16,10 @@ import { STAGE_LABELS, isStage } from '../matters/stages.ts';
  * borrowed street basemap would imply a precision the underlying geocoding does
  * not have. A pin is a geocoder's guess at a street address, not a parcel.
  *
- * A graticule and a scale bar are what is left, and they answer the question
- * the map is actually for: is this all one neighbourhood, or the whole town?
+ * The town's own outline, from MassGIS, is the exception and it is the thing
+ * that makes the rest legible: a pin means far more against the shape of the
+ * town than against an empty rectangle. It is a state GIS boundary rather than
+ * a rendering of streets, so it says exactly as much as it knows.
  */
 
 export interface MapPoint extends LatLon {
@@ -34,6 +38,8 @@ export interface MapModel {
   /** Total address matters, so the page can say what fraction is drawn. */
   totalAddresses: number;
   geocoded: boolean;
+  /** The town outline. Absent for a jurisdiction whose boundary is not committed. */
+  boundary?: Boundary | null;
   highlight?: string | undefined;
 }
 
@@ -57,6 +63,14 @@ function radiusFor(eventCount: number): number {
   return round(4 + Math.sqrt(Math.max(0, eventCount - 1)) * 3.2, 1);
 }
 
+/** The two corners of a box, as points — enough for `fitBox` to pad and clamp. */
+function cornersOf(box: { south: number; west: number; north: number; east: number }): LatLon[] {
+  return [
+    { lat: box.south, lon: box.west },
+    { lat: box.north, lon: box.east },
+  ];
+}
+
 /** Evenly spaced graticule lines at a round interval covering the span. */
 function gridStep(span: number): number {
   for (const step of [0.002, 0.005, 0.01, 0.02, 0.05, 0.1]) {
@@ -66,11 +80,19 @@ function gridStep(span: number): number {
 }
 
 export function renderMapSvg(model: MapModel): string {
-  // Fit to what there is, but never zoom in tighter than the town: two pins on
-  // one street would otherwise fill the frame and read as the whole of Milton.
-  const box = fitBox(model.points) ?? MILTON_BBOX;
+  // With an outline, frame the whole town every time. That is the honest view:
+  // a cluster of pins fitted tightly to itself looks like the whole of Milton,
+  // and the reader has no way to tell that it is three streets. Without one,
+  // fall back to fitting the points and let the scale bar carry the meaning.
+  const box = model.boundary
+    ? (fitBox(cornersOf(boundaryBox(model.boundary))) ?? MILTON_BBOX)
+    : (fitBox(model.points) ?? MILTON_BBOX);
   const viewport = viewportFor(box, WIDTH);
   const height = round(viewport.height);
+
+  const outline = model.boundary
+    ? `<path class="townline" d="${boundarySvgPath(model.boundary, viewport)}" fill-rule="evenodd"></path>`
+    : '';
 
   const latStep = gridStep(box.north - box.south);
   const lonStep = gridStep(box.east - box.west);
@@ -125,6 +147,7 @@ export function renderMapSvg(model: MapModel): string {
   </style>
   <rect class="frame" x="0.5" y="0.5" width="${WIDTH - 1}" height="${round(height - 1)}" rx="8"></rect>
   ${lines.join('\n  ')}
+  ${outline}
   ${pins}
   ${scale}
 </svg>`;
@@ -132,14 +155,21 @@ export function renderMapSvg(model: MapModel): string {
 
 /** The map page body, ready to hand to `layout`. */
 export function renderMapBody(model: MapModel): string {
+  // Before geocoding there are no pins, but with an outline there is still a
+  // map — so draw the town and say what is missing, rather than showing a page
+  // that looks broken. The outline needs no network; the pins do.
   if (!model.geocoded) {
-    return `<div class="detail">
+    const explain = `<div class="detail"${model.boundary ? ' style="margin-bottom:0"' : ''}>
   <h1>Map</h1>
-  <p>Nothing has been placed on the map yet.</p>
+  <p>No address has been placed yet.${
+    model.boundary ? ' The outline below is the town; the pins are what is missing.' : ''
+  }</p>
   <p>Addresses become coordinates in their own stage, because it is the one part of the pipeline that
      asks a service other than the town anything. Run <code>npm run link</code> to group records into
      matters, then <code>npm run geocode</code> to resolve the addresses among them.</p>
 </div>`;
+
+    return model.boundary ? `${explain}\n<div class="mapwrap">${renderMapSvg(model)}</div>` : explain;
   }
 
   const channels = [...new Set(model.points.map((p) => p.channel).filter(Boolean))] as Channel[];
@@ -174,6 +204,14 @@ export function renderMapBody(model: MapModel): string {
 <div class="mapwrap">
   ${renderMapSvg(model)}
   <div class="maplegend">${legend}</div>
+  ${
+    model.boundary
+      ? `<p class="count" style="margin:10px 0 0;font-size:12px">Town outline:
+           ${escapeHtml(model.boundary.source)}${
+             model.boundary.retrieved ? `, retrieved ${escapeHtml(model.boundary.retrieved)}` : ''
+           }. It is a municipal boundary, not a rendering of streets.</p>`
+      : ''
+  }
   <p class="count" style="margin:10px 0 0;font-size:12px">Pins are a geocoder's reading of a street address,
      not a parcel boundary, and the grid is latitude and longitude rather than streets. Use them to see
      whether records cluster, not to identify a lot line.</p>

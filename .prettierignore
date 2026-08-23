@@ -1,3 +1,4 @@
 data/
 fixtures/
 node_modules/
+src/registry/boundaries/

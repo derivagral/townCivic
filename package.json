@@ -19,6 +19,7 @@
     "interpret": "tsx src/cli.ts interpret",
     "geocode": "tsx src/cli.ts geocode",
     "status": "tsx src/cli.ts status",
+    "boundary": "tsx src/cli.ts boundary",
     "verify": "tsx src/cli.ts verify",
     "discover": "tsx src/cli.ts discover",
     "serve": "tsx src/cli.ts serve",
