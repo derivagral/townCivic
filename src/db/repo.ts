@@ -330,8 +330,12 @@ export interface EventQuery {
   sources?: string[];
   bodies?: string[];
   levels?: string[];
+  /** Restrict to the records linked to these matters. */
+  matters?: string[];
   /** Full-text query across title, summary, subjects and agency. */
   q?: string;
+  /** Also match text produced by the interpretation stage, not just the record. */
+  includeDerived?: boolean;
   /** ISO date lower/upper bounds on the sort date. */
   since?: string;
   until?: string;
@@ -382,9 +386,29 @@ function buildWhere(query: EventQuery): { clause: string; params: unknown[] } {
     conds.push(`${SORT_DATE} <= ?`);
     params.push(new Date().toISOString());
   }
+  if (query.matters?.length) {
+    conds.push(
+      `e.id IN (SELECT event_id FROM matter_events WHERE matter_id IN (${query.matters.map(() => '?').join(',')}))`,
+    );
+    params.push(...query.matters);
+  }
   if (query.q?.trim()) {
-    conds.push('e.rowid IN (SELECT rowid FROM events_fts WHERE events_fts MATCH ?)');
-    params.push(toMatchQuery(query.q));
+    const match = toMatchQuery(query.q);
+    if (query.includeDerived) {
+      // Opt-in, and an OR rather than a replacement: the default search stays
+      // over what the town published, and asking for derived text widens it
+      // rather than substituting for it.
+      conds.push(
+        `(e.rowid IN (SELECT rowid FROM events_fts WHERE events_fts MATCH ?)
+          OR e.id IN (SELECT i.event_id FROM interpretations i
+                       WHERE i.rowid IN (SELECT rowid FROM interpretations_fts
+                                          WHERE interpretations_fts MATCH ?)))`,
+      );
+      params.push(match, match);
+    } else {
+      conds.push('e.rowid IN (SELECT rowid FROM events_fts WHERE events_fts MATCH ?)');
+      params.push(match);
+    }
   }
   return { clause: conds.length ? `WHERE ${conds.join(' AND ')}` : '', params };
 }
@@ -472,4 +496,284 @@ export function getEvent(db: Db, id: string): EventRow | undefined {
     )
     .get(id);
   return row as unknown as EventRow | undefined;
+}
+
+/* ------------------------------------------------------------ personal feed */
+
+export interface FeedSubscription {
+  kind: string;
+  value: string;
+}
+
+/**
+ * One reader's feed: the union of everything they follow.
+ *
+ * Different from every other query here, which narrows by ANDing filters
+ * together. A person following the Planning Board *and* 39 Frothingham Street
+ * wants both, not the intersection — so the subscriptions are ORed and the
+ * jurisdiction is the only thing ANDed on top.
+ */
+export function personalFeed(
+  db: Db,
+  subscriptions: FeedSubscription[],
+  options: { jurisdiction?: string; limit?: number; includeAdmin?: boolean } = {},
+): EventRow[] {
+  if (!subscriptions.length) return [];
+
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+
+  for (const subscription of subscriptions) {
+    switch (subscription.kind) {
+      case 'matter':
+        clauses.push('e.id IN (SELECT event_id FROM matter_events WHERE matter_id = ?)');
+        params.push(subscription.value);
+        break;
+      case 'body':
+        clauses.push('e.body = ?');
+        params.push(subscription.value);
+        break;
+      case 'channel':
+        clauses.push('e.channel = ?');
+        params.push(subscription.value);
+        break;
+      case 'search':
+        clauses.push('e.rowid IN (SELECT rowid FROM events_fts WHERE events_fts MATCH ?)');
+        params.push(toMatchQuery(subscription.value));
+        break;
+      default:
+        break;
+    }
+  }
+  if (!clauses.length) return [];
+
+  const conds = [`(${clauses.join(' OR ')})`];
+  if (options.jurisdiction) {
+    conds.push('e.jurisdiction = ?');
+    params.push(options.jurisdiction);
+  }
+  // A reader who explicitly followed the admin channel gets it; nobody else does.
+  if (!options.includeAdmin && !subscriptions.some((s) => s.kind === 'channel' && s.value === 'admin')) {
+    conds.push("e.channel <> 'admin'");
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT e.*, s.label AS source_label
+         FROM events e
+         LEFT JOIN sources s ON s.id = e.source_id
+        WHERE ${conds.join(' AND ')}
+        ORDER BY ${SORT_DATE} DESC, e.title ASC
+        LIMIT ?`,
+    )
+    .all(...(params as never[]), Math.min(options.limit ?? 100, 500));
+  return rows as unknown as EventRow[];
+}
+
+/* ---------------------------------------------------------- interpretations */
+
+export interface InterpretationRow {
+  id: string;
+  event_id: string;
+  kind: string;
+  provider: string;
+  model: string | null;
+  prompt_version: string;
+  doc_hash: string;
+  text: string;
+  data: string;
+  created_at: string;
+}
+
+/** Readings of one record. Empty rows are placeholders for "nothing found". */
+export function interpretationsForEvent(db: Db, eventId: string): InterpretationRow[] {
+  const rows = db
+    .prepare("SELECT * FROM interpretations WHERE event_id = ? AND text <> '' ORDER BY kind")
+    .all(eventId);
+  return rows as unknown as InterpretationRow[];
+}
+
+export function countInterpretations(db: Db): number {
+  const row = db.prepare("SELECT count(*) AS n FROM interpretations WHERE text <> ''").get() as {
+    n: number;
+  };
+  return row.n;
+}
+
+/* ------------------------------------------------------------------ matters */
+
+export interface MatterRow {
+  id: string;
+  jurisdiction: string;
+  kind: string;
+  key: string;
+  label: string;
+  event_count: number;
+  first_at: string | null;
+  last_at: string | null;
+  bodies: string;
+  channels: string;
+  status: string | null;
+  updated_at: string;
+}
+
+/** One record on a matter's timeline: the event, plus where it sits in the story. */
+export interface TimelineRow extends EventRow {
+  stage: string;
+  evidence: string | null;
+}
+
+export interface MatterQuery {
+  jurisdiction?: string;
+  kinds?: string[];
+  /** Only matters carrying at least this many records. 2 = actual timelines. */
+  minEvents?: number;
+  /** Substring match on the label, for the matter search box. */
+  q?: string;
+  /** Only matters touched on or after this ISO date. */
+  since?: string;
+  limit?: number;
+  offset?: number;
+}
+
+function matterWhere(query: MatterQuery): { clause: string; params: unknown[] } {
+  const conds: string[] = [];
+  const params: unknown[] = [];
+
+  if (query.jurisdiction) {
+    conds.push('m.jurisdiction = ?');
+    params.push(query.jurisdiction);
+  }
+  if (query.kinds?.length) {
+    conds.push(`m.kind IN (${query.kinds.map(() => '?').join(',')})`);
+    params.push(...query.kinds);
+  }
+  if (query.minEvents && query.minEvents > 1) {
+    conds.push('m.event_count >= ?');
+    params.push(query.minEvents);
+  }
+  if (query.q?.trim()) {
+    conds.push('lower(m.label) LIKE ?');
+    params.push(`%${query.q.trim().toLowerCase()}%`);
+  }
+  if (query.since) {
+    conds.push('m.last_at >= ?');
+    params.push(query.since);
+  }
+  return { clause: conds.length ? `WHERE ${conds.join(' AND ')}` : '', params };
+}
+
+export function listMatters(db: Db, query: MatterQuery = {}): MatterRow[] {
+  const { clause, params } = matterWhere(query);
+  const rows = db
+    .prepare(
+      `SELECT m.* FROM matters m
+        ${clause}
+        ORDER BY m.event_count DESC, m.last_at DESC, m.label ASC
+        LIMIT ? OFFSET ?`,
+    )
+    .all(...(params as never[]), Math.min(query.limit ?? 100, 500), query.offset ?? 0);
+  return rows as unknown as MatterRow[];
+}
+
+export function countMatters(db: Db, query: MatterQuery = {}): number {
+  const { clause, params } = matterWhere(query);
+  const row = db.prepare(`SELECT count(*) AS n FROM matters m ${clause}`).get(...(params as never[])) as {
+    n: number;
+  };
+  return row.n;
+}
+
+export function getMatter(db: Db, id: string): MatterRow | undefined {
+  return db.prepare('SELECT * FROM matters WHERE id = ?').get(id) as unknown as MatterRow | undefined;
+}
+
+/** A matter's records, oldest first — the timeline reads forwards. */
+export function matterTimeline(db: Db, matterId: string): TimelineRow[] {
+  const rows = db
+    .prepare(
+      `SELECT e.*, s.label AS source_label, me.stage, me.evidence
+         FROM matter_events me
+         JOIN events e ON e.id = me.event_id
+         LEFT JOIN sources s ON s.id = e.source_id
+        WHERE me.matter_id = ?
+        ORDER BY coalesce(e.occurred_at, e.published_at, e.first_seen_at) ASC`,
+    )
+    .all(matterId);
+  return rows as unknown as TimelineRow[];
+}
+
+/** The matters one record belongs to, for the chips on an event page. */
+export function mattersForEvent(db: Db, eventId: string): (MatterRow & { stage: string })[] {
+  const rows = db
+    .prepare(
+      `SELECT m.*, me.stage FROM matter_events me
+         JOIN matters m ON m.id = me.matter_id
+        WHERE me.event_id = ?
+        ORDER BY m.event_count DESC, m.label ASC`,
+    )
+    .all(eventId);
+  return rows as unknown as (MatterRow & { stage: string })[];
+}
+
+export interface PlacedMatterRow extends MatterRow {
+  lat: number;
+  lon: number;
+  matched: string | null;
+}
+
+/** Address matters that resolved to a point, with the channel to colour them by. */
+export function listPlacedMatters(
+  db: Db,
+  jurisdiction?: string,
+): (PlacedMatterRow & { channel: string | null })[] {
+  const rows = db
+    .prepare(
+      `SELECT m.*, p.lat, p.lon, p.matched,
+              (SELECT value FROM json_each(m.channels) LIMIT 1) AS channel
+         FROM matters m
+         JOIN places p ON p.matter_id = m.id
+        WHERE p.lat IS NOT NULL${jurisdiction ? ' AND m.jurisdiction = ?' : ''}
+        ORDER BY m.event_count DESC`,
+    )
+    .all(...((jurisdiction ? [jurisdiction] : []) as never[]));
+  return rows as unknown as (PlacedMatterRow & { channel: string | null })[];
+}
+
+/** Address matters with no usable point — either not tried, or tried and failed. */
+export function listUnplacedMatters(
+  db: Db,
+  jurisdiction?: string,
+): { id: string; label: string; failure: string | null }[] {
+  const rows = db
+    .prepare(
+      `SELECT m.id, m.label, p.failure
+         FROM matters m
+         LEFT JOIN places p ON p.matter_id = m.id
+        WHERE m.kind = 'address' AND (p.matter_id IS NULL OR p.lat IS NULL)
+          ${jurisdiction ? 'AND m.jurisdiction = ?' : ''}
+        ORDER BY m.event_count DESC, m.label ASC`,
+    )
+    .all(...((jurisdiction ? [jurisdiction] : []) as never[]));
+  return rows as unknown as { id: string; label: string; failure: string | null }[];
+}
+
+export function getPlace(
+  db: Db,
+  matterId: string,
+): { lat: number; lon: number; matched: string | null } | undefined {
+  const row = db
+    .prepare('SELECT lat, lon, matched FROM places WHERE matter_id = ? AND lat IS NOT NULL')
+    .get(matterId);
+  return row as unknown as { lat: number; lon: number; matched: string | null } | undefined;
+}
+
+export function matterKindCounts(db: Db, query: MatterQuery = {}): { value: string; n: number }[] {
+  const scoped = { ...query };
+  delete scoped.kinds;
+  const { clause, params } = matterWhere(scoped);
+  const rows = db
+    .prepare(`SELECT m.kind AS value, count(*) AS n FROM matters m ${clause} GROUP BY m.kind ORDER BY n DESC`)
+    .all(...(params as never[]));
+  return rows as unknown as { value: string; n: number }[];
 }

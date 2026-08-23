@@ -2,7 +2,7 @@
   "name": "towncivic",
   "version": "0.1.0",
   "private": true,
-  "description": "RSS for the jurisdiction — a primary-source event feed for a single Massachusetts town.",
+  "description": "RSS for the jurisdiction \u2014 a primary-source event feed for a single Massachusetts town.",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
@@ -15,6 +15,10 @@
     "seed": "tsx src/cli.ts seed",
     "ingest": "tsx src/cli.ts ingest",
     "extract": "tsx src/cli.ts extract",
+    "link": "tsx src/cli.ts link",
+    "interpret": "tsx src/cli.ts interpret",
+    "geocode": "tsx src/cli.ts geocode",
+    "status": "tsx src/cli.ts status",
     "verify": "tsx src/cli.ts verify",
     "discover": "tsx src/cli.ts discover",
     "serve": "tsx src/cli.ts serve",

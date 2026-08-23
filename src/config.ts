@@ -28,4 +28,9 @@ export const config = {
   perHostDelayMs: Number(process.env.TOWNCIVIC_HOST_DELAY_MS ?? 1_000),
   maxRetries: Number(process.env.TOWNCIVIC_MAX_RETRIES ?? 3),
   defaultJurisdiction: process.env.TOWNCIVIC_JURISDICTION ?? 'milton-ma',
+  /**
+   * Mark the session cookie `Secure`. Off by default so `npm run serve` on
+   * localhost works; turn it on for anything served over HTTPS.
+   */
+  secureCookies: process.env.TOWNCIVIC_SECURE_COOKIES === '1',
 } as const;

@@ -7,8 +7,12 @@ import { getDb, closeDb } from './db/index.ts';
 import { syncSources, loadSources, listJurisdictions } from './registry/index.ts';
 import { ingest } from './pipeline/ingest.ts';
 import { extractDocuments } from './pipeline/extract.ts';
+import { linkMatters } from './pipeline/link.ts';
+import { geocodeMatters } from './pipeline/geocode.ts';
+import { PROVIDERS, interpretDocuments, isProvider } from './pipeline/interpret.ts';
 import { verify } from './commands/verify.ts';
 import { discover, toRegistrySnippet } from './commands/discover.ts';
+import { status } from './commands/status.ts';
 import { seed, clearSampleData, hasSampleData } from './commands/seed.ts';
 import { createApp } from './web/server.ts';
 import { countEvents, queryEvents } from './db/repo.ts';
@@ -21,7 +25,11 @@ Commands
   seed                 Load synthetic development fixtures so the UI has data
   ingest               Fetch every enabled source and normalize what changed
   extract              Open the linked PDFs and read agendas, locations and subjects
+  link                 Group records about the same property or article into timelines
+  interpret            Read votes and dispositions out of minutes, into a separate index
+  geocode              Resolve linked addresses to coordinates for the map
   verify               Check every registered URL against the live site
+  status               Report pipeline counts, source health and staleness (exit 1 on a problem)
   discover             Probe the CivicPlus site for boards and feeds not yet registered
   serve                Run the web UI and the Atom / JSON feeds
   sources              Print the source registry
@@ -39,6 +47,7 @@ Options
   --port <n>           Port for serve (default: ${config.port})
   --limit <n>          Row limit for events / documents to extract
   --since <date>       Only extract records dated on or after this ISO date
+  --provider <name>    Interpreter for \`interpret\`: ${PROVIDERS.join(' | ')} (default: rules)
 
 Examples
   npm run seed && npm run serve
@@ -58,6 +67,7 @@ const { values, positionals } = parseArgs({
     port: { type: 'string' },
     limit: { type: 'string' },
     since: { type: 'string' },
+    provider: { type: 'string' },
     help: { type: 'boolean', default: false },
   },
 });
@@ -162,6 +172,103 @@ async function main(): Promise<number> {
       return failed === reports.length && reports.length > 0 ? 1 : 0;
     }
 
+    case 'link': {
+      const db = getDb();
+      const summary = linkMatters(db, { jurisdiction });
+      if (values.json) {
+        console.log(JSON.stringify(summary, null, 2));
+        return 0;
+      }
+      // Only the multi-record ones are worth printing — a matter with one
+      // record is a subject, not a story.
+      for (const report of summary.reports.filter((r) => r.events > 1).slice(0, 25)) {
+        console.log(
+          `  ${String(report.events).padStart(3)} records  ${report.label.slice(0, 44).padEnd(44)} ` +
+            dim(`${report.kind}  ${report.status ?? ''}`),
+        );
+      }
+      console.log(
+        `\n${summary.eventsConsidered} records → ${summary.matters} matters, ${summary.links} links.`,
+      );
+      console.log(dim(`${summary.timelines} carry more than one record.`));
+      return 0;
+    }
+
+    case 'interpret': {
+      const db = getDb();
+      const provider = values.provider ?? 'rules';
+      if (!isProvider(provider)) {
+        console.error(`Unknown provider "${provider}". Known: ${PROVIDERS.join(', ')}`);
+        return 1;
+      }
+
+      let found = 0;
+      const reports = await interpretDocuments(db, {
+        jurisdiction,
+        provider,
+        ...(values.force ? { force: true } : {}),
+        ...(values.limit ? { limit: Number(values.limit) } : {}),
+        ...(values.since ? { since: values.since } : {}),
+        onProgress(report) {
+          found += report.found;
+          if (values.json || report.skipped === 'unchanged') return;
+          console.log(
+            `${check(report.ok)}  ${report.title.slice(0, 52).padEnd(52)} ` +
+              (report.ok
+                ? report.found
+                  ? `${report.found} reading${report.found === 1 ? '' : 's'}`
+                  : dim('nothing recorded')
+                : `[31m${report.error ?? 'failed'}[0m`),
+          );
+        },
+      });
+
+      if (values.json) {
+        console.log(JSON.stringify(reports, null, 2));
+        return 0;
+      }
+      const skipped = reports.filter((r) => r.skipped === 'unchanged').length;
+      const failed = reports.filter((r) => !r.ok).length;
+      console.log(
+        `\n${reports.length} documents read by \`${provider}\`: ${found} reading${found === 1 ? '' : 's'}, ${failed} failed` +
+          (skipped ? `, ${skipped} already current` : '') +
+          '.',
+      );
+      console.log(
+        dim('Readings are derived, not the record. They are stored and shown separately, and searched'),
+      );
+      console.log(dim('only when a reader asks for them.'));
+      return failed === reports.length && reports.length > 0 ? 1 : 0;
+    }
+
+    case 'geocode': {
+      const db = getDb();
+      const reports = await geocodeMatters(db, {
+        jurisdiction,
+        ...(values.force ? { force: true } : {}),
+        ...(values.limit ? { limit: Number(values.limit) } : {}),
+        onProgress(report) {
+          if (values.json) return;
+          console.log(
+            `${check(report.ok)}  ${report.label.slice(0, 40).padEnd(40)} ` +
+              (report.ok
+                ? `${report.lat!.toFixed(5)}, ${report.lon!.toFixed(5)}  ${dim(report.matched ?? '')}`
+                : `[33m${report.error ?? 'no match'}[0m`),
+          );
+        },
+      });
+      if (values.json) {
+        console.log(JSON.stringify(reports, null, 2));
+        return 0;
+      }
+      const placed = reports.filter((r) => r.ok).length;
+      console.log(`\n${placed} of ${reports.length} addresses placed.`);
+      if (placed < reports.length) {
+        console.log(dim('Unplaced addresses are listed on /map rather than dropped.'));
+      }
+      return 0;
+    }
+
     case 'verify': {
       const db = getDb();
       const results = await verify(db, {
@@ -236,6 +343,48 @@ async function main(): Promise<number> {
       for (const error of report.errors) console.error(`\n[31m${error}[0m`);
       console.log(`\n${toRegistrySnippet(report.categories)}`);
       return report.errors.length ? 1 : 0;
+    }
+
+    case 'status': {
+      const db = getDb();
+      const report = status(db, jurisdiction);
+      if (values.json) {
+        console.log(JSON.stringify(report, null, 2));
+        // Non-zero on a problem, so a cron job or a monitor can just check
+        // the exit code without parsing anything.
+        return report.ok ? 0 : 1;
+      }
+
+      console.log(
+        `${report.events} records · ${report.matters} matters · ` +
+          `${report.placed.resolved}/${report.placed.total} addresses placed · ` +
+          `${report.interpretations} derived reading${report.interpretations === 1 ? '' : 's'}`,
+      );
+      console.log(
+        dim(`${report.documentsExtracted} documents read, ${report.documentsPending} pending extraction\n`),
+      );
+
+      for (const source of report.sources) {
+        const state = !source.enabled
+          ? dim('off       ')
+          : source.lastError || (source.lastStatus ?? 0) >= 400
+            ? '[31mFAIL      [0m'
+            : source.stale
+              ? `[33mstale ${String(source.staleDays).padStart(3)}d[0m`
+              : '[32mok        [0m';
+        console.log(
+          `  ${state} ${source.sourceId.padEnd(40)} ${String(source.events).padStart(4)} records  ` +
+            dim(source.lastFetchAt ? `last fetch ${source.lastFetchAt.slice(0, 10)}` : 'never fetched'),
+        );
+      }
+
+      if (report.problems.length) {
+        console.log(`\n[33m${report.problems.length} thing(s) to look at:[0m`);
+        for (const problem of report.problems) console.log(`  ${problem}`);
+      } else {
+        console.log(`\n[32mNothing to look at.[0m`);
+      }
+      return report.ok ? 0 : 1;
     }
 
     case 'sources': {

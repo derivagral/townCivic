@@ -59,6 +59,15 @@ jobs:
       - name: Seed fixtures
         run: npm run seed
 
+      # The derived stages run over the seeded fixtures, so the smoke test
+      # covers the timeline and search paths rather than only the empty states.
+      # Both are offline: `link` and `interpret --provider rules` read the
+      # database and nothing else.
+      - name: Link and interpret
+        run: |
+          npm run link
+          npm run interpret
+
       - name: Serve and check routes
         run: |
           npm run serve -- --port 8787 &
@@ -69,7 +78,18 @@ jobs:
           set -e
           curl -fsS http://localhost:8787/healthz > /dev/null
           curl -fsS "http://localhost:8787/?channel=land-use" > /dev/null
+          curl -fsS "http://localhost:8787/?q=Pleasant&derived=1" > /dev/null
           curl -fsS http://localhost:8787/sources > /dev/null
+          curl -fsS http://localhost:8787/map > /dev/null
+          curl -fsS http://localhost:8787/login > /dev/null
+
+          # A matter page, found the way a reader would find one, so a broken
+          # link between the index and the timeline fails the build.
+          curl -fsS http://localhost:8787/matters -o /tmp/matters.html
+          MATTER=$(grep -o '/matter/[a-f0-9]\{32\}' /tmp/matters.html | head -1)
+          test -n "$MATTER" || { echo "no matters were linked"; exit 1; }
+          curl -fsS "http://localhost:8787$MATTER" > /dev/null
+
           curl -fsS http://localhost:8787/feeds/all.atom | head -c 200
           echo
           echo "routes OK"
