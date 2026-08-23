@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SYNTHETIC FIXTURE — shape of a CivicPlus News Flash RSS feed. Not real notices. -->
+<rss version="2.0">
+  <channel>
+    <title>News Flash &#8226; Milton, MA</title>
+    <link>https://www.miltonma.gov/CivicAlerts.aspx</link>
+    <description>Town of Milton news and announcements</description>
+    <item>
+      <title>Blue Hill Avenue water main work — road closure August 24-28</title>
+      <link>https://www.miltonma.gov/CivicAlerts.aspx?AID=1482</link>
+      <description>&lt;p&gt;The Department of Public Works will close Blue Hill Avenue between Canton Avenue and Reedsdale Road for water main replacement. A detour will be posted.&lt;/p&gt;</description>
+      <pubDate>Wed, 19 Aug 2026 13:20:00 GMT</pubDate>
+      <guid>https://www.miltonma.gov/CivicAlerts.aspx?AID=1482</guid>
+    </item>
+    <item>
+      <title>Fall Town Meeting warrant opens for articles</title>
+      <link>https://www.miltonma.gov/CivicAlerts.aspx?AID=1479</link>
+      <description>&lt;p&gt;The warrant for Fall Town Meeting is open. Citizen petition articles must be filed with the Town Clerk by September 11, 2026.&lt;/p&gt;</description>
+      <pubDate>Mon, 17 Aug 2026 15:00:00 GMT</pubDate>
+      <guid>https://www.miltonma.gov/CivicAlerts.aspx?AID=1479</guid>
+    </item>
+    <item>
+      <title>Town receives state grant for library roof replacement</title>
+      <link>https://www.miltonma.gov/CivicAlerts.aspx?AID=1471</link>
+      <description>&lt;p&gt;Milton has been awarded a grant of $412,000 toward replacement of the Milton Public Library roof.&lt;/p&gt;</description>
+      <pubDate>Thu, 06 Aug 2026 18:45:00 GMT</pubDate>
+      <guid>https://www.miltonma.gov/CivicAlerts.aspx?AID=1471</guid>
+    </item>
+    <item>
+      <title>Voter registration deadline ahead of the September election</title>
+      <link>https://www.miltonma.gov/CivicAlerts.aspx?AID=1466</link>
+      <description>&lt;p&gt;The last day to register to vote in the September 15 state primary is September 5. The Town Clerk's office will hold extended hours.&lt;/p&gt;</description>
+      <pubDate>Fri, 31 Jul 2026 12:00:00 GMT</pubDate>
+      <guid>https://www.miltonma.gov/CivicAlerts.aspx?AID=1466</guid>
+    </item>
+  </channel>
+</rss>

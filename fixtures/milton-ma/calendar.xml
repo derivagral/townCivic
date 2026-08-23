@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SYNTHETIC FIXTURE — shape of a CivicPlus Calendar RSS feed (posted meeting notices). Not real notices. -->
+<rss version="2.0">
+  <channel>
+    <title>Calendar &#8226; Milton, MA</title>
+    <link>https://www.miltonma.gov/Calendar.aspx</link>
+    <description>Posted meeting notices for the Town of Milton</description>
+    <item>
+      <title>Zoning Board of Appeals — public hearing</title>
+      <link>https://www.miltonma.gov/Calendar.aspx?EID=3921</link>
+      <description>September 14, 2026, 7:00 PM, Milton Town Hall. Public hearing on a variance sought to reduce the rear setback from 20 feet to 11 feet for an addition at 271 Pleasant Street.</description>
+      <pubDate>Fri, 21 Aug 2026 09:00:00 GMT</pubDate>
+      <guid>https://www.miltonma.gov/Calendar.aspx?EID=3921</guid>
+    </item>
+    <item>
+      <title>Planning Board — regular meeting</title>
+      <link>https://www.miltonma.gov/Calendar.aspx?EID=3915</link>
+      <description>August 26, 2026, 7:00 PM. Site plan review for 14 Adams Street, proposed conversion from retail to 18 apartments.</description>
+      <pubDate>Wed, 19 Aug 2026 09:00:00 GMT</pubDate>
+      <guid>https://www.miltonma.gov/Calendar.aspx?EID=3915</guid>
+    </item>
+    <item>
+      <title>Conservation Commission — notice of intent hearing</title>
+      <link>https://www.miltonma.gov/Calendar.aspx?EID=3908</link>
+      <description>August 20, 2026, 7:00 PM. Notice of intent for work within 100 feet of a wetland at 40 Brush Hill Road.</description>
+      <pubDate>Thu, 13 Aug 2026 09:00:00 GMT</pubDate>
+      <guid>https://www.miltonma.gov/Calendar.aspx?EID=3908</guid>
+    </item>
+    <item>
+      <title>Select Board — regular meeting</title>
+      <link>https://www.miltonma.gov/Calendar.aspx?EID=3902</link>
+      <description>September 1, 2026, 6:30 PM, Carol Blute Conference Room. Article 14 short-term rental by-law discussion.</description>
+      <pubDate>Mon, 18 Aug 2026 09:00:00 GMT</pubDate>
+      <guid>https://www.miltonma.gov/Calendar.aspx?EID=3902</guid>
+    </item>
+    <item>
+      <title>Warrant Committee — FY27 capital plan</title>
+      <link>https://www.miltonma.gov/Calendar.aspx?EID=3890</link>
+      <description>September 8, 2026, 7:30 PM. Review of the FY27 capital plan and a proposed debt exclusion.</description>
+      <pubDate>Wed, 12 Aug 2026 09:00:00 GMT</pubDate>
+      <guid>https://www.miltonma.gov/Calendar.aspx?EID=3890</guid>
+    </item>
+  </channel>
+</rss>

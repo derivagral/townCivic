@@ -141,3 +141,6 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# townCivic runtime data — derived, rebuildable with `npm run ingest`
+/data/
