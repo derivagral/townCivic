@@ -42,7 +42,7 @@ npm run serve
 ```
 
 Seeded records are tagged `sample` and the UI shows a standing banner while any
-are present. `npx tsx src/cli.ts clear-samples` removes them.
+are present. `npm run clear-samples` removes them.
 
 **Requires Node ≥ 22.5** (for `node:sqlite`).
 
