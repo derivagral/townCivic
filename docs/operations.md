@@ -13,16 +13,14 @@ interpret  read votes and dispositions out of the prose in minutes
 geocode    resolve linked addresses to coordinates for the map
 ```
 
+They run in that order because each depends on what the one before it wrote.
+Only `ingest`, `extract` and `geocode` touch the network; `link` and `interpret`
+(with the default provider) are pure functions of the database.
+
 `boundary` sits outside this cycle. It refetches the town outline from MassGIS
 and is a maintenance command like `discover` — run it by hand, read the diff,
 commit it. Nothing in the running system calls it, and the outline it writes is
 what `geocode` fences against.
-
-````
-
-They run in that order because each depends on what the one before it wrote.
-Only `ingest`, `extract` and `geocode` touch the network; `link` and `interpret`
-(with the default provider) are pure functions of the database.
 
 `status` reports what came out of it and exits non-zero on a problem, which is
 the whole monitoring story:
@@ -30,7 +28,7 @@ the whole monitoring story:
 ```bash
 npm run status          # human-readable
 npm run status -- --json | jq .problems
-````
+```
 
 ## The two pieces of state
 
