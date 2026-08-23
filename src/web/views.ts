@@ -85,7 +85,7 @@ export function layout(options: LayoutOptions): string {
   const banner = options.sampleData
     ? `<div class="banner"><strong>Sample data.</strong> Some entries below were loaded from synthetic fixtures for development
        and are <strong>not</strong> records of anything the town actually did. Run <code>npm run ingest</code> against the live
-       site, then <code>npx tsx src/cli.ts clear-samples</code>, to work with real records.</div>`
+       site, then <code>npm run clear-samples</code>, to work with real records.</div>`
     : '';
 
   return `<!doctype html>
