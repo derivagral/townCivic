@@ -101,6 +101,7 @@ npx tsx src/cli.ts <command>
 | `interpret`          | Read votes and dispositions out of the prose in minutes                      |
 | `geocode`            | Resolve linked addresses to coordinates for the map                          |
 | `status`             | Pipeline counts and source health; exits non-zero on a problem               |
+| `boundary`           | Refetch the town outline from MassGIS (maintenance — commit the result)      |
 | `verify`             | Check every registered URL against the live site                             |
 | `discover`           | Probe the CivicPlus site for boards and feeds not yet registered             |
 | `serve`              | Web UI plus Atom and JSON feeds                                              |
@@ -381,19 +382,55 @@ asks anything of a service other than the town.
 |           |                                                                                                             |
 | --------- | ----------------------------------------------------------------------------------------------------------- |
 | Geocoder  | [US Census Bureau](https://geocoding.geo.census.gov/) — public, free, **no API key**, results public domain |
+| Outline   | MassGIS Census 2020 Towns — the state's own GIS, no key, committed to the repo                              |
 | Caching   | Permanent. A street address does not move, and a definite miss is cached too                                |
 | Rendering | Server-rendered SVG. No tiles, no JavaScript, no external requests                                          |
 | Failures  | Named on the page, not dropped — an address missing from a map is a gap in it                               |
 
-Two things it deliberately does not do. It does not draw a street basemap: a
-borrowed one would imply a precision the geocoding does not have, since a pin is
-a guess at a street address rather than a parcel. And it fences results to a
-bounding box around Milton — there is a Milton in Vermont, New Hampshire and
-Florida, and a confident answer in the wrong one is worse than no answer.
+### The town outline earns its place twice
 
-The honest upgrade is MassGIS, which publishes the statewide parcel layer. That
-would resolve a land-use record to the **parcel** it is actually about. This is
-the version that works without downloading a shapefile.
+The map draws Milton's actual shape, from
+[MassGIS](https://arcgisserver.digital.mass.gov/arcgisserver/rest/services/AGOL/Census2020_Towns/FeatureServer/2).
+That makes the pins legible — a property means far more against the shape of the
+town than against an empty rectangle — but the bigger win is invisible.
+
+`geocode` used to fence results against a **hand-written bounding box**. That
+box accepted **5.6× the town's real area**: it reached 3.6 km north into
+Mattapan and 3.4 km east into Quincy, so a street continuing over the town line
+could resolve to a house in Boston and be recorded as Milton. Even a perfectly
+tight rectangle would be twice too big — Milton fills only **49% of its own
+bounding box**. A polygon does not have that problem, and the fence is now
+point-in-polygon.
+
+The tests use the Census's own `INTPTLAT20`/`INTPTLON20` internal points as
+anchors — coordinates the source guarantees fall inside each town — so
+"Quincy is not Milton" is checked against ground truth rather than against a
+coordinate someone eyeballed off a map.
+
+```bash
+npm run boundary              # refetch from MassGIS; commit the diff
+npm run boundary -- --dry-run # report what would change
+```
+
+The boundary is **committed, not fetched at runtime**: 18 KB, changes about as
+often as the town's borders do, and a map that needs the network to draw its own
+frame breaks offline. It is regenerable — the command above writes exactly the
+committed bytes, so a no-op run reports `unchanged`.
+
+Every ring the source publishes is kept, including an 18 m² Census sliver, because
+an area threshold that dropped it would also drop a real island in some other town.
+
+### What it deliberately does not do
+
+**No street basemap.** Tiles are a real option — MassGIS serves them, and
+covering Milton z12–z16 is about 1,377 tiles — but they are deferred: a borrowed
+street rendering implies a precision the geocoding does not have, and 25 MB of
+cached raster per town is the wrong thing to add before a second town exists.
+The outline gives most of the legibility for 18 KB and no runtime dependency.
+
+**No parcels.** A pin is a geocoder's reading of a street address, not a lot
+line. MassGIS also publishes the statewide parcel layer, which is what a
+land-use record is actually about; that is the next honest step.
 
 ## Derived readings
 
@@ -524,9 +561,12 @@ AG decides within 90`. The AG Municipal Law Unit source is registered and
   that works without signing in.
 - **Accounts that could face the internet.** See [Accounts](#accounts) for the
   list — email verification, password reset, rate limiting, recovery.
-- **Parcels rather than points.** The map geocodes to a street address. MassGIS
-  publishes the statewide parcel layer, which is what a land-use record is
-  actually about.
+- **Parcels rather than points.** The map geocodes to a street address and draws
+  the town outline. MassGIS also publishes the statewide parcel layer, which is
+  what a land-use record is actually about.
+- **A street basemap.** Deferred rather than rejected — see [Map](#map). The
+  cost is ~25 MB of cached tiles per town, which is the wrong thing to take on
+  before a second town exists.
 - **Courts.** Registered as a channel, no sources. It needs an aggressive
   inclusion filter — the town as a party, a local official sued in official
   capacity, a challenge to a local decision — so it stays _the town's legal
@@ -536,8 +576,9 @@ AG decides within 90`. The AG Municipal Law Unit source is registered and
   matters it will be visible.
 - **A second town.** Per-jurisdiction classification still lives in the Milton
   registry module and is imported directly by `src/pipeline/normalize.ts`. The
-  matter keys and the map's bounding box are now in the same position. That
-  import is the one thing that should move behind an interface first.
+  matter keys are in the same position. The map is no longer among them: a new
+  town needs a row in `BOUNDARY_SOURCES` and one `boundary` run, because MassGIS
+  publishes all 351 Massachusetts municipalities in a single layer.
 
 ## Continuous integration
 

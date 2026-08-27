@@ -62,6 +62,7 @@ import {
 } from './views.ts';
 import type { Filters, NoticeView } from './views.ts';
 import { renderMapBody } from './map.ts';
+import { loadBoundary } from '../geo/boundary.ts';
 import { feedTitle, renderAtom, renderJsonFeed } from './feeds.ts';
 
 const PAGE_SIZE = 60;
@@ -129,6 +130,9 @@ export function createApp(db: Db, options: AppOptions = {}) {
   const baseUrl = options.baseUrl ?? config.baseUrl;
   const label = labelFor(jurisdiction);
   const secureCookies = options.secureCookies ?? config.secureCookies;
+  // Read once at startup: it is a committed file that only changes when the
+  // town's borders do, and re-reading it per request would be silly.
+  const townBoundary = loadBoundary(jurisdiction);
 
   /**
    * Keep the selected value visible even when it falls outside the top slice,
@@ -316,6 +320,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
       unplaced: unplaced.map((row) => ({ matterId: row.id, label: row.label, reason: row.failure })),
       totalAddresses: placed.length + unplaced.length,
       geocoded: placed.length > 0,
+      boundary: townBoundary,
       ...(highlight ? { highlight } : {}),
     });
 

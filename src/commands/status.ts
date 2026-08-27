@@ -1,4 +1,5 @@
 import type { Db } from '../db/index.ts';
+import { loadBoundary } from '../geo/boundary.ts';
 
 /**
  * What an operator needs to know at a glance, and what a monitor needs to alarm on.
@@ -36,6 +37,12 @@ export interface StatusReport {
   interpretations: number;
   documentsExtracted: number;
   documentsPending: number;
+  /**
+   * Whether this town's outline is committed. Without it `geocode` falls back
+   * to a rectangle, which accepts addresses in neighbouring towns — worth
+   * knowing before trusting the map.
+   */
+  boundary: { present: boolean; points: number; retrieved: string } | null;
   sources: SourceStatus[];
   /** Anything an operator should look at. Empty means healthy. */
   problems: string[];
@@ -120,6 +127,14 @@ export function status(db: Db, jurisdiction: string, now = new Date()): StatusRe
     }
   }
 
+  const outline = loadBoundary(jurisdiction);
+  if (!outline) {
+    problems.push(
+      `${jurisdiction}: no town outline committed — geocoding falls back to a bounding box that ` +
+        'accepts neighbouring towns. Run `npm run boundary`.',
+    );
+  }
+
   const addressMatters = scalar(
     db,
     "SELECT count(*) AS n FROM matters WHERE kind='address' AND jurisdiction=?",
@@ -150,6 +165,13 @@ export function status(db: Db, jurisdiction: string, now = new Date()): StatusRe
         WHERE jurisdiction = ? AND document_url IS NOT NULL AND extracted_at IS NULL`,
       jurisdiction,
     ),
+    boundary: outline
+      ? {
+          present: true,
+          points: outline.polygons.reduce((n, poly) => n + poly.reduce((m, ring) => m + ring.length, 0), 0),
+          retrieved: outline.retrieved,
+        }
+      : null,
     sources,
     problems,
     ok: problems.length === 0,

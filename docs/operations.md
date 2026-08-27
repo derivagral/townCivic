@@ -17,6 +17,11 @@ They run in that order because each depends on what the one before it wrote.
 Only `ingest`, `extract` and `geocode` touch the network; `link` and `interpret`
 (with the default provider) are pure functions of the database.
 
+`boundary` sits outside this cycle. It refetches the town outline from MassGIS
+and is a maintenance command like `discover` — run it by hand, read the diff,
+commit it. Nothing in the running system calls it, and the outline it writes is
+what `geocode` fences against.
+
 `status` reports what came out of it and exits non-zero on a problem, which is
 the whole monitoring story:
 
@@ -113,7 +118,7 @@ If you fork this for another town, keep them.
 ## Cost
 
 Everything in the default path is free and needs no account: the town's own
-website, the US Census geocoder, and `node:sqlite`. The only metered thing is
+website, the US Census geocoder, MassGIS, and `node:sqlite`. The only metered thing is
 `interpret --provider anthropic`, which is off unless both a key and the SDK are
 present. The `rules` provider is the default precisely so the pipeline has no
 floor cost.

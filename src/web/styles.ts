@@ -248,6 +248,10 @@ form.inline button, .detail .actions button {
 .mapwrap svg .pin:hover circle { stroke: var(--ink); }
 .mapwrap svg .frame { fill: var(--bg); stroke: var(--line); }
 .mapwrap svg .grid { stroke: var(--line); stroke-width: 0.5; opacity: 0.55; }
+.mapwrap svg .townline {
+  fill: var(--accent-soft); fill-opacity: 0.55;
+  stroke: var(--accent); stroke-width: 1.5; stroke-linejoin: round;
+}
 .maplegend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 12px; font-size: 12.5px; color: var(--muted); }
 .maplegend span { display: flex; align-items: center; gap: 5px; }
 .maplegend i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }

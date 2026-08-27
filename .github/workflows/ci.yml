@@ -80,7 +80,10 @@ jobs:
           curl -fsS "http://localhost:8787/?channel=land-use" > /dev/null
           curl -fsS "http://localhost:8787/?q=Pleasant&derived=1" > /dev/null
           curl -fsS http://localhost:8787/sources > /dev/null
-          curl -fsS http://localhost:8787/map > /dev/null
+          # The town outline is committed, so it must draw with no geocoding and
+          # no network. A blank map here means the boundary failed to load.
+          curl -fsS http://localhost:8787/map -o /tmp/map.html
+          grep -q 'class="townline"' /tmp/map.html || { echo "no town outline on /map"; exit 1; }
           curl -fsS http://localhost:8787/login > /dev/null
 
           # A matter page, found the way a reader would find one, so a broken
