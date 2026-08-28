@@ -141,3 +141,22 @@ export function scaleBar(viewport: Viewport, maxPixels: number): { metres: numbe
   const metres = fitting.at(-1) ?? candidates[0]!;
   return { metres, pixels: metres / metresPerPixel };
 }
+
+/**
+ * Great-circle distance in metres.
+ *
+ * The one place in townCivic where a real distance matters rather than a
+ * projection: "zoning within half a mile of home" is a promise, and a rule that
+ * fires on a bounding box instead of a radius quietly makes it a different
+ * promise in the corners.
+ */
+export function distanceMeters(a: LatLon, b: LatLon): number {
+  const R = 6_371_000;
+  const toRad = (degrees: number) => (degrees * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}

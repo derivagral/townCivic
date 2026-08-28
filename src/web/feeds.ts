@@ -12,6 +12,14 @@ export interface FeedOptions {
   htmlUrl: string;
   baseUrl: string;
   updated: string | null;
+  /**
+   * Per-record explanations, keyed by event id.
+   *
+   * A ranked or rule-matched feed has to carry its reason into the reader's
+   * feed reader, not just onto the web page — otherwise the one place a curated
+   * record is least explicable is the place most people will actually read it.
+   */
+  notes?: Map<string, string>;
 }
 
 /** Stable, opaque, non-URL entry identity — the point of a tag/urn id. */
@@ -23,10 +31,11 @@ function entryDate(row: EventRow): string {
   return row.occurred_at ?? row.published_at ?? row.first_seen_at;
 }
 
-function summaryText(row: EventRow): string {
+function summaryText(row: EventRow, note?: string): string {
   const parts = [row.summary ?? ''];
   const kind = EVENT_TYPE_LABELS[row.event_type as keyof typeof EVENT_TYPE_LABELS] ?? row.event_type;
   parts.push(`${kind} · ${row.body ?? row.agency}`);
+  if (note) parts.push(note);
   return parts.filter(Boolean).join(' — ');
 }
 
@@ -48,7 +57,7 @@ export function renderAtom(rows: EventRow[], options: FeedOptions): string {
     <published>${escapeHtml(entryDate(row))}</published>
     <author><name>${escapeHtml(row.agency)}</name></author>
 ${categories}
-    <summary type="text">${escapeHtml(summaryText(row))}</summary>
+    <summary type="text">${escapeHtml(summaryText(row, options.notes?.get(row.id)))}</summary>
   </entry>`;
     })
     .join('\n');
@@ -80,7 +89,7 @@ export function renderJsonFeed(rows: EventRow[], options: FeedOptions): string {
         url: row.url,
         external_url: row.document_url ?? undefined,
         title: row.title,
-        summary: summaryText(row),
+        summary: summaryText(row, options.notes?.get(row.id)),
         content_text: row.summary ?? row.title,
         date_published: entryDate(row),
         date_modified: row.last_seen_at,

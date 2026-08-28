@@ -35,6 +35,12 @@ export interface StatusReport {
   /** Address matters resolved to a point, over address matters in total. */
   placed: { resolved: number; total: number };
   interpretations: number;
+  /**
+   * How many records have had their civic impacts extracted, over how many
+   * exist. This is the coverage whose absence is invisible: nothing errors, the
+   * record stays complete, and For You quietly ranks against a stale reading.
+   */
+  impacts: { events: number; rows: number };
   documentsExtracted: number;
   documentsPending: number;
   /**
@@ -135,6 +141,26 @@ export function status(db: Db, jurisdiction: string, now = new Date()): StatusRe
     );
   }
 
+  const impactedEvents = scalar(
+    db,
+    `SELECT count(DISTINCT i.event_id) AS n FROM event_impacts i
+       JOIN events e ON e.id = i.event_id WHERE e.jurisdiction = ?`,
+    jurisdiction,
+  );
+  const eventCount = scalar(db, 'SELECT count(*) AS n FROM events WHERE jurisdiction = ?', jurisdiction);
+
+  // Never having run the stage is not a problem — it is optional, the same way
+  // `interpret` is, and a database that has never been asked for impacts is an
+  // install that has not opted in rather than one that is broken. Having run it
+  // and drifted is different: that is a stage that silently stopped keeping up,
+  // and For You is now ranking this week against last week's reading.
+  if (impactedEvents > 0 && impactedEvents * 2 < eventCount) {
+    problems.push(
+      `${jurisdiction}: civic impacts cover ${impactedEvents} of ${eventCount} records — ` +
+        'For You is ranking against an incomplete reading. Run `npm run impacts`.',
+    );
+  }
+
   const addressMatters = scalar(
     db,
     "SELECT count(*) AS n FROM matters WHERE kind='address' AND jurisdiction=?",
@@ -150,10 +176,19 @@ export function status(db: Db, jurisdiction: string, now = new Date()): StatusRe
   return {
     jurisdiction,
     generatedAt: now.toISOString(),
-    events: scalar(db, 'SELECT count(*) AS n FROM events WHERE jurisdiction = ?', jurisdiction),
+    events: eventCount,
     matters: scalar(db, 'SELECT count(*) AS n FROM matters WHERE jurisdiction = ?', jurisdiction),
     placed: { resolved: placed, total: addressMatters },
     interpretations: scalar(db, "SELECT count(*) AS n FROM interpretations WHERE text <> ''"),
+    impacts: {
+      events: impactedEvents,
+      rows: scalar(
+        db,
+        `SELECT count(*) AS n FROM event_impacts i JOIN events e ON e.id = i.event_id
+          WHERE e.jurisdiction = ?`,
+        jurisdiction,
+      ),
+    },
     documentsExtracted: scalar(
       db,
       'SELECT count(*) AS n FROM events WHERE jurisdiction = ? AND extracted_at IS NOT NULL',

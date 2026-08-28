@@ -33,7 +33,7 @@ permissions:
 
 jobs:
   refresh:
-    name: ingest, extract, link
+    name: ingest, extract, link, impacts
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -71,6 +71,12 @@ jobs:
 
       - name: Read minutes
         run: npm run interpret
+
+      # Impacts are what the ranking reads. They rebuild from `events`, so this
+      # is safe to re-run and cheap to drop — but skipping it leaves For You
+      # ranking against last week's understanding of this week's records.
+      - name: Extract civic impacts
+        run: npm run impacts
 
       # The only step that talks to anyone other than the town.
       - name: Geocode new addresses

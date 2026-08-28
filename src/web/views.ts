@@ -75,6 +75,36 @@ export interface LayoutOptions {
   feedUrl?: string;
   /** Display name of the signed-in reader, when there is one. */
   account?: string | null;
+  /** Which of the three views this page is, for the switcher. */
+  view?: ViewName;
+}
+
+/**
+ * The three views, which are the whole personalization argument in one strip.
+ *
+ * `all` is the town's record, chronological, with nothing personalized away —
+ * it is always one click from wherever a reader is, and no preference, mute or
+ * template can change what it contains. `for-you` is ranked against declared
+ * preferences and says why about every record it ranks. `alerts` fires only on
+ * explicit rules a reader wrote down. Keeping them as three named destinations
+ * rather than one feed with a hidden mode is the difference between a civic
+ * record with a recommender attached and an opaque social feed.
+ */
+export const VIEWS = ['all', 'for-you', 'alerts'] as const;
+export type ViewName = (typeof VIEWS)[number];
+
+const VIEW_LINKS: { view: ViewName; href: string; label: string; hint: string }[] = [
+  { view: 'all', href: '/', label: 'All', hint: 'The raw chronological record. Nothing filtered away.' },
+  { view: 'for-you', href: '/for-you', label: 'For you', hint: 'Ranked by what you told us, with reasons.' },
+  { view: 'alerts', href: '/alerts', label: 'Alerts', hint: 'Only the rules you wrote down.' },
+];
+
+function viewSwitcher(active: ViewName | undefined): string {
+  const links = VIEW_LINKS.map(
+    (entry) =>
+      `<a class="${entry.view === active ? 'on' : ''}" href="${entry.href}" title="${escapeHtml(entry.hint)}">${escapeHtml(entry.label)}</a>`,
+  ).join('');
+  return `<nav class="views">${links}</nav>`;
 }
 
 export function layout(options: LayoutOptions): string {
@@ -116,6 +146,7 @@ ${options.feedUrl ? `<link rel="alternate" type="application/atom+xml" title="${
         options.account ? `<a href="/my">${escapeHtml(options.account)}</a>` : '<a href="/login">Sign in</a>'
       }</span>
     </div>
+    ${viewSwitcher(options.view)}
     <nav class="channels">${tabs}</nav>
   </div>
 </header>
@@ -137,7 +168,7 @@ function badge(row: EventRow): string {
   return `<span class="badge ch ch-${escapeHtml(channel)}">${escapeHtml(CHANNEL_LABELS[channel] ?? channel)}</span>`;
 }
 
-function eventCard(row: EventRow, filters: Filters): string {
+export function eventCard(row: EventRow, filters: Filters): string {
   const subjects = parseJsonArray(row.subjects)
     .slice(0, 4)
     .map((s) => `<span class="badge subject">${escapeHtml(s)}</span>`)
@@ -319,6 +350,7 @@ ${
     body,
     aside,
     feedUrl: model.feedUrl,
+    view: 'all',
     ...(model.account !== undefined ? { account: model.account } : {}),
   });
 }
@@ -817,10 +849,23 @@ export function renderProfile(model: ProfileViewModel): string {
   </section>
 
   <section class="agenda">
+    <h2>What you want to see</h2>
+    <p class="count">Following is “include this in my feed”. What to rank up, what to downrank and what should
+       interrupt you is a separate question, and it lives on its own pages — where every row is visible and
+       editable rather than learned about you.</p>
+    <ul>
+      <li><a href="/for-you">For you</a> — ranked, with the reason on every record</li>
+      <li><a href="/my/preferences">Preferences</a> — the whole profile on one page</li>
+      <li><a href="/my/setup">Set up from a sentence</a> — a preview you accept, decline or edit</li>
+      <li><a href="/alerts">Alert rules</a> — explicit rules only</li>
+    </ul>
+  </section>
+
+  <section class="agenda">
     <h2>Alerts</h2>
-    <p class="count">Not built. Subscriptions are recorded and the feed is live, but nothing sends mail or a
-       push yet — so the honest description of alerts today is “an Atom feed you can point anything at”.
-       The database column that would carry a digest preference exists; the sender does not.</p>
+    <p class="count">Recorded, not sent. Subscriptions and alert rules both work and the feeds are live, but
+       nothing mails or pushes yet — so the honest description of alerts today is “an Atom feed you can point
+       anything at”. The column that would carry a digest preference exists; the sender does not.</p>
   </section>
 </div>
 

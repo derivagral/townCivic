@@ -17,6 +17,8 @@
     "extract": "tsx src/cli.ts extract",
     "link": "tsx src/cli.ts link",
     "interpret": "tsx src/cli.ts interpret",
+    "impacts": "tsx src/cli.ts impacts",
+    "profile": "tsx src/cli.ts profile",
     "geocode": "tsx src/cli.ts geocode",
     "status": "tsx src/cli.ts status",
     "boundary": "tsx src/cli.ts boundary",

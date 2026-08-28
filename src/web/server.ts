@@ -23,7 +23,7 @@ import {
   personalFeed,
   queryEvents,
 } from '../db/repo.ts';
-import type { EventQuery } from '../db/repo.ts';
+import type { EventQuery, EventRow } from '../db/repo.ts';
 import { hasSampleData } from '../commands/seed.ts';
 import { CHANNEL_DESCRIPTIONS, CHANNEL_LABELS, isChannel } from '../taxonomy.ts';
 import { MATTER_KINDS } from '../matters/key.ts';
@@ -47,6 +47,42 @@ import {
   sessionCookie,
 } from './accounts.ts';
 import type { Session, UserRow } from './accounts.ts';
+import {
+  acceptSuggestion,
+  addAlertRule,
+  getPreferences,
+  getProposalRow,
+  knownInstitutions,
+  listAlertRules,
+  listProposals,
+  rankContextFor,
+  removeAlertRule,
+  resolveProposal,
+  saveProposal,
+  savePreferences,
+  setAlertRuleEnabled,
+  suggestInterests,
+} from '../profile/store.ts';
+import { impactsForEvents } from '../pipeline/impacts.ts';
+import { rankEvents } from '../profile/score.ts';
+import { evaluateAlerts, suggestedRules, validateRule } from '../profile/alerts.ts';
+import { acceptProposal, proposeFromText } from '../profile/setup.ts';
+import type { Proposal } from '../profile/setup.ts';
+import { TEMPLATES } from '../profile/templates.ts';
+import {
+  DEFAULT_RADIUS_METERS,
+  TREATMENTS,
+  defaultPreferences,
+  removeInterest,
+  setScope,
+  upsertInterest,
+} from '../profile/preferences.ts';
+import type { GeoScope, Preferences, Treatment } from '../profile/preferences.ts';
+import { GEO_SCOPES } from '../profile/preferences.ts';
+import { SCHOOL_SCOPES, allImpactKeys } from '../profile/impacts.ts';
+import type { SchoolScope } from '../profile/impacts.ts';
+import { geocodeAddress } from '../pipeline/geocode.ts';
+import { renderAlerts, renderForYou, renderPreferences, renderSetup } from './profile-views.ts';
 import { STYLES } from './styles.ts';
 import {
   EMPTY_FILTERS,
@@ -504,6 +540,67 @@ export function createApp(db: Db, options: AppOptions = {}) {
    * works. It is rotatable, it is not the password, and the page that shows it
    * says plainly that it is a secret.
    */
+  /**
+   * The two curated views, as feeds.
+   *
+   * Registered before the plain personal feed so the more specific path wins,
+   * and every entry carries the sentence that put it there — a ranked record
+   * with no reason attached is exactly the thing this design set out not to
+   * ship, and a feed reader is where most people will actually meet it.
+   */
+  app.get('/feeds/my/:view{(?:for-you|alerts)}/:token{.+\\.atom}', (c) => {
+    const view = c.req.param('view');
+    const name = c.req.param('token');
+    const user = getUserByFeedToken(db, name.slice(0, name.lastIndexOf('.')));
+    if (!user) return c.notFound();
+
+    const notes = new Map<string, string>();
+    let rows: EventRow[] = [];
+
+    if (view === 'alerts') {
+      const { hits } = alertHitsFor(user.id);
+      for (const hit of hits.slice(0, FEED_SIZE)) {
+        if (notes.has(hit.row.id)) continue;
+        notes.set(hit.row.id, `${hit.rule.label}: ${hit.reason}`);
+        rows.push(hit.row);
+      }
+    } else {
+      const preferences = getPreferences(db, user.id);
+      const candidates = queryEvents(db, recentWindow());
+      const ranked = rankEvents(
+        candidates,
+        impactsForEvents(
+          db,
+          candidates.map((row) => row.id),
+        ),
+        preferences,
+        rankContextFor(db, user.id, candidates),
+      ).slice(0, FEED_SIZE);
+      rows = ranked.map((item) => item.row);
+      for (const item of ranked) notes.set(item.row.id, item.explanation);
+    }
+
+    return c.body(
+      renderAtom(rows, {
+        title: `townCivic — ${nameFor(user)} — ${view === 'alerts' ? 'alerts' : 'for you'}`,
+        subtitle:
+          view === 'alerts'
+            ? 'Records matching the alert rules you wrote down.'
+            : 'Ranked against your declared preferences. Every entry says why.',
+        selfUrl: `${baseUrl}/feeds/my/${view}/${name}`,
+        htmlUrl: `${baseUrl}/${view === 'alerts' ? 'alerts' : 'for-you'}`,
+        baseUrl,
+        updated: rows[0]?.last_seen_at ?? null,
+        notes,
+      }),
+      200,
+      {
+        'content-type': 'application/atom+xml; charset=utf-8',
+        'cache-control': 'private, no-store',
+      },
+    );
+  });
+
   app.get('/feeds/my/:token{.+\\.atom}', (c) => {
     const name = c.req.param('token');
     const user = getUserByFeedToken(db, name.slice(0, name.lastIndexOf('.')));
@@ -529,6 +626,346 @@ export function createApp(db: Db, options: AppOptions = {}) {
       },
     );
   });
+
+  /* ---------------------------------------------- for you, and alerts */
+
+  /**
+   * How many records the ranker is allowed to look at.
+   *
+   * For You is a re-ordering of a recent window, not a search over the archive.
+   * Ranking the whole corpus would put a six-month-old record above this week's
+   * hearing whenever the preferences matched it better, which is not what a
+   * civic feed is for — and the raw record at `/` is the place to go back in
+   * time anyway.
+   */
+  const RANK_WINDOW = 400;
+  const RANK_DAYS = 120;
+
+  const recentWindow = (): EventQuery => ({
+    jurisdiction,
+    since: new Date(Date.now() - RANK_DAYS * 86_400_000).toISOString(),
+    limit: RANK_WINDOW,
+  });
+
+  app.get('/for-you', (c) => {
+    const current = currentUser(c);
+    if (!current) return c.redirect('/login?next=%2Ffor-you', 302);
+
+    const preferences = getPreferences(db, current.user.id);
+    const rows = queryEvents(db, recentWindow());
+    const impacts = impactsForEvents(
+      db,
+      rows.map((row) => row.id),
+    );
+    const context = rankContextFor(db, current.user.id, rows);
+    const ranked = rankEvents(rows, impacts, preferences, context);
+
+    // Upcoming first, because a hearing you can still attend is worth more than
+    // a better-matching record about a meeting that already happened.
+    const now = new Date().toISOString();
+    const isUpcoming = (row: EventRow) => (row.occurred_at ?? row.published_at ?? '') > now;
+
+    return c.html(
+      renderForYou({
+        upcoming: ranked.filter((item) => isUpcoming(item.row)).slice(0, 25),
+        scored: ranked.filter((item) => !isUpcoming(item.row)).slice(0, 40),
+        considered: rows.length,
+        muted: rows.length - ranked.length,
+        preferences,
+        suggestions: suggestInterests(db, current.user.id, preferences),
+        csrfToken: current.session.csrfToken,
+        feedUrl: `${baseUrl}/feeds/my/for-you/${current.user.feed_token}.atom`,
+        sampleData: hasSampleData(db),
+        jurisdictionLabel: label,
+        account: nameFor(current.user),
+        ...(new URL(c.req.url).searchParams.get('saved') ? { notice: 'Saved.' } : {}),
+      }),
+    );
+  });
+
+  /** Every record in the window that satisfies at least one of a reader's rules. */
+  const alertHitsFor = (userId: string) => {
+    const preferences = getPreferences(db, userId);
+    const rules = listAlertRules(db, userId, { enabledOnly: true });
+    if (!rules.length) return { preferences, rules, hits: [] };
+
+    const rows = queryEvents(db, recentWindow());
+    const impacts = impactsForEvents(
+      db,
+      rows.map((row) => row.id),
+    );
+    const context = rankContextFor(db, userId, rows);
+    const hits = rows.flatMap((row) =>
+      evaluateAlerts(rules, row, impacts.get(row.id) ?? [], preferences, context),
+    );
+    return { preferences, rules, hits };
+  };
+
+  app.get('/alerts', (c) => {
+    const current = currentUser(c);
+    if (!current) return c.redirect('/login?next=%2Falerts', 302);
+
+    const { preferences, hits } = alertHitsFor(current.user.id);
+    const url = new URL(c.req.url);
+
+    return c.html(
+      renderAlerts({
+        rules: listAlertRules(db, current.user.id),
+        hits: hits.slice(0, 50),
+        suggested: suggestedRules(preferences),
+        hasHome: Boolean(preferences.home),
+        csrfToken: current.session.csrfToken,
+        sampleData: hasSampleData(db),
+        jurisdictionLabel: label,
+        account: nameFor(current.user),
+        ...(url.searchParams.get('error') ? { error: url.searchParams.get('error')! } : {}),
+      }),
+    );
+  });
+
+  app.post('/alerts/rules', async (c) => {
+    const current = currentUser(c);
+    if (!current) return c.redirect('/login', 302);
+    const form = await c.req.parseBody();
+    if (!checkCsrf(current.session, form['csrf'] ? String(form['csrf']) : undefined)) {
+      return c.text('Bad request: this form has expired. Reload the page and try again.', 403);
+    }
+
+    const action = String(form['action'] ?? '');
+    const id = String(form['id'] ?? '');
+
+    if (action === 'remove') removeAlertRule(db, current.user.id, id);
+    else if (action === 'pause') setAlertRuleEnabled(db, current.user.id, id, false);
+    else if (action === 'resume') setAlertRuleEnabled(db, current.user.id, id, true);
+    else if (action === 'add') {
+      let params: Record<string, unknown> = {};
+      try {
+        params = JSON.parse(String(form['params'] ?? '{}')) as Record<string, unknown>;
+      } catch {
+        return c.redirect('/alerts?error=' + encodeURIComponent('Those parameters are not valid JSON.'), 303);
+      }
+      // Validated before storage rather than at firing time: a rule that is
+      // saved but can never match looks configured and is silently useless.
+      const checked = validateRule(String(form['kind'] ?? ''), params);
+      if (!checked.ok) return c.redirect('/alerts?error=' + encodeURIComponent(checked.error), 303);
+
+      addAlertRule(db, current.user.id, {
+        kind: String(form['kind']),
+        label: String(form['label'] ?? '').trim() || 'Unnamed rule',
+        params: checked.params,
+      });
+    }
+    return c.redirect('/alerts', 303);
+  });
+
+  /* --------------------------------------------------- profile setup */
+
+  const setupPage = (
+    c: Context,
+    user: UserRow,
+    session: Session,
+    proposal: Proposal | null,
+    proposalId: string | null,
+  ) =>
+    c.html(
+      renderSetup({
+        templates: [...TEMPLATES],
+        proposal,
+        proposalId,
+        preferences: getPreferences(db, user.id),
+        history: listProposals(db, user.id, 5).map((row) => ({
+          request: row.request,
+          status: row.status,
+          createdAt: row.created_at,
+        })),
+        csrfToken: session.csrfToken,
+        sampleData: hasSampleData(db),
+        jurisdictionLabel: label,
+        account: nameFor(user),
+      }),
+    );
+
+  app.get('/my/setup', (c) => {
+    const current = currentUser(c);
+    if (!current) return c.redirect('/login?next=%2Fmy%2Fsetup', 302);
+    return setupPage(c, current.user, current.session, null, null);
+  });
+
+  /**
+   * Turn a sentence into a *proposal*, and stop.
+   *
+   * The whole argument for natural-language setup is that it stays a preview.
+   * This handler stores what it would do and renders it; nothing reaches the
+   * profile until the reader posts to `/my/setup/accept`.
+   */
+  app.post('/my/setup', async (c) => {
+    const current = currentUser(c);
+    if (!current) return c.redirect('/login', 302);
+    const form = await c.req.parseBody();
+    if (!checkCsrf(current.session, form['csrf'] ? String(form['csrf']) : undefined)) {
+      return c.text('Bad request: this form has expired. Reload the page and try again.', 403);
+    }
+
+    const request = String(form['request'] ?? '')
+      .trim()
+      .slice(0, 1_000);
+    if (!request) return c.redirect('/my/setup', 303);
+
+    const proposal = proposeFromText(request, getPreferences(db, current.user.id));
+    const id = saveProposal(db, current.user.id, request, proposal);
+    return setupPage(c, current.user, current.session, proposal, id);
+  });
+
+  app.post('/my/setup/accept', async (c) => {
+    const current = currentUser(c);
+    if (!current) return c.redirect('/login', 302);
+    const form = await c.req.parseBody({ all: true });
+    if (!checkCsrf(current.session, form['csrf'] ? String(form['csrf']) : undefined)) {
+      return c.text('Bad request: this form has expired. Reload the page and try again.', 403);
+    }
+
+    const row = getProposalRow(db, current.user.id, String(form['proposal'] ?? ''));
+    if (!row) return c.redirect('/my/setup', 303);
+
+    if (String(form['action'] ?? '') !== 'accept') {
+      resolveProposal(db, current.user.id, row.id, 'declined');
+      return c.redirect('/my/setup', 303);
+    }
+
+    // Answers to the template's questions arrive as `answer:<question id>`, and
+    // are the only route by which a school stage or a tenure ever gets set —
+    // there is no path from the words "parent" or "retiree" to either.
+    const choices: Record<string, string[]> = {};
+    for (const [key, value] of Object.entries(form)) {
+      if (!key.startsWith('answer:')) continue;
+      choices[key.slice('answer:'.length)] = (Array.isArray(value) ? value : [value]).map(String);
+    }
+
+    const proposal = JSON.parse(row.proposal) as Proposal;
+    savePreferences(
+      db,
+      current.user.id,
+      acceptProposal(getPreferences(db, current.user.id), proposal, choices),
+    );
+    resolveProposal(db, current.user.id, row.id, 'accepted');
+    return c.redirect('/for-you?saved=1', 303);
+  });
+
+  /* --------------------------------------------- the preference editor */
+
+  app.get('/my/preferences', (c) => {
+    const current = currentUser(c);
+    if (!current) return c.redirect('/login?next=%2Fmy%2Fpreferences', 302);
+    const url = new URL(c.req.url);
+    const preferences = getPreferences(db, current.user.id);
+
+    return c.html(
+      renderPreferences({
+        preferences,
+        suggestions: suggestInterests(db, current.user.id, preferences),
+        knownInstitutions: knownInstitutions(db, jurisdiction),
+        csrfToken: current.session.csrfToken,
+        sampleData: hasSampleData(db),
+        jurisdictionLabel: label,
+        account: nameFor(current.user),
+        ...(url.searchParams.get('notice') ? { notice: url.searchParams.get('notice')! } : {}),
+      }),
+    );
+  });
+
+  app.post('/my/preferences', async (c) => {
+    const current = currentUser(c);
+    if (!current) return c.redirect('/login', 302);
+    const form = await c.req.parseBody({ all: true });
+    if (!checkCsrf(current.session, form['csrf'] ? String(form['csrf']) : undefined)) {
+      return c.text('Bad request: this form has expired. Reload the page and try again.', 403);
+    }
+
+    const existing = getPreferences(db, current.user.id);
+    let next: Preferences = { ...defaultPreferences(), templates: existing.templates };
+
+    // Anything the reader touched here is theirs: a row edited on this page is
+    // `declared`, which outranks whatever template proposed it. That is the
+    // whole authority ladder, in one assignment.
+    for (const key of allImpactKeys()) {
+      const raw = form[`treatment:${key}`];
+      const treatment = String(Array.isArray(raw) ? raw[0] : (raw ?? 'normal'));
+      if (!(TREATMENTS as readonly string[]).includes(treatment)) continue;
+      if (treatment === 'normal') {
+        next = removeInterest(next, key);
+        continue;
+      }
+      const previous = existing.interests.find((interest) => interest.key === key);
+      next = upsertInterest(next, {
+        key,
+        treatment: treatment as Treatment,
+        origin: previous?.treatment === treatment ? previous.origin : 'declared',
+        ...(previous?.template ? { template: previous.template } : {}),
+      });
+    }
+
+    for (const row of next.geography) {
+      const raw = form[`scope:${row.channel}`];
+      const scope = String(Array.isArray(raw) ? raw[0] : (raw ?? ''));
+      if ((GEO_SCOPES as readonly string[]).includes(scope))
+        next = setScope(next, row.channel, scope as GeoScope);
+    }
+
+    const stages = (Array.isArray(form['stage']) ? form['stage'] : form['stage'] ? [form['stage']] : [])
+      .map(String)
+      .filter((stage): stage is SchoolScope => (SCHOOL_SCOPES as readonly string[]).includes(stage));
+    const institutions = String(form['institutions'] ?? '')
+      .split(',')
+      .map((name) => name.trim())
+      .filter(Boolean);
+    next.schools = { stages, institutions };
+
+    const radius = Number(form['radius'] ?? DEFAULT_RADIUS_METERS);
+    const address = String(form['home'] ?? '').trim();
+    let notice = 'Saved.';
+
+    if (!address) {
+      // Clearing the field deletes it, rather than keeping the coordinates
+      // around with the label removed.
+      next.home = null;
+    } else if (existing.home && existing.home.label === address) {
+      next.home = {
+        ...existing.home,
+        radiusMeters: Number.isFinite(radius)
+          ? Math.min(8_000, Math.max(100, radius))
+          : DEFAULT_RADIUS_METERS,
+      };
+    } else {
+      const match = await geocodeAddress(address, { jurisdiction });
+      if (match) {
+        next.home = {
+          label: address,
+          lat: match.lat,
+          lon: match.lon,
+          radiusMeters: Number.isFinite(radius)
+            ? Math.min(8_000, Math.max(100, radius))
+            : DEFAULT_RADIUS_METERS,
+        };
+      } else {
+        // Refusing to store an unresolved home is the point: a near-home rule
+        // with nothing to measure from would look configured and fire on
+        // nothing, which is the failure mode nobody notices.
+        next.home = null;
+        notice = `Could not place “${address}” inside ${label}. Near-home rules stay off until an address resolves.`;
+      }
+    }
+
+    savePreferences(db, current.user.id, next);
+    return c.redirect(`/my/preferences?notice=${encodeURIComponent(notice)}`, 303);
+  });
+
+  app.post('/my/suggestions', (c) =>
+    guarded(c, (user, form) => {
+      if (String(form['action'] ?? '') !== 'accept') return;
+      const key = String(form['key'] ?? '');
+      savePreferences(db, user.id, acceptSuggestion(getPreferences(db, user.id), key));
+    }),
+  );
 
   app.get('/sources', (c) =>
     c.html(renderSources(listSourceRows(db, jurisdiction), hasSampleData(db), label)),

@@ -10,6 +10,10 @@ import { extractDocuments } from './pipeline/extract.ts';
 import { linkMatters } from './pipeline/link.ts';
 import { geocodeMatters } from './pipeline/geocode.ts';
 import { PROVIDERS, interpretDocuments, isProvider } from './pipeline/interpret.ts';
+import { extractEventImpacts } from './pipeline/impacts.ts';
+import { defaultPreferences } from './profile/preferences.ts';
+import { TEMPLATES } from './profile/templates.ts';
+import { formatProposal, proposeFromText } from './profile/setup.ts';
 import { verify } from './commands/verify.ts';
 import { discover, toRegistrySnippet } from './commands/discover.ts';
 import { status } from './commands/status.ts';
@@ -28,6 +32,8 @@ Commands
   extract              Open the linked PDFs and read agendas, locations and subjects
   link                 Group records about the same property or article into timelines
   interpret            Read votes and dispositions out of minutes, into a separate index
+  impacts              Extract who a record affects — services, school tiers, costs, eligibility
+  profile              Preview what a sentence would change in a profile, and save nothing
   geocode              Resolve linked addresses to coordinates for the map
   verify               Check every registered URL against the live site
   status               Report pipeline counts, source health and staleness (exit 1 on a problem)
@@ -50,11 +56,13 @@ Options
   --limit <n>          Row limit for events / documents to extract
   --since <date>       Only extract records dated on or after this ISO date
   --provider <name>    Interpreter for \`interpret\`: ${PROVIDERS.join(' | ')} (default: rules)
+  --templates          List the starter profile templates instead of parsing a sentence
 
 Examples
   npm run seed && npm run serve
   npx tsx src/cli.ts verify --all
   npx tsx src/cli.ts ingest --source milton-ma:agenda:planning-board
+  npx tsx src/cli.ts profile "set me up as a parent with kids in elementary school"
 `;
 
 const { values, positionals } = parseArgs({
@@ -70,6 +78,7 @@ const { values, positionals } = parseArgs({
     limit: { type: 'string' },
     since: { type: 'string' },
     provider: { type: 'string' },
+    templates: { type: 'boolean', default: false },
     help: { type: 'boolean', default: false },
   },
 });
@@ -243,6 +252,64 @@ async function main(): Promise<number> {
       return failed === reports.length && reports.length > 0 ? 1 : 0;
     }
 
+    case 'impacts': {
+      const db = getDb();
+      const summary = extractEventImpacts(db, {
+        jurisdiction,
+        ...(values.force ? { force: true } : {}),
+        ...(values.limit ? { limit: Number(values.limit) } : {}),
+        ...(values.since ? { since: values.since } : {}),
+        onProgress(report) {
+          if (values.json || report.skipped) return;
+          console.log(
+            `${check(true)}  ${report.title.slice(0, 52).padEnd(52)} ` +
+              (report.found ? `${report.found} impact${report.found === 1 ? '' : 's'}` : dim('none')),
+          );
+        },
+      });
+
+      if (values.json) {
+        console.log(JSON.stringify(summary, null, 2));
+        return 0;
+      }
+      console.log(`\n${summary.eventsConsidered} records → ${summary.impacts} impacts.`);
+      for (const [dimension, count] of Object.entries(summary.byDimension).sort((a, b) => b[1] - a[1])) {
+        console.log(dim(`  ${String(count).padStart(5)}  ${dimension}`));
+      }
+      console.log(
+        dim('Impacts are properties of the document, not of any reader. Ranking reads them; / does not.'),
+      );
+      return 0;
+    }
+
+    case 'profile': {
+      if (values.templates) {
+        for (const template of TEMPLATES) {
+          console.log(`  ${template.id.padEnd(16)} ${dim(template.version.padEnd(12))} ${template.label}`);
+          console.log(dim(`    ${template.description}`));
+        }
+        return 0;
+      }
+
+      const request = positionals.slice(1).join(' ').trim();
+      if (!request) {
+        console.error('Say what you want, e.g. `profile "set me up as a parent"`, or pass --templates.');
+        return 1;
+      }
+
+      // Deliberately does not open the database: previewing a proposal is a
+      // pure function of the sentence and the current profile, and the CLI has
+      // no reader to be. Nothing here can save anything.
+      const proposal = proposeFromText(request, defaultPreferences());
+      if (values.json) {
+        console.log(JSON.stringify(proposal, null, 2));
+        return 0;
+      }
+      console.log(formatProposal(proposal));
+      console.log(dim('\nNothing was saved. On the web this is a preview you accept, decline, or edit.'));
+      return 0;
+    }
+
     case 'geocode': {
       const db = getDb();
       const reports = await geocodeMatters(db, {
@@ -361,7 +428,8 @@ async function main(): Promise<number> {
         `${report.events} records · ${report.matters} matters · ` +
           `${report.placed.resolved}/${report.placed.total} addresses placed · ` +
           `${report.boundary ? `outline ${report.boundary.points} pts` : '[33mno outline[0m'} · ` +
-          `${report.interpretations} derived reading${report.interpretations === 1 ? '' : 's'}`,
+          `${report.interpretations} derived reading${report.interpretations === 1 ? '' : 's'} · ` +
+          `${report.impacts.events} records with impacts`,
       );
       console.log(
         dim(`${report.documentsExtracted} documents read, ${report.documentsPending} pending extraction\n`),

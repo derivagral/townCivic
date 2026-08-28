@@ -99,6 +99,8 @@ npx tsx src/cli.ts <command>
 | `extract`            | Open the linked PDFs and read agendas, locations, posting times and subjects |
 | `link`               | Group records about the same property or article into timelines              |
 | `interpret`          | Read votes and dispositions out of the prose in minutes                      |
+| `impacts`            | Extract who a record affects — services, school tiers, costs, eligibility    |
+| `profile`            | Preview what a sentence would change in a profile; saves nothing             |
 | `geocode`            | Resolve linked addresses to coordinates for the map                          |
 | `status`             | Pipeline counts and source health; exits non-zero on a problem               |
 | `boundary`           | Refetch the town outline from MassGIS (maintenance — commit the result)      |
@@ -157,8 +159,14 @@ SQLite (node:sqlite, FTS5)
      ↓                    ↘
      ↓                     link → matters and timelines → geocode → map
      ↓                     interpret → derived readings, separately indexed
+     ↓                     impacts → who a record affects, per event, evidence-backed
      ↓                    ↙
-Atom / JSON Feed + web UI
+     ↓
+     ├──────────────→ All — the raw chronological record, never personalized
+     ↓
+preferences (declared by a reader) → ranking and explicit rules
+     ↓
+For you · Alerts · Atom / JSON Feed + web UI
 ```
 
 Everything downstream of the document store is derived and can be rebuilt by
@@ -493,8 +501,208 @@ Alerts are recorded but not sent. The `alerts` column carries the intent; there
 is no sender. The honest description of alerts today is "an Atom feed you can
 point anything at".
 
+What a reader _wants to see_ — as opposed to what they follow — is the next
+section: [Profiles, and the three views](#profiles-and-the-three-views).
+
 Accounts are also the one thing in the database that is not derived. If you run
 them, `data/towncivic.db` stops being disposable.
+
+## Profiles, and the three views
+
+Personalization here is a ranking over structured facts, and nothing else. There
+is no persona kept about a reader, no cluster, no "readers like you". The
+argument for that is in [Why one town argues against clustering](#why-one-town-argues-against-clustering);
+the shape it produces is three views:
+
+| View                   | What it is                                                                                                   |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **All** `/`            | The chronological civic record. Nothing personalized away, ever.                                             |
+| **For you** `/for-you` | Ranked against declared preferences, geography and followed institutions. Every record says why it is there. |
+| **Alerts** `/alerts`   | Only explicit rules a reader wrote down: "zoning within ½ mile", "elementary-school closures".               |
+
+The strongest thing a preference can do is decline to recommend. `mute` applies
+to **For you** and to alerts; the record stays in `/`, stays searchable, and
+stays in the channel feeds. A town's record is not something a profile gets to
+edit.
+
+### Map people to impacts, not personas
+
+The processing layer is never asked whether something is "relevant to retirees".
+It is asked what the document does, and the answer is stored per event in
+`event_impacts`, with the phrase it was read out of:
+
+```
+service        schools · childcare · senior_services · housing · transit · roads
+               parks · libraries · public_safety · health · utilities
+school         preschool · elementary · middle · high · districtwide
+finance        property_tax · utility_rate · user_fee · assessment · bond · operating_budget
+eligibility    age_based · income_based · residency_based · property_ownership
+property       geography · institutions · deadline · hearing_date · decision_stage
+               estimated_cost · daytime_meeting · evening_meeting · public_comment · accessibility
+institution    the named school, library, park or building
+```
+
+`eligibility` is a property of the **program**, read off the notice — that a
+tax-relief program is income-based is public information. Whether a reader would
+qualify for it is not something townCivic knows, asks, or infers.
+
+```bash
+npm run impacts          # extract, with evidence, into event_impacts
+```
+
+A profile is then weights over those keys and nothing else, which has two
+consequences worth the trouble. The ranking can be rewritten without
+reprocessing a single PDF. And every record in **For you** can name the exact
+feature that put it there:
+
+> Shown because it concerns your selected elementary school, includes a budget
+> vote, and has a public-comment deadline Friday.
+
+That sentence travels into the Atom feed as well as the web page. A curated
+record that is least explicable in the place most people read it would defeat
+the point.
+
+### Templates are a shortcut, not an identity
+
+"Thirty-something parent" and "empty-nest retiree" are editable preference
+bundles for cold start. Accepting one writes exactly the rows a reader could
+have typed, tagged with where they came from, and then the template stops
+existing: nothing downstream reads a template name to decide anything. Two
+readers who accepted different templates and edited to the same rows have
+identical feeds — which is the property that keeps a template a shortcut.
+
+They compose. `retiree + renter + transit-rider` is a far more precise profile
+than any one broad cluster, and `npm run profile -- --templates` lists them.
+
+### Natural-language setup produces a preview, not a save
+
+```bash
+npm run profile -- "set me up as a parent with three kids"
+```
+
+produces a proposal — a table of what it would change, from what, and why — and
+saves nothing. On the web the same proposal is shown at `/my/setup` with Accept,
+Decline and "edit line by line instead", and it is kept either way, so _what did
+it decide about me, and when_ has an answer and a declined suggestion is not
+quietly re-offered.
+
+Two behaviours in that example are the whole design in miniature:
+
+- It asks about **school stages**, not the number of children. Three kids is much
+  less relevant than "elementary, and Tucker specifically", and the count is
+  something a system has no business holding.
+- Negative assumptions **downrank, never mute**. Telling it you have no children
+  in school gets you: _"I've downranked routine school programming, but retained
+  school budgets, construction, elections and major district decisions, because
+  they affect the whole town."_
+
+### How much authority a signal has
+
+| Signal                              | Authority | What it does                              |
+| ----------------------------------- | --------- | ----------------------------------------- |
+| A reader follows or mutes something | Highest   | Directly controls results                 |
+| A reader accepts a template         | High      | Creates visible, editable preference rows |
+| Geography or institutional match    | High      | Deterministic relevance boost             |
+| Subscriptions the reader created    | Low       | Raises a **question**, never applied      |
+| Similar-reader behaviour            | Absent    | No code path, by design                   |
+
+Opens, saves and dismissals are not in that table because they are not collected.
+Click behaviour is unusually unreliable here: people repeatedly open confusing
+notices, alarming developments and badly summarized records without wanting more
+of any of them. So the only behavioural evidence townCivic will look at is a
+subscription, which is a deliberate act a reader can point to, and the only thing
+it does with one is ask:
+
+> You follow the Conservation Commission. Add environmental permits to your
+> interests? — _Nothing here is applied until you say so._
+
+Answering yes makes it `declared`, because at that point it is.
+
+### What townCivic will not work out about you
+
+Named, enforced in one place, and tested. A recommender that reads free text
+will, left alone, learn things about a reader that the reader did not offer and
+cannot see — so the refusals are a list rather than an instinct.
+
+**Never inferred, never stored, never a ranking input.** Mentioning one during
+setup is acknowledged out loud and dropped; silently ignoring it would look
+identical to silently recording it.
+
+- Income, wealth, benefits receipt
+- Disability status and accommodation needs
+- Medical conditions, treatment, pregnancy
+- Race, ethnicity, ancestry
+- National origin, citizenship, immigration status
+- Religion and observance
+- Sexual orientation and gender identity
+- Party, voting intention, position on a ballot question
+- Date of birth and exact age
+- Household size, marital status, who lives with you, children by name or number
+- Arrests, charges, court involvement
+
+**Declared only** — never concluded on a reader's behalf, by words, behaviour or
+template, but theirs to state: own or rent, school stages, an interest in
+accessibility decisions, an interest in senior services, an interest in transit,
+and a home location. The useful half of "I own my home" is a preference for
+property-tax records, and that is exactly what gets stored: `finance:property_tax`
+at digest, with the reader's name on it. Never a belief about their tenure.
+
+The actual guarantee is not the guard function — it is that the database has no
+column for any of it.
+
+### Alerts are sentences, not sliders
+
+A rule has to be expressible as something a person would agree to out loud, and
+it has to evaluate against extracted structure rather than a guess. A near-home
+rule **refuses to fire** when the reader has no home set, or when the record has
+no geocoded point: an alert that fires on absent data is worse than no alert,
+because it looks configured. Rules are validated when they are written rather
+than when they fire, so a malformed rule is refused instead of stored and
+silently never matched.
+
+Nothing sends mail or a push yet. What the rules do today is collect what matched
+— here and in `/feeds/my/alerts/<token>.atom`. The honest description of an alert
+right now is "a filter with a name", and it stays that until there is a sender and
+an unsubscribe path that works without signing in.
+
+### Why one town argues against clustering
+
+Town scale matters, and mostly as an argument against the obvious thing.
+
+One town produces too few events, readers and interactions for collaborative
+filtering to be anything but noise with a privacy cost attached. "People like you
+also read…" would be statistically weak, trivially distorted by a handful of
+accounts, and revealing in a place where a handful of accounts is the whole
+neighbourhood. Content-based ranking against structured event metadata is simply
+better here, and it has the property that its mistakes are legible.
+
+For one to several towns the manual path also stays cheap: a hand-maintained
+civic taxonomy is manageable, templates can be fixed and versioned, preferences
+are portable between towns while geography and followed institutions stay local,
+and evaluation is about whether facts and locations were extracted correctly —
+which is checkable against the document — rather than whether a cluster is
+meaningful, which is not.
+
+At larger scale the hard problems are source variation, taxonomy drift, duplicate
+events, institution resolution, parcel data and auditing extraction. None of them
+is discovering demographic clusters.
+
+### Where the profile layer lives
+
+```
+src/profile/impacts.ts       the vocabulary — six dimensions, one flat key space
+src/profile/preferences.ts   the preference document, and the authority ladder
+src/profile/blocked.ts       the named refusals, and the guard every write passes
+src/profile/templates.ts     composable, versioned starter bundles
+src/profile/setup.ts         a sentence in, a proposal out — never a save
+src/profile/score.ts         deterministic ranking, every point of score a reason
+src/profile/alerts.ts        explicit rules, validated before they are stored
+src/profile/store.ts         the only door a profile goes through
+src/pipeline/impacts.ts      extraction into event_impacts, with evidence
+```
+
+The pipeline stages never import `src/profile/`. The boundary between "the town's
+record" and "one reader" is a directory, not a discipline.
 
 ## Operations
 
@@ -527,6 +735,8 @@ threshold, because boards meet monthly and take August off.
 /feeds/land-use.atom     /feeds/money.atom     /feeds/meetings.atom    …
 /feeds/all.atom?matter=<id>                    one property, whoever publishes it
 /feeds/my/<token>.atom                         one reader's subscriptions
+/feeds/my/for-you/<token>.atom                 ranked, with the reason on every entry
+/feeds/my/alerts/<token>.atom                  only what matched an explicit rule
 ```
 
 Add `?source=`, `?body=`, `?q=` or `?matter=` to narrow any feed the same way the
@@ -556,9 +766,18 @@ These are staged, not forgotten:
 AG decides within 90`. The AG Municipal Law Unit source is registered and
   disabled pending a form-driving adapter. Article matters already hold one end
   of it.
-- **Sending an alert.** Subscriptions and the personal feed work; nothing mails
-  or pushes. That needs a sender, a digest schedule, and an unsubscribe path
-  that works without signing in.
+- **Sending an alert.** Subscriptions, preference ranking and explicit alert
+  rules all work, and nothing mails or pushes. That needs a sender, a digest
+  schedule that honours the `immediate` / `digest` distinction the preference
+  model already records, and an unsubscribe path that works without signing in.
+- **A model-backed profile parser.** `proposeFromText` is deterministic phrase
+  matching, on the same terms as `interpret`: the rules provider is the floor and
+  a model has to beat it. A model would slot in at exactly the same seam and
+  would still produce a proposal a reader accepts, never a save.
+- **Behavioural learning.** The authority ladder has a row for it and the code
+  has no path to it. What exists today derives suggestions from subscriptions —
+  a deliberate act — and never from opens, because on a corpus this small
+  "opened it" is at least as likely to mean "could not tell what this was".
 - **Accounts that could face the internet.** See [Accounts](#accounts) for the
   list — email verification, password reset, rate limiting, recovery.
 - **Parcels rather than points.** The map geocodes to a street address and draws

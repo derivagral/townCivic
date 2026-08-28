@@ -273,6 +273,50 @@ form.inline button, .detail .actions button {
 .subscription form { margin: 0; }
 .subscription button { font-size: 12.5px; padding: 4px 10px; }
 
+/* the three views */
+nav.views { display: flex; gap: 6px; margin: 14px 0 0; }
+nav.views a {
+  padding: 5px 13px; font-size: 13px; font-weight: 500; text-decoration: none; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 999px;
+}
+nav.views a:hover { color: var(--ink); }
+nav.views a.on { color: var(--ink); background: var(--accent-soft); border-color: var(--accent); }
+
+/* profiles */
+.why { font-size: 12.5px; color: var(--muted); margin: 6px 0 0; font-style: italic; }
+.event .why { border-left: 2px solid var(--accent); padding-left: 8px; }
+.prefs { width: 100%; border-collapse: collapse; font-size: 14px; }
+.prefs th { text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.prefs td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.prefs td.treat { white-space: nowrap; }
+.prefs select, .prefs input[type=text], .prefs input[type=number] {
+  font: inherit; font-size: 13px; padding: 4px 7px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--bg); color: var(--ink);
+}
+.prefs .origin { font-size: 11.5px; color: var(--muted); }
+.proposal { border: 1px solid var(--accent); border-radius: var(--radius); padding: 16px 18px;
+  background: var(--panel); margin: 18px 0; }
+.proposal h3 { margin: 0 0 4px; font-size: 15px; }
+.proposal .said { font-size: 13px; color: var(--muted); margin: 0 0 14px; }
+.proposal table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.proposal td { padding: 4px 8px 4px 0; }
+.proposal td.to { white-space: nowrap; font-weight: 600; }
+.proposal td.from { white-space: nowrap; color: var(--muted); font-size: 12.5px; }
+.proposal h4 { margin: 16px 0 4px; font-size: 11.5px; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted); }
+.refusal { border: 1px solid var(--warn-line); background: var(--warn-bg); color: var(--warn-ink);
+  border-radius: 8px; padding: 10px 12px; margin: 8px 0; font-size: 13.5px; }
+.rule { display: flex; align-items: center; gap: 10px; justify-content: space-between;
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; font-size: 14px; }
+.rule form { margin: 0; }
+.rule .params { font-size: 12.5px; color: var(--muted); }
+.templates { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+.template { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; background: var(--panel); }
+.template h4 { margin: 0 0 5px; font-size: 14px; }
+.template p { margin: 0 0 10px; font-size: 12.5px; color: var(--muted); }
+.blocked li { font-size: 13.5px; margin-bottom: 5px; }
+
 footer.site { margin-top: 46px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
 footer.site a { color: var(--muted); }
 footer.site p { margin: 4px 0; }

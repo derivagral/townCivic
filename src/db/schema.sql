@@ -322,3 +322,86 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_attachments_event ON attachments(event_id);
+
+-- What a record does to people, extracted once and stored per event.
+--
+-- The user-independent half of personalization. Nothing in here knows who is
+-- reading: it is "this notice affects elementary schools, carries a bond, and
+-- has a hearing date", which is either true of the document or not. Ranking
+-- reads it; the chronological record does not. Rebuildable from `events` by
+-- re-running `impacts`, and dropping the table costs only the For You page.
+CREATE TABLE IF NOT EXISTS event_impacts (
+  event_id     TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  -- service | school | finance | eligibility | property | institution
+  dimension    TEXT NOT NULL,
+  value        TEXT NOT NULL,
+  -- The phrase this was read out of. A civic impact with no evidence behind it
+  -- is an opinion, so a surprising one can always be traced to the words.
+  evidence     TEXT,
+  -- Normalized scalar where the value has one: dollars, an ISO date, a name.
+  detail       TEXT,
+  -- exact when the text said it, derived when a rule concluded it
+  confidence   TEXT NOT NULL DEFAULT 'exact',
+  -- Which rule fired, so a systematic error is fixable in one place.
+  rule         TEXT NOT NULL,
+  extracted_at TEXT NOT NULL,
+  PRIMARY KEY (event_id, dimension, value)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_impacts_key ON event_impacts(dimension, value);
+
+-- One reader's preference document, as JSON.
+--
+-- JSON rather than columns because the whole thing is meant to be read, edited
+-- and versioned as one document — and because a schema with a column per
+-- interest is a schema that invites a column for something that should never
+-- have one. The shape is in src/profile/preferences.ts; `version` is the
+-- document version, so an old profile stays readable after a shape change.
+CREATE TABLE IF NOT EXISTS profiles (
+  user_id     TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  version     INTEGER NOT NULL DEFAULT 1,
+  preferences TEXT NOT NULL DEFAULT '{}',
+  updated_at  TEXT NOT NULL
+);
+
+-- Explicit, high-confidence alert rules. Nothing inferred lands here.
+--
+-- Separate from `subscriptions` because they answer different questions: a
+-- subscription is "include this in my feed", an alert rule is "interrupt me".
+-- The bar for the second is deliberately higher — a rule has to be expressible
+-- as a sentence a person would agree to ("zoning within half a mile of home"),
+-- and it has to evaluate deterministically against extracted impacts.
+CREATE TABLE IF NOT EXISTS alert_rules (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  -- near_home | institution | school_stage | financial | impact | matter | deadline
+  kind       TEXT NOT NULL,
+  label      TEXT NOT NULL,
+  -- Rule parameters, verbatim. Shape depends on `kind`; see profile/alerts.ts.
+  params     TEXT NOT NULL DEFAULT '{}',
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_rules_user ON alert_rules(user_id, enabled);
+
+-- A proposed profile change, shown before anything is saved.
+--
+-- "Set me up as a parent" produces a row here, not a profile. The reader sees
+-- every line it would add, accepts or declines it whole, and the row is kept
+-- either way — so "what did it decide about me, and when" is answerable, and a
+-- declined proposal is visible rather than silently retried.
+CREATE TABLE IF NOT EXISTS profile_proposals (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  -- What the reader typed, verbatim. Their words, not a parse of them.
+  request     TEXT NOT NULL,
+  -- The proposal document: changes, questions, and what was refused.
+  proposal    TEXT NOT NULL,
+  -- pending | accepted | declined
+  status      TEXT NOT NULL DEFAULT 'pending',
+  created_at  TEXT NOT NULL,
+  resolved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_profile_proposals_user ON profile_proposals(user_id, created_at DESC);

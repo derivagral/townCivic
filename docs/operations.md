@@ -1,6 +1,6 @@
 # Running townCivic
 
-The pipeline is five commands, and the shape of an operational deployment is
+The pipeline is six commands, and the shape of an operational deployment is
 mostly a question of where you put the two pieces of state.
 
 ## The cycle
@@ -10,12 +10,17 @@ ingest     fetch every enabled source, normalize, store what changed
 extract    open the linked PDFs and read what the meetings are about
 link       group records about the same property or article into timelines
 interpret  read votes and dispositions out of the prose in minutes
+impacts    extract who each record affects, for ranking to read
 geocode    resolve linked addresses to coordinates for the map
 ```
 
 They run in that order because each depends on what the one before it wrote.
-Only `ingest`, `extract` and `geocode` touch the network; `link` and `interpret`
-(with the default provider) are pure functions of the database.
+Only `ingest`, `extract` and `geocode` touch the network; `link`, `interpret`
+(with the default provider) and `impacts` are pure functions of the database.
+
+`impacts` is the one whose omission is invisible: nothing errors, the record
+stays complete, and For You quietly ranks this week against last week's
+understanding. It rebuilds from `events`, so re-running it is always safe.
 
 `boundary` sits outside this cycle. It refetches the town outline from MassGIS
 and is a maintenance command like `discover` — run it by hand, read the diff,
@@ -73,6 +78,7 @@ ExecStart=/usr/bin/npm run ingest
 ExecStart=/usr/bin/npm run extract -- --limit 200
 ExecStart=/usr/bin/npm run link
 ExecStart=/usr/bin/npm run interpret
+ExecStart=/usr/bin/npm run impacts
 ExecStart=/usr/bin/npm run status
 ```
 

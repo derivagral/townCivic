@@ -63,10 +63,11 @@ jobs:
       # covers the timeline and search paths rather than only the empty states.
       # Both are offline: `link` and `interpret --provider rules` read the
       # database and nothing else.
-      - name: Link and interpret
+      - name: Link, interpret and extract impacts
         run: |
           npm run link
           npm run interpret
+          npm run impacts
 
       - name: Serve and check routes
         run: |
@@ -85,6 +86,24 @@ jobs:
           curl -fsS http://localhost:8787/map -o /tmp/map.html
           grep -q 'class="townline"' /tmp/map.html || { echo "no town outline on /map"; exit 1; }
           curl -fsS http://localhost:8787/login > /dev/null
+
+          # The three views. Signed out, the two curated ones must send a
+          # reader to the login page rather than rendering an empty feed.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8787/for-you)" = "302"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8787/alerts)" = "302"
+
+          # Signed in, they render. This is the end-to-end proof that impacts,
+          # preferences and ranking hold together on a fresh checkout.
+          # No -L and no -X here: curl re-issues a POST on the redirect when
+          # both are given, which turns the 303 to /my into a POST /my and a 404.
+          curl -fsS -c /tmp/jar \
+            -d 'email=smoke@example.com&password=correct-horse-battery' \
+            http://localhost:8787/signup > /dev/null
+          curl -fsS -b /tmp/jar http://localhost:8787/for-you -o /tmp/foryou.html
+          grep -q 'For you' /tmp/foryou.html || { echo "/for-you did not render"; exit 1; }
+          curl -fsS -b /tmp/jar http://localhost:8787/alerts > /dev/null
+          curl -fsS -b /tmp/jar http://localhost:8787/my/setup > /dev/null
+          curl -fsS -b /tmp/jar http://localhost:8787/my/preferences > /dev/null
 
           # A matter page, found the way a reader would find one, so a broken
           # link between the index and the timeline fails the build.

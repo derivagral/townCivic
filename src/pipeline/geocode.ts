@@ -170,3 +170,54 @@ export async function geocodeMatters(db: Db, options: GeocodeOptions = {}): Prom
 
   return reports;
 }
+
+/**
+ * Resolve one address on demand, for a reader setting their home location.
+ *
+ * Separate from `geocodeMatters` because the caller is a form post rather than
+ * a batch, so there is nothing to cache it against and no politeness delay to
+ * spend — it is one request, made because a person just asked for it. The town
+ * fence still applies: an address that resolves outside the town is refused
+ * rather than stored, because "near home" measured from the wrong Milton is a
+ * silently wrong feed rather than a visible error.
+ *
+ * A failure returns null and the caller says so. Storing an unresolved home
+ * would leave near-home rules looking configured while firing on nothing.
+ */
+export async function geocodeAddress(
+  address: string,
+  options: {
+    jurisdiction?: string;
+    town?: string;
+    state?: string;
+    boundary?: Boundary | null;
+    box?: BoundingBox;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<{ lat: number; lon: number; matched: string } | null> {
+  const doFetch = options.fetchImpl ?? fetch;
+  const town = options.town ?? 'Milton';
+  const state = options.state ?? 'MA';
+  const boundary =
+    options.boundary !== undefined
+      ? options.boundary
+      : loadBoundary(options.jurisdiction ?? config.defaultJurisdiction);
+
+  try {
+    const response = await doFetch(censusUrl(address, town, state), {
+      headers: { 'user-agent': config.userAgent },
+      signal: AbortSignal.timeout(config.requestTimeoutMs),
+    });
+    if (!response.ok) return null;
+
+    const match = parseCensusResponse(await response.text());
+    if (!match) return null;
+
+    const inside = boundary ? pointInBoundary(match, boundary) : withinBox(match, options.box ?? MILTON_BBOX);
+    if (!inside) return null;
+
+    return { lat: match.lat, lon: match.lon, matched: match.matchedAddress };
+  } catch {
+    return null;
+  }
+}
