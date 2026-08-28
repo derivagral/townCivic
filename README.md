@@ -39,8 +39,9 @@ dispositions out of minutes into a separate index, and the site works without it
 ### The stages, and what each one needs
 
 Each stage is a separate command on purpose — they fail, resume and re-run
-independently, and only two of them touch the network. The ordering is a real
-data dependency, not a convention:
+independently, and the two that read only the database (`link`, and `interpret`
+under its default rules provider) can be re-run freely at no cost to anyone
+else's server. The ordering is a real data dependency, not a convention:
 
 | Stage       | Needs        | Reads                         | Writes                           | Network                    |
 | ----------- | ------------ | ----------------------------- | -------------------------------- | -------------------------- |
