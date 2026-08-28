@@ -29,8 +29,39 @@ npm install
 npm run ingest     # fetch every enabled source (~20 requests, about a minute)
 npm run extract    # open the linked PDFs and read what the meetings are about
 npm run link       # group records about the same property into timelines
+npm run geocode    # resolve those properties to points, for the map
 npm run serve      # http://localhost:8787
 ```
+
+`npm run interpret` is optional and runs whenever you want it: it reads votes and
+dispositions out of minutes into a separate index, and the site works without it.
+
+### The stages, and what each one needs
+
+Each stage is a separate command on purpose — they fail, resume and re-run
+independently, and only two of them touch the network. The ordering is a real
+data dependency, not a convention:
+
+| Stage       | Needs        | Reads                         | Writes                           | Network                    |
+| ----------- | ------------ | ----------------------------- | -------------------------------- | -------------------------- |
+| `ingest`    | the registry | source listings               | `events`, `documents`, `fetches` | yes                        |
+| `extract`   | `ingest`     | `events.document_url`         | `attachments`, enriches `events` | yes                        |
+| `link`      | `extract`    | `events.subjects`, `doc_text` | `matters`, `matter_events`       | no                         |
+| `geocode`   | `link`       | `matters`                     | `places`                         | yes                        |
+| `interpret` | `extract`    | `events.doc_text`             | `interpretations`                | only with a model provider |
+
+Running one out of order is safe but does nothing useful: `geocode` selects the
+matters that have no place yet, so before `link` there is simply nothing to
+resolve, and it will say so rather than fail.
+
+**`--force` re-does work that was skipped as already done** — `ingest` ignores
+stored ETags, `extract` and `interpret` reprocess documents, `geocode` re-resolves
+addresses. `link` has no `--force` because every run is already a full rebuild of
+the jurisdiction's matters; there is no incremental state to invalidate.
+
+Accounts sit outside all of this. Signing in, watching a matter and the personal
+feed only ever _read_ what the pipeline produced — no stage depends on a user
+existing, and dropping every account changes nothing about the records.
 
 No API keys, no Docker, no database server. Storage is `node:sqlite`, built into
 Node — the only native dependency is Node itself.

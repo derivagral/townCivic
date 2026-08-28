@@ -13,12 +13,15 @@ import type { Stage } from '../matters/stages.ts';
  *
  * Everything here is derived from `events`, so the tables it writes can be
  * dropped and rebuilt at any time. It reads nothing from the network.
+ *
+ * Every run is a full rebuild of this jurisdiction's matters, which is why —
+ * unlike the network stages — `link` takes no `--force`. There is no
+ * incremental state to invalidate, and a change to the normalization rules
+ * takes effect everywhere on the next run rather than only on new records.
  */
 
 export interface LinkOptions {
   jurisdiction?: string;
-  /** Rebuild from scratch rather than updating the matters that changed. */
-  rebuild?: boolean;
   onProgress?: (report: LinkReport) => void;
 }
 
