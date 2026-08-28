@@ -66,3 +66,26 @@ describe('commands the UI tells people to run', () => {
     expect(missing, 'the web UI suggests scripts that do not exist').toEqual([]);
   });
 });
+
+describe('console noise', () => {
+  it('loads node:sqlite lazily, so the experimental warning can be filtered', () => {
+    // Node emits the warning when the builtin is linked — before any module
+    // body runs — so a static import here silently defeats util/quiet.ts and
+    // puts a warning line above the output of every command.
+    const db = fs.readFileSync(path.join(ROOT, 'src', 'db', 'index.ts'), 'utf8');
+    expect(db).not.toMatch(/^import \{[^}]*\} from 'node:sqlite'/m);
+    expect(db).toMatch(/createRequire\(import\.meta\.url\)\('node:sqlite'\)/);
+  });
+
+  it('keeps the warning filter as the CLI’s first import', () => {
+    const cli = fs.readFileSync(path.join(ROOT, 'src', 'cli.ts'), 'utf8');
+    const firstImport = cli.split('\n').find((line) => line.startsWith('import '));
+    expect(firstImport).toBe("import './util/quiet.ts';");
+  });
+
+  it('gives pdf.js its font assets, so extraction does not flood the console', () => {
+    const pdf = fs.readFileSync(path.join(ROOT, 'src', 'extract', 'pdf.ts'), 'utf8');
+    expect(pdf).toContain('standardFontDataUrl');
+    expect(pdf).toContain('cMapUrl');
+  });
+});

@@ -59,11 +59,34 @@ function pick(fields: Record<string, string>, pattern: RegExp): string | null {
 }
 
 /**
+ * "1.", "2)" — what the clerk uses to number a top-level agenda item.
+ *
+ * Arabic digits only, deliberately. Roman numerals are ambiguous with the
+ * lettered sub-list they usually follow: a Select Board agenda runs
+ * "a. … h. … i. … j. … k.", where `i.` is the letter after `h`, not one. Since
+ * Roman numerals here are always sub-items anyway, excluding them resolves the
+ * ambiguity in the direction the documents actually use.
+ */
+const ITEM_NUMBER = /^\d{1,2}[.)]\s+/;
+
+/** "*", "•", "-" — a bullet, whose marker is noise and gets stripped. */
+const BULLET_MARKER = /^[*•\-–]\s+/;
+
+/**
  * Split an agenda field into items.
  *
- * The template stores the agenda as one string with carriage returns. Numbered
- * lines are items; bullets under them are detail, so they are folded into the
- * item above rather than becoming phantom agenda entries.
+ * The template stores the whole agenda as one string of carriage returns, so
+ * the only structure available is how each line begins. A line starts a new
+ * item **only** when it opens with a number; everything else — lettered
+ * sub-items, bullets, and the wrapped remainder of a long line — folds into the
+ * item above it.
+ *
+ * Without that rule a four-page Select Board agenda reported 86 items, because
+ * every "a. Select Board Finance Committee" and every parenthetical
+ * continuation counted as an agenda item of its own.
+ *
+ * Some boards number nothing at all. Rather than fold such an agenda into a
+ * single blob, fall back to one item per line when no line is numbered.
  */
 export function splitAgenda(raw: string): string[] {
   const lines = raw
@@ -71,13 +94,20 @@ export function splitAgenda(raw: string): string[] {
     .map((line) => clean(line))
     .filter(Boolean);
 
+  const numbered = lines.some((line) => ITEM_NUMBER.test(line));
+
   const items: string[] = [];
   for (const line of lines) {
-    const isDetail = /^[*•\-–]\s*/.test(line);
-    const text = line.replace(/^[*•\-–]\s*/, '');
+    // A lettered or Roman marker is kept — "a. Forbes House Museum" reads
+    // better than "Forbes House Museum" once folded into the item above.
+    const text = line.replace(BULLET_MARKER, '');
     if (!text) continue;
 
-    if (isDetail && items.length) {
+    // With no numbering to go on, every line is its own item — the alternative
+    // is one unreadable paragraph.
+    const startsItem = numbered ? ITEM_NUMBER.test(line) : true;
+
+    if (!startsItem && items.length) {
       items[items.length - 1] = `${items.at(-1)} — ${text}`;
     } else {
       items.push(text);

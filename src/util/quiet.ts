@@ -1,12 +1,18 @@
 /**
  * Suppress Node's `node:sqlite` experimental warning.
  *
- * It fires on every database open, so it would prefix the output of every
- * command. The dependency is a deliberate choice — documented in the README —
- * and this filter is narrow enough that any other warning still gets through.
+ * It would otherwise prefix the output of every command. The dependency is a
+ * deliberate choice — documented in the README — and this filter is narrow
+ * enough that any other warning still gets through.
  *
- * Imported for its side effect by the CLI entry point, before any database is
- * opened. Remove it once `node:sqlite` is marked stable.
+ * Imported for its side effect by the CLI entry point, and it must stay the
+ * first import there. Node emits the warning when the builtin is *linked*,
+ * which happens before any module body runs, so this only works because
+ * `src/db/index.ts` loads `node:sqlite` with `require` during evaluation
+ * rather than importing it statically. Change that back to a static import
+ * and the warning reappears no matter what this file does.
+ *
+ * Remove both once `node:sqlite` is marked stable.
  */
 const original = process.emitWarning.bind(process);
 
