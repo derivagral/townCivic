@@ -105,6 +105,18 @@ jobs:
           curl -fsS -b /tmp/jar http://localhost:8787/my/setup > /dev/null
           curl -fsS -b /tmp/jar http://localhost:8787/my/preferences > /dev/null
 
+          # The receipt under a record: extraction ran, so at least one event
+          # page must show what was read out of it and the words it came from.
+          curl -fsS http://localhost:8787/ -o /tmp/index.html
+          FOUND=0
+          for EVENT in $(grep -o '/event/[a-f0-9]\{32\}' /tmp/index.html | head -20); do
+            if curl -fsS "http://localhost:8787$EVENT" | grep -q 'Who this affects'; then
+              FOUND=1
+              break
+            fi
+          done
+          test "$FOUND" = "1" || { echo "no event page showed its extracted impacts"; exit 1; }
+
           # A matter page, found the way a reader would find one, so a broken
           # link between the index and the timeline fails the build.
           curl -fsS http://localhost:8787/matters -o /tmp/matters.html

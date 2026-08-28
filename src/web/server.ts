@@ -63,12 +63,12 @@ import {
   setAlertRuleEnabled,
   suggestInterests,
 } from '../profile/store.ts';
-import { impactsForEvents } from '../pipeline/impacts.ts';
+import { impactsForEvent, impactsForEvents } from '../pipeline/impacts.ts';
 import { rankEvents } from '../profile/score.ts';
 import { evaluateAlerts, suggestedRules, validateRule } from '../profile/alerts.ts';
-import { acceptProposal, proposeFromText } from '../profile/setup.ts';
+import { acceptProposal, applyAnswers, proposeFromText } from '../profile/setup.ts';
 import type { Proposal } from '../profile/setup.ts';
-import { TEMPLATES } from '../profile/templates.ts';
+import { TEMPLATES, pendingQuestions } from '../profile/templates.ts';
 import {
   DEFAULT_RADIUS_METERS,
   TREATMENTS,
@@ -269,6 +269,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
         jurisdictionLabel: label,
         notice,
         matters: mattersForEvent(db, row.id),
+        impacts: impactsForEvent(db, row.id),
         interpretations: interpretationsForEvent(db, row.id).map((item) => ({
           kind: item.kind,
           provider: item.provider,
@@ -863,6 +864,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
       renderPreferences({
         preferences,
         suggestions: suggestInterests(db, current.user.id, preferences),
+        pending: pendingQuestions(preferences),
         knownInstitutions: knownInstitutions(db, jurisdiction),
         csrfToken: current.session.csrfToken,
         sampleData: hasSampleData(db),
@@ -957,6 +959,33 @@ export function createApp(db: Db, options: AppOptions = {}) {
 
     savePreferences(db, current.user.id, next);
     return c.redirect(`/my/preferences?notice=${encodeURIComponent(notice)}`, 303);
+  });
+
+  /**
+   * Answer a question that outlived the preview that raised it.
+   *
+   * Only questions the profile is actually still waiting on are honoured, which
+   * is the same guard the proposal flow uses: a form field invented between
+   * render and post cannot introduce a row nobody was asked about.
+   */
+  app.post('/my/questions', async (c) => {
+    const current = currentUser(c);
+    if (!current) return c.redirect('/login', 302);
+    const form = await c.req.parseBody({ all: true });
+    if (!checkCsrf(current.session, form['csrf'] ? String(form['csrf']) : undefined)) {
+      return c.text('Bad request: this form has expired. Reload the page and try again.', 403);
+    }
+
+    const preferences = getPreferences(db, current.user.id);
+    const choices: Record<string, string[]> = {};
+    for (const [key, value] of Object.entries(form)) {
+      if (!key.startsWith('answer:')) continue;
+      choices[key.slice('answer:'.length)] = (Array.isArray(value) ? value : [value]).map(String);
+    }
+
+    const questions = pendingQuestions(preferences).map((row) => row.question);
+    savePreferences(db, current.user.id, applyAnswers(preferences, questions, choices));
+    return c.redirect('/my/preferences?notice=' + encodeURIComponent('Answered.'), 303);
   });
 
   app.post('/my/suggestions', (c) =>

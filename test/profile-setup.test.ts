@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { TEMPLATES, applyTemplates, getTemplate } from '../src/profile/templates.ts';
-import { acceptProposal, formatProposal, proposeFromText } from '../src/profile/setup.ts';
+import { TEMPLATES, applyTemplates, getTemplate, pendingQuestions } from '../src/profile/templates.ts';
+import { acceptProposal, applyAnswers, formatProposal, proposeFromText } from '../src/profile/setup.ts';
 import {
   defaultPreferences,
   findInterest,
@@ -226,6 +226,49 @@ describe('accepting a proposal', () => {
   it('widens school geography when the reader is following schools', () => {
     const after = acceptProposal(defaultPreferences(), parent());
     expect(['townwide', 'selected_institutions']).toContain(scopeFor(after, 'schools'));
+  });
+});
+
+describe('questions that outlive the preview', () => {
+  it('keeps asking a question the profile has no answer to', () => {
+    // Accepting the retiree template without answering leaves property tax at
+    // `ask`, which does nothing. If nobody ever asks again, the system raised a
+    // question and then lost interest in the answer.
+    const after = acceptProposal(defaultPreferences(), retiree());
+    expect(treatmentFor(after, impactKey('finance', 'property_tax'))).toBe('ask');
+    expect(pendingQuestions(after).map((row) => row.question.id)).toContain('tenure');
+  });
+
+  it('retires the question once the profile carries an answer', () => {
+    const after = acceptProposal(defaultPreferences(), retiree());
+    const tenure = pendingQuestions(after).find((row) => row.question.id === 'tenure')!;
+    const answered = applyAnswers(after, [tenure.question], {
+      tenure: [impactKey('finance', 'property_tax')],
+    });
+
+    expect(treatmentFor(answered, impactKey('finance', 'property_tax'))).toBe('digest');
+    expect(pendingQuestions(answered).map((row) => row.question.id)).not.toContain('tenure');
+  });
+
+  it('retires a stage question answered by editing the profile directly', () => {
+    // The question is derived from the profile rather than stored as a queue, so
+    // an answer given anywhere retires it. Nagging a reader who already said is
+    // worse than missing one row.
+    const after = acceptProposal(defaultPreferences(), parent());
+    expect(pendingQuestions(after).some((row) => row.question.applies === 'school_stages')).toBe(true);
+
+    const edited = { ...after, schools: { ...after.schools, stages: ['middle' as const] } };
+    expect(pendingQuestions(edited).some((row) => row.question.applies === 'school_stages')).toBe(false);
+  });
+
+  it('asks nothing of a reader who accepted no template', () => {
+    expect(pendingQuestions(defaultPreferences())).toEqual([]);
+  });
+
+  it('honours only the questions it was given', () => {
+    const before = defaultPreferences();
+    const after = applyAnswers(before, [], { school_stages: ['elementary'] });
+    expect(after.schools.stages).toEqual([]);
   });
 });
 

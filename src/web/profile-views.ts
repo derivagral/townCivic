@@ -23,11 +23,12 @@ import {
 } from '../profile/preferences.ts';
 import type { Preferences, Treatment } from '../profile/preferences.ts';
 import { BLOCKED_DOMAINS, DECLARED_ONLY } from '../profile/blocked.ts';
+import { SCORING } from '../profile/score.ts';
 import type { ScoredEvent } from '../profile/score.ts';
 import type { AlertHit, AlertRule } from '../profile/alerts.ts';
 import { describeRule } from '../profile/alerts.ts';
 import type { Proposal } from '../profile/setup.ts';
-import type { ProfileTemplate } from '../profile/templates.ts';
+import type { ProfileTemplate, TemplateQuestion } from '../profile/templates.ts';
 import type { InterestSuggestion } from '../profile/store.ts';
 
 /**
@@ -496,6 +497,8 @@ export function renderSetup(model: SetupViewModel): string {
 export interface PreferencesViewModel extends PageChrome {
   preferences: Preferences;
   suggestions: InterestSuggestion[];
+  /** Questions a template asked that the profile still has no answer to. */
+  pending: { template: ProfileTemplate; question: TemplateQuestion }[];
   /** Institution names the extractor has actually seen, for the school picker. */
   knownInstitutions: string[];
   csrfToken: string;
@@ -569,12 +572,69 @@ export function renderPreferences(model: PreferencesViewModel): string {
 
   const home = preferences.home;
 
+  // Unanswered questions come first: a row sitting at "Ask" does nothing at all,
+  // so leaving the question buried under forty topic rows is the same as never
+  // having asked it.
+  const pending = model.pending.length
+    ? `<section class="agenda">
+    <h2>You have not answered these yet</h2>
+    <p class="count">Rows waiting on one of these are set to <strong>Ask</strong>, which means they are
+       doing nothing. Answering settles them; ignoring them leaves everything exactly as it is.</p>
+    <form method="post" action="/my/questions">
+      <input type="hidden" name="csrf" value="${escapeHtml(model.csrfToken)}">
+      ${model.pending
+        .map(
+          ({
+            template,
+            question,
+          }) => `<fieldset style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:8px 0">
+        <legend style="font-size:12.5px;color:var(--muted)">${escapeHtml(question.ask)}</legend>
+        ${question.options
+          .map(
+            (option) => `<label style="display:inline-flex;gap:5px;margin:3px 12px 3px 0;font-size:13.5px">
+          <input type="${question.single ? 'radio' : 'checkbox'}" name="answer:${escapeHtml(question.id)}"
+                 value="${escapeHtml(option.value)}"> ${escapeHtml(option.label)}</label>`,
+          )
+          .join('')}
+        <div class="origin">${escapeHtml(question.why)} From the ${escapeHtml(template.label)} template.</div>
+      </fieldset>`,
+        )
+        .join('')}
+      <div class="actions"><button type="submit">Answer</button></div>
+    </form>
+  </section>`
+    : '';
+
+  const suggestions = model.suggestions.length
+    ? `<section class="agenda">
+    <h2>Because of what you follow</h2>
+    <p class="count">Derived from subscriptions you created, never from what you opened. Each is a question,
+       and answering it makes the row yours rather than something the system decided.</p>
+    ${model.suggestions
+      .map(
+        (suggestion) => `<div class="subscription">
+      <span>${escapeHtml(suggestion.ask)} <span class="origin">${escapeHtml(suggestion.evidence)}</span></span>
+      <form method="post" action="/my/suggestions">
+        <input type="hidden" name="csrf" value="${escapeHtml(model.csrfToken)}">
+        <input type="hidden" name="key" value="${escapeHtml(suggestion.key)}">
+        <input type="hidden" name="next" value="/my/preferences">
+        <button type="submit" name="action" value="accept">Add it</button>
+      </form>
+    </div>`,
+      )
+      .join('')}
+  </section>`
+    : '';
+
   const body = `<div class="detail">
   <h1>Preferences</h1>
   <p>The whole profile, on one page. Every row here is something you or a template you accepted put there, and
      every row is removable. Nothing else feeds the ranking — there is no hidden vector, no cluster, and no
      “readers like you”.</p>
   ${model.notice ? `<p class="count" style="color:var(--accent)">${escapeHtml(model.notice)}</p>` : ''}
+
+  ${pending}
+  ${suggestions}
 
   <form method="post" action="/my/preferences">
     <input type="hidden" name="csrf" value="${escapeHtml(model.csrfToken)}">
@@ -625,6 +685,30 @@ export function renderPreferences(model: PreferencesViewModel): string {
     <div class="actions"><button type="submit">Save preferences</button>
       <a href="/for-you">See what it does</a></div>
   </form>
+
+  <section class="agenda">
+    <h2>How the ranking adds up</h2>
+    <p class="count">The whole weight table, because a ranking you cannot check is a ranking you have to take
+       on faith. Each number below is a base; what reaches the score is that base multiplied by how much
+       authority the thing that said so carries, so the same nominal strength counts for less when a template
+       proposed it than when you set it yourself.</p>
+    <table class="prefs">
+      <thead><tr><th>Signal</th><th>Weight</th></tr></thead>
+      <tbody>
+        <tr><td>A matter you follow</td><td class="treat">${SCORING.FOLLOWED_MATTER}</td></tr>
+        <tr><td>A school or building you named</td><td class="treat">${SCORING.INSTITUTION}</td></tr>
+        <tr><td>Inside your near-home radius</td><td class="treat">${SCORING.NEAR_HOME}</td></tr>
+        <tr><td>A school stage you picked</td><td class="treat">${SCORING.SCHOOL_STAGE}</td></tr>
+        <tr><td>A deadline inside ${SCORING.DEADLINE_WINDOW_DAYS} days</td><td class="treat">${SCORING.DEADLINE_SOON}</td></tr>
+        <tr><td>A board you follow</td><td class="treat">${SCORING.FOLLOWED_BODY}</td></tr>
+        <tr><td>A channel you watch townwide</td><td class="treat">${SCORING.TOWNWIDE}</td></tr>
+        <tr><td>Recent, at most</td><td class="treat">${SCORING.RECENCY_MAX}</td></tr>
+        <tr><td>Readers similar to you</td><td class="treat">not collected</td></tr>
+      </tbody>
+    </table>
+    <p class="count">Recency is deliberately small. A fresh record can reorder two equally relevant ones and can
+       never push an interest you declared off the page.</p>
+  </section>
 
   ${
     preferences.templates.length

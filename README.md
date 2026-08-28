@@ -562,6 +562,12 @@ That sentence travels into the Atom feed as well as the web page. A curated
 record that is least explicable in the place most people read it would defeat
 the point.
 
+Every record page carries the receipt: a **Who this affects** table listing what
+was extracted, the phrase it was read from, and the rule that fired. It is shown
+signed out as well as signed in, because a fact about a document is not personal
+— and putting the one thing that makes ranking auditable behind an account would
+only show it to people already inside the system.
+
 ### Templates are a shortcut, not an identity
 
 "Thirty-something parent" and "empty-nest retiree" are editable preference
@@ -585,6 +591,12 @@ saves nothing. On the web the same proposal is shown at `/my/setup` with Accept,
 Decline and "edit line by line instead", and it is kept either way, so _what did
 it decide about me, and when_ has an answer and a declined suggestion is not
 quietly re-offered.
+
+A row set to **Ask** does nothing at all until it is answered, and the question
+outlives the preview that raised it: accept "retiree" without saying whether you
+own or rent and the question is waiting on the preferences page. Outstanding
+questions are derived from the profile rather than stored as a queue, so
+answering anywhere — including by editing the row directly — retires them.
 
 Two behaviours in that example are the whole design in miniature:
 

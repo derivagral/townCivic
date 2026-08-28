@@ -323,40 +323,24 @@ function isReaderHeld(current: Preferences, key: string): boolean {
 }
 
 /**
- * Write the rows the reader looked at, and nothing else.
+ * Apply answers to setup questions, wherever they were answered.
  *
- * Answers are the interesting half. `choices` is keyed by question id and is filtered against the
- * questions this proposal actually asked, so a form field invented somewhere between the preview and
- * the post cannot introduce a row that was never shown. An answer carries the reader's own authority —
- * they typed it — which is why school stages land as `declared` and not as something a template
- * decided, and why the ownership question stores `finance:property_tax` as a topic rather than storing
- * that the reader owns a house. There is no field for the latter.
+ * Split out of `acceptProposal` because a question outlives the proposal that raised it. A reader who
+ * accepts "retiree" without saying whether they own or rent leaves a row sitting at `ask`, and that row
+ * has to be answerable later from the preferences page rather than only in the sixty seconds the
+ * preview was on screen. Both callers pass the questions they actually showed, so a form field invented
+ * between render and post cannot introduce a row nobody was asked about.
+ *
+ * An answer carries the reader's own authority, which is why everything written here is `declared`.
  */
-export function acceptProposal(
+export function applyAnswers(
   preferences: Preferences,
-  proposal: Proposal,
-  choices: Record<string, string[]> = {},
+  questions: TemplateQuestion[],
+  choices: Record<string, string[]>,
 ): Preferences {
   let next = preferences;
+  const asked = new Map(questions.map((question) => [question.id, question]));
 
-  for (const change of proposal.changes) {
-    // Defence in depth: a template cannot reach `mute`, and a hand-built proposal does not get to
-    // either. Muting is a decision a reader makes in the editor, one row at a time.
-    if (change.treatment === 'mute') continue;
-    next = upsertInterest(next, {
-      key: change.key,
-      treatment: change.treatment,
-      origin: change.template ? 'template' : 'declared',
-      ...(change.template ? { template: change.template } : {}),
-      note: change.why,
-    });
-  }
-
-  for (const row of proposal.geography) {
-    if (row.scope !== scopeFor(next, row.channel)) next = setScope(next, row.channel, row.scope);
-  }
-
-  const asked = new Map(proposal.questions.map((question) => [question.id, question]));
   for (const [id, values] of Object.entries(choices)) {
     const question = asked.get(id);
     if (!question) continue;
@@ -425,6 +409,45 @@ export function acceptProposal(
     // inventing coordinates from an answer to a yes/no question is exactly the kind of quiet guess this
     // module exists to refuse. The caller collects the address and writes it.
   }
+
+  return next;
+}
+
+/**
+ * Write the rows the reader looked at, and nothing else.
+ *
+ * Answers are the interesting half. `choices` is keyed by question id and is filtered against the
+ * questions this proposal actually asked, so a form field invented somewhere between the preview and
+ * the post cannot introduce a row that was never shown. An answer carries the reader's own authority —
+ * they typed it — which is why school stages land as `declared` and not as something a template
+ * decided, and why the ownership question stores `finance:property_tax` as a topic rather than storing
+ * that the reader owns a house. There is no field for the latter.
+ */
+export function acceptProposal(
+  preferences: Preferences,
+  proposal: Proposal,
+  choices: Record<string, string[]> = {},
+): Preferences {
+  let next = preferences;
+
+  for (const change of proposal.changes) {
+    // Defence in depth: a template cannot reach `mute`, and a hand-built proposal does not get to
+    // either. Muting is a decision a reader makes in the editor, one row at a time.
+    if (change.treatment === 'mute') continue;
+    next = upsertInterest(next, {
+      key: change.key,
+      treatment: change.treatment,
+      origin: change.template ? 'template' : 'declared',
+      ...(change.template ? { template: change.template } : {}),
+      note: change.why,
+    });
+  }
+
+  for (const row of proposal.geography) {
+    if (row.scope !== scopeFor(next, row.channel)) next = setScope(next, row.channel, row.scope);
+  }
+
+  next = applyAnswers(next, proposal.questions, choices);
 
   const accepted = proposal.matchedTemplates
     .map((match) => getTemplate(match.id))

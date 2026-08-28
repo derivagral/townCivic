@@ -4,6 +4,9 @@ import type { Channel } from '../taxonomy.ts';
 import { MATTER_KIND_LABELS } from '../matters/key.ts';
 import type { MatterKind } from '../matters/key.ts';
 import { STAGE_LABELS, isStage } from '../matters/stages.ts';
+import { DIMENSION_LABELS, IMPACT_DIMENSIONS, impactKey, impactLabel } from '../profile/impacts.ts';
+import type { Impact } from '../profile/impacts.ts';
+import { truncate as truncateText } from '../util/text.ts';
 import { dayKey, formatDate, formatDayHeading, hasRealTime, relativeDays } from '../util/dates.ts';
 
 export function escapeHtml(input: unknown): string {
@@ -375,6 +378,8 @@ export interface EventViewModel {
   matters?: (MatterRow & { stage: string })[];
   /** Model-derived readings of the document. Never the record itself. */
   interpretations?: InterpretationView[];
+  /** What the impact stage read out of this record, and the words it read it from. */
+  impacts?: Impact[];
   account?: string | null;
 }
 
@@ -452,6 +457,7 @@ export function renderEvent(model: EventViewModel): string {
   </div>
   ${agenda}
   ${matters}
+  ${renderImpacts(model.impacts ?? [])}
   ${renderInterpretations(model.interpretations ?? [])}
   <dl>${rows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join('')}</dl>
 </div>`;
@@ -464,6 +470,53 @@ export function renderEvent(model: EventViewModel): string {
     body,
     ...(model.account !== undefined ? { account: model.account } : {}),
   });
+}
+
+/**
+ * What ranking was told about this record, and where each claim came from.
+ *
+ * The whole case for extracting impacts deterministically is that a surprising
+ * one can be argued with, and that argument is only available if the reader can
+ * see the phrase behind it. So this is not a debug panel: it is the receipt for
+ * anything the For You page said about why it showed them this, sitting on the
+ * record itself where a reader who disagrees will look.
+ *
+ * Shown to everyone, signed in or not. A fact about the document is not
+ * personal, and hiding it behind an account would make the one thing that makes
+ * the ranking auditable available only to people already inside it.
+ */
+function renderImpacts(impacts: Impact[]): string {
+  if (!impacts.length) return '';
+
+  const rows = IMPACT_DIMENSIONS.flatMap((dimension) => {
+    const matching = impacts.filter((impact) => impact.dimension === dimension);
+    if (!matching.length) return [];
+    return matching.map(
+      (impact, index) => `<tr>
+  <td>${index === 0 ? escapeHtml(DIMENSION_LABELS[dimension]) : ''}</td>
+  <td><strong>${escapeHtml(impactLabel(impactKey(impact.dimension, impact.value)))}</strong>
+      ${impact.detail ? `<span class="pill">${escapeHtml(impact.detail)}</span>` : ''}
+      ${impact.confidence === 'derived' ? '<span class="pill off">inferred</span>' : ''}</td>
+  <td class="origin">${
+    impact.evidence
+      ? `“${escapeHtml(truncateText(impact.evidence, 160))}”`
+      : 'From the record’s own metadata, not its text.'
+  }
+      <br><span class="count">rule <code>${escapeHtml(impact.rule)}</code></span></td>
+</tr>`,
+    );
+  }).join('');
+
+  return `<section class="agenda">
+  <h2>Who this affects</h2>
+  <p class="count">Extracted by rule from the text above, and stored separately from the record. This is what
+     the <a href="/for-you">For you</a> ranking reads; the chronological record does not use it at all. Every
+     line quotes what it was read from, so a wrong one can be traced to the phrase that caused it.</p>
+  <table class="prefs">
+    <thead><tr><th>Dimension</th><th>Read as</th><th>From</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+</section>`;
 }
 
 /* ----------------------------------------------------- derived readings (AI) */

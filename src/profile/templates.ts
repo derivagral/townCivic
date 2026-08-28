@@ -1,7 +1,7 @@
 import type { Channel } from '../taxonomy.ts';
 import { SCHOOL_SCOPE_LABELS, SCHOOL_SCOPES } from './impacts.ts';
 import type { GeoScope, Preferences, Treatment } from './preferences.ts';
-import { setScope, upsertInterest } from './preferences.ts';
+import { scopeFor, setScope, treatmentFor, upsertInterest } from './preferences.ts';
 
 /**
  * Starter templates, which are bundles of ordinary preference rows and nothing else.
@@ -707,4 +707,73 @@ export function applyTemplates(preferences: Preferences, ids: string[], now = ne
   }));
   const kept = next.templates.filter((row) => !accepted.some((entry) => entry.id === row.id));
   return { ...next, templates: [...kept, ...accepted], updatedAt: now.toISOString() };
+}
+
+/**
+ * Questions a reader has been shown but never answered.
+ *
+ * `ask` is the one treatment that does nothing, and that is only defensible if
+ * somebody eventually asks. A reader who accepts the retiree template without
+ * answering the ownership question leaves `finance:property_tax` sitting at
+ * `ask` forever, which reads as a system that raised a question and then lost
+ * interest in the answer.
+ *
+ * This derives the outstanding ones from the profile rather than storing a
+ * queue: a question is outstanding when a template the reader accepted asked it
+ * and the profile does not yet carry an answer. That means it self-heals — an
+ * answer given anywhere, including by editing a row directly, retires the
+ * question — and it needs no state that could drift out of step with the rows
+ * it is asking about.
+ */
+export function pendingQuestions(
+  preferences: Preferences,
+): { template: ProfileTemplate; question: TemplateQuestion }[] {
+  const pending: { template: ProfileTemplate; question: TemplateQuestion }[] = [];
+
+  for (const accepted of preferences.templates) {
+    const template = getTemplate(accepted.id);
+    if (!template) continue;
+
+    for (const question of template.questions) {
+      if (isAnswered(preferences, template, question)) continue;
+      if (pending.some((row) => row.question.id === question.id)) continue;
+      pending.push({ template, question });
+    }
+  }
+
+  return pending;
+}
+
+/**
+ * Whether the profile already carries an answer to one question.
+ *
+ * Deliberately generous: any sign of an answer retires the question. Nagging a
+ * reader who has already told the system what it wanted to know, in a slightly
+ * different place, is worse than missing one unanswered row.
+ */
+function isAnswered(
+  preferences: Preferences,
+  template: ProfileTemplate,
+  question: TemplateQuestion,
+): boolean {
+  switch (question.applies) {
+    case 'school_stages':
+      return preferences.schools.stages.length > 0;
+    case 'institutions':
+      return (
+        preferences.schools.institutions.length > 0 ||
+        preferences.interests.some((interest) => interest.key.startsWith('institution:'))
+      );
+    case 'home':
+      return preferences.home !== null;
+    case 'geography':
+      return question.options.some((option) => scopeFor(preferences, option.value as Channel) !== 'off');
+    case 'interests':
+      // The rows this question exists to settle are exactly the ones the
+      // template left at `ask`. Once none of them is still `ask`, it is settled
+      // — whichever way the reader settled it.
+      return !template.changes.some(
+        (change) => change.treatment === 'ask' && treatmentFor(preferences, change.key) === 'ask',
+      );
+  }
 }
