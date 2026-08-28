@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { extractPdf, looksLikePdf } from '../src/extract/pdf.ts';
 import { parseMeetingNotice, splitAgenda, summarizeAgenda } from '../src/extract/meeting-notice.ts';
 import { preferDocumentUrl } from '../src/pipeline/extract.ts';
@@ -35,6 +36,16 @@ describe('pdf extraction', () => {
 
   it('does not flag a text PDF as scanned', async () => {
     expect((await extractPdf(readNotice())).likelyScanned).toBe(false);
+  });
+
+  it('finds the font and cmap assets pdf.js needs', () => {
+    // Missing these logged a wall of "Ensure that the `standardFontDataUrl` API
+    // parameter is provided" — one line per font per document — which buried
+    // the extract stage's own output. A pdfjs upgrade that moved or renamed
+    // these directories should fail here rather than in a noisy console.
+    const root = path.dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'));
+    expect(fs.existsSync(path.join(root, 'standard_fonts'))).toBe(true);
+    expect(fs.existsSync(path.join(root, 'cmaps'))).toBe(true);
   });
 
   it('recognizes a PDF by its magic bytes', () => {
@@ -101,6 +112,45 @@ describe('agenda parsing', () => {
       '2. Administrative Items — Minutes — Staff Update',
       '3. Adjourn',
     ]);
+  });
+
+  it('folds lettered sub-items into the item they belong to', () => {
+    // A real Select Board agenda appoints members to a dozen committees under
+    // one numbered item. Counting each as an agenda item reported 86 items for
+    // a four-page agenda that actually has eleven.
+    const items = splitAgenda(
+      '1. Call to Order\r\r2. Discussion – Appointments:\r' +
+        'a. Finance Committee\rb. Policy Committee\r\r3. Adjourn',
+    );
+    expect(items).toHaveLength(3);
+    expect(items[1]).toBe('2. Discussion – Appointments: — a. Finance Committee — b. Policy Committee');
+  });
+
+  it('treats "i." as the letter after "h", not as Roman numeral one', () => {
+    // The ambiguity is real and the documents resolve it one way: a lettered
+    // list runs past h into i, j, k. Splitting there put half a committee list
+    // into an agenda item of its own.
+    const items = splitAgenda(
+      '3. Appointments:\rh. Landing Committee\ri. MPEG Access\rj. PILOT Committee\r\r4. Next item',
+    );
+    expect(items).toHaveLength(2);
+    expect(items[0]).toContain('i. MPEG Access');
+    expect(items[0]).toContain('j. PILOT Committee');
+  });
+
+  it('folds a wrapped continuation line into the line above', () => {
+    const items = splitAgenda(
+      '2. Annual Town Meeting Articles\r(see list enclosed at the end of the notice)\r\r3. Adjourn',
+    );
+    expect(items).toHaveLength(2);
+    expect(items[0]).toBe('2. Annual Town Meeting Articles — (see list enclosed at the end of the notice)');
+  });
+
+  it('falls back to one item per line when nothing is numbered', () => {
+    // Some boards number nothing. Folding everything into one blob would be
+    // worse than over-splitting, so the rule inverts when no line is numbered.
+    const items = splitAgenda('Notice of Intent - 64 Park Street\rNew Business\rAdjournment');
+    expect(items).toEqual(['Notice of Intent - 64 Park Street', 'New Business', 'Adjournment']);
   });
 
   it('skips numbered boilerplate when summarizing', () => {

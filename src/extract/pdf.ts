@@ -1,3 +1,6 @@
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 /**
@@ -37,6 +40,40 @@ export interface PdfExtraction {
 /** Below this, a page is not carrying real text. */
 const SCANNED_CHARS_PER_PAGE = 100;
 
+/**
+ * Where pdf.js should find the Foxit substitutes for the 14 standard PDF fonts,
+ * and the character maps for non-Latin encodings.
+ *
+ * Both ship inside `pdfjs-dist`. Without them every notice logs a wall of
+ * "Ensure that the `standardFontDataUrl` API parameter is provided" — one line
+ * per font per document, which buried the actual progress output — and text set
+ * in a standard font can extract with the wrong glyph widths.
+ *
+ * Resolved from the installed package rather than hard-coded, so it keeps
+ * working under npm, pnpm and a hoisted or nested `node_modules`.
+ */
+function assetUrls(): { standardFontDataUrl: string; cMapUrl: string } {
+  const packageJson = createRequire(import.meta.url).resolve('pdfjs-dist/package.json');
+  const root = path.dirname(packageJson);
+  // pdf.js joins these with a filename, so each needs its trailing separator.
+  return {
+    standardFontDataUrl: `${pathToFileURL(path.join(root, 'standard_fonts')).href}/`,
+    cMapUrl: `${pathToFileURL(path.join(root, 'cmaps')).href}/`,
+  };
+}
+
+const ASSETS = assetUrls();
+
+/**
+ * pdf.js verbosity: 0 = errors only, 1 = warnings (its default), 5 = info.
+ *
+ * Municipal PDFs are produced by whatever the clerk had to hand, so they
+ * routinely trip cosmetic complaints — "TT: undefined function", an unsupported
+ * "Hide" action — that say nothing about whether extraction worked. Real
+ * failures still throw and are reported per document by the extract stage.
+ */
+const VERBOSITY_ERRORS = 0;
+
 function fieldValue(value: unknown): string {
   if (value == null) return '';
   if (typeof value === 'string') return value;
@@ -54,6 +91,10 @@ export async function extractPdf(bytes: Uint8Array): Promise<PdfExtraction> {
     isEvalSupported: false,
     useSystemFonts: false,
     useWorkerFetch: false,
+    standardFontDataUrl: ASSETS.standardFontDataUrl,
+    cMapUrl: ASSETS.cMapUrl,
+    cMapPacked: true,
+    verbosity: VERBOSITY_ERRORS,
   }).promise;
 
   try {
