@@ -100,6 +100,32 @@ const jurisdiction = values.jurisdiction ?? config.defaultJurisdiction;
 const sourceIds = values.source ?? [];
 
 /**
+ * Catch `npm run link --jurisdiction all`.
+ *
+ * Without a `--` separator, npm keeps the flag for itself: it sets
+ * `npm_config_jurisdiction` in the environment and passes only the *value*
+ * through as a bare positional. So the command runs, silently, against the
+ * default town — which for `link` means a no-op and for
+ *
+ *     npm run clear --jurisdiction hull-ma --scope town
+ *
+ * means clearing Milton's derived data instead of dropping Hull. The CLI
+ * receives `clear hull-ma` with no flags at all.
+ *
+ * Two signals, either of which is enough. A stray positional is the reliable
+ * one — every value-taking flag leaves its value behind — and the environment
+ * variable names which flag it was. Only flags npm has no config of its own for
+ * are checked, so nobody's `.npmrc` can trigger this.
+ */
+const NPM_SWALLOWS = ['jurisdiction', 'source', 'limit', 'since', 'provider', 'port'] as const;
+
+function npmAteTheFlags(): string[] {
+  return NPM_SWALLOWS.filter(
+    (flag) => process.env[`npm_config_${flag}`] !== undefined && values[flag] === undefined,
+  );
+}
+
+/**
  * Which towns a command runs over.
  *
  * `--jurisdiction all` is what makes a scheduled refresh a single line no
@@ -140,9 +166,10 @@ function flushJson(): void {
 async function forEachTown(run: (town: string) => Promise<number>): Promise<number> {
   let worst = 0;
   for (const town of targets) {
-    if (targets.length > 1 && !values.json) {
-      console.log(`\n${bold(getProfile(town).label)} ${dim(town)}`);
-    }
+    // Named even when there is only one, so a run that quietly fell back to the
+    // default town says so. That is the difference between noticing
+    // `npm run link --jurisdiction all` did nothing and not noticing.
+    if (!values.json) console.log(`\n${bold(getProfile(town).label)} ${dim(town)}`);
     worst = Math.max(worst, await run(town));
   }
   return worst;
@@ -152,6 +179,20 @@ async function main(): Promise<number> {
   if (values.help || command === 'help') {
     console.log(USAGE);
     return 0;
+  }
+
+  const eaten = npmAteTheFlags();
+  const strays = positionals.slice(1);
+  if (eaten.length || strays.length) {
+    console.error(
+      `[31mnpm kept ${eaten.map((flag) => `--${flag}`).join(', ') || 'the flags you passed'} for itself — ` +
+        `this command never saw ${eaten.length === 1 ? 'it' : 'them'}.[0m\n\n` +
+        `  npm run ${command} [1m--[0m ${eaten.map((flag) => `--${flag} <value>`).join(' ') || '--flag value'}\n\n` +
+        'The `--` is what tells npm that the rest belongs to the script. Without it npm reads the flag\n' +
+        `as its own${strays.length ? `, passing on only the bare value (${strays.join(', ')})` : ''}, so this would have run against the default\n` +
+        'town rather than the one you asked for. `npx tsx src/cli.ts` takes the flags directly.',
+    );
+    return 1;
   }
 
   // `clear` is the exception: its whole job can be to remove a town the
@@ -268,7 +309,12 @@ async function main(): Promise<number> {
         console.log(
           `\n${summary.eventsConsidered} records → ${summary.matters} matters, ${summary.links} links.`,
         );
-        console.log(dim(`${summary.timelines} carry more than one record.`));
+        console.log(
+          dim(
+            `${summary.timelines} carry more than one record` +
+              (summary.placed ? `; ${summary.placed} placed from the geocode cache, no network.` : '.'),
+          ),
+        );
         return 0;
       });
     }

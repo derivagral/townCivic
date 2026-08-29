@@ -62,9 +62,18 @@ export interface GeocodeReport {
 interface Candidate {
   id: string;
   label: string;
+  key: string;
   jurisdiction: string;
 }
 
+/**
+ * Address matters this run should ask about.
+ *
+ * The `NOT EXISTS` is against `geocodes`, not `places`: an answer already in the
+ * cache is an answer, whether or not the matter it was asked for still exists.
+ * Selecting on `places` is what made every `link` rebuild re-ask the geocoder
+ * for the whole town.
+ */
 function selectCandidates(db: Db, options: GeocodeOptions): Candidate[] {
   const conditions = ["m.kind = 'address'"];
   const params: unknown[] = [];
@@ -72,15 +81,18 @@ function selectCandidates(db: Db, options: GeocodeOptions): Candidate[] {
     conditions.push('m.jurisdiction = ?');
     params.push(options.jurisdiction);
   }
-  if (!options.force) conditions.push('p.matter_id IS NULL');
+  if (!options.force) {
+    conditions.push(
+      `NOT EXISTS (SELECT 1 FROM geocodes g WHERE g.jurisdiction = m.jurisdiction AND g.key = m.key)`,
+    );
+  }
 
   // Busiest first: if a run is cut short, the properties the town is actually
   // arguing about are the ones that got resolved.
   return db
     .prepare(
-      `SELECT m.id, m.label, m.jurisdiction
+      `SELECT m.id, m.label, m.key, m.jurisdiction
          FROM matters m
-         LEFT JOIN places p ON p.matter_id = m.id
         WHERE ${conditions.join(' AND ')}
         ORDER BY m.event_count DESC, m.last_at DESC
         LIMIT ?`,
@@ -88,26 +100,75 @@ function selectCandidates(db: Db, options: GeocodeOptions): Candidate[] {
     .all(...(params as never[]), options.limit ?? 200) as unknown as Candidate[];
 }
 
-function record(
-  db: Db,
-  matterId: string,
-  place: { lat: number | null; lon: number | null; matched: string | null; failure: string | null },
-): void {
+interface Answer {
+  lat: number | null;
+  lon: number | null;
+  matched: string | null;
+  failure: string | null;
+}
+
+/**
+ * Write what the geocoder said, to the cache and to the map.
+ *
+ * Two writes on purpose. `geocodes` is the answer to a question about an
+ * address and outlives every rebuild of the matters; `places` is where that
+ * answer lands for the matter that happens to be asking today.
+ */
+function record(db: Db, candidate: Candidate, answer: Answer): void {
+  const now = new Date().toISOString();
+  const provider = answer.lat === null ? 'none' : 'census';
+
+  db.prepare(
+    `INSERT INTO geocodes (jurisdiction, key, query, provider, lat, lon, matched, failure, retrieved_at)
+     VALUES (?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(jurisdiction, key, provider) DO UPDATE SET
+       query = excluded.query, lat = excluded.lat, lon = excluded.lon, matched = excluded.matched,
+       failure = excluded.failure, retrieved_at = excluded.retrieved_at`,
+  ).run(
+    candidate.jurisdiction,
+    candidate.key,
+    candidate.label,
+    provider,
+    answer.lat,
+    answer.lon,
+    answer.matched,
+    answer.failure,
+    now,
+  );
+
   db.prepare(
     `INSERT INTO places (matter_id, lat, lon, matched, provider, failure, geocoded_at)
      VALUES (?,?,?,?,?,?,?)
      ON CONFLICT(matter_id) DO UPDATE SET
        lat = excluded.lat, lon = excluded.lon, matched = excluded.matched,
        provider = excluded.provider, failure = excluded.failure, geocoded_at = excluded.geocoded_at`,
-  ).run(
-    matterId,
-    place.lat,
-    place.lon,
-    place.matched,
-    place.lat === null ? 'none' : 'census',
-    place.failure,
-    new Date().toISOString(),
-  );
+  ).run(candidate.id, answer.lat, answer.lon, answer.matched, provider, answer.failure, now);
+}
+
+/**
+ * Fill `places` from what the geocoder has already been asked.
+ *
+ * Called by `link` after it rebuilds a town's matters, which is what keeps the
+ * map from emptying on every run. Pure database work: no network, no provider,
+ * and safe to call as often as you like.
+ */
+export function placeFromCache(db: Db, jurisdiction?: string): number {
+  const where = jurisdiction ? 'AND m.jurisdiction = ?' : '';
+  const params = (jurisdiction ? [jurisdiction] : []) as never[];
+  const before = (db.prepare('SELECT count(*) AS n FROM places').get() as { n: number }).n;
+
+  db.prepare(
+    `INSERT INTO places (matter_id, lat, lon, matched, provider, failure, geocoded_at)
+     SELECT m.id, g.lat, g.lon, g.matched, g.provider, g.failure, g.retrieved_at
+       FROM matters m
+       JOIN geocodes g ON g.jurisdiction = m.jurisdiction AND g.key = m.key
+      WHERE m.kind = 'address' ${where}
+     ON CONFLICT(matter_id) DO UPDATE SET
+       lat = excluded.lat, lon = excluded.lon, matched = excluded.matched,
+       provider = excluded.provider, failure = excluded.failure, geocoded_at = excluded.geocoded_at`,
+  ).run(...params);
+
+  return (db.prepare('SELECT count(*) AS n FROM places').get() as { n: number }).n - before;
 }
 
 /**
@@ -163,7 +224,7 @@ export async function geocodeMatters(db: Db, options: GeocodeOptions = {}): Prom
       const match = parseCensusResponse(await response.text());
       if (!match) {
         report.error = 'no match';
-        record(db, candidate.id, { lat: null, lon: null, matched: null, failure: 'no match' });
+        record(db, candidate, { lat: null, lon: null, matched: null, failure: 'no match' });
       } else if (!insideTown(match)) {
         // Two different mistakes this catches. There is a Milton in Vermont,
         // New Hampshire and Florida, so a geocoder can answer confidently about
@@ -172,14 +233,14 @@ export async function geocodeMatters(db: Db, options: GeocodeOptions = {}): Prom
         // continues over the line can resolve to a house that is not in this
         // town. Only the outline catches the second.
         report.error = `outside ${town} (${match.lat.toFixed(4)}, ${match.lon.toFixed(4)})`;
-        record(db, candidate.id, {
+        record(db, candidate, {
           lat: null,
           lon: null,
           matched: match.matchedAddress,
           failure: report.error,
         });
       } else {
-        record(db, candidate.id, {
+        record(db, candidate, {
           lat: match.lat,
           lon: match.lon,
           matched: match.matchedAddress,

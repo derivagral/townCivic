@@ -81,6 +81,10 @@ authority. `--dry-run` counts what would go using the same SQL the delete uses.
 because otherwise the next `ingest` sends them, the town answers 304, and the
 town you just emptied refills with nothing.
 
+`derived` and `records` keep the geocode cache. `link` rebuilds `places` from it
+with no network, so rebuilding timelines and the map is free; only `--scope town`
+drops the cache, because only then are the addresses gone too.
+
 ### After an upgrade
 
 ```bash
@@ -168,6 +172,8 @@ re-downloading the town's entire archive on every deploy, which is rude.
 The defaults exist for a reason and the schedule is part of them:
 
 - One request per host per second (`TOWNCIVIC_HOST_DELAY_MS`).
+- The geocode cache, which means the US Census is asked about each address once
+  rather than on every refresh. `link` re-derives the map from it for free.
 - Conditional GETs, so an unchanged page costs the town a 304.
 - Twice a day. Meeting notices run on a 48-hour clock; polling hourly finds the
   same nothing twenty-three extra times.

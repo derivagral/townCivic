@@ -18,7 +18,13 @@ import { hasJurisdiction, orphanJurisdictions } from '../registry/index.ts';
  *   derived   matters, timelines, map pins, model readings   → link, geocode, interpret
  *   records   the above plus `events` and what hangs off them → ingest, extract, …
  *   town      the above plus the town's sources, fetch log,
- *             document index and its row in `jurisdictions`   → the town is gone
+ *             document index, geocode cache and its row in
+ *             `jurisdictions`                                 → the town is gone
+ *
+ * The geocode cache is the one thing `derived` and `records` deliberately keep.
+ * It is what a public geocoder said about an address, not something derived from
+ * this town's records, and keeping it is what makes rebuilding the layers above
+ * cost nothing but CPU.
  *
  * `town` is what to run for a jurisdiction removed from the registry, and what
  * `--orphans` runs for every such jurisdiction it finds.
@@ -126,6 +132,15 @@ function plan(scope: ClearScope): { table: string; count: string; delete: string
       table: 'sources',
       count: 'SELECT count(*) AS n FROM sources WHERE jurisdiction = ?',
       delete: 'DELETE FROM sources WHERE jurisdiction = ?',
+    },
+    {
+      // Only at this scope. The geocode cache is an answer about an address
+      // rather than anything derived from our records, so `derived` and
+      // `records` keep it — that is what makes rebuilding either of them free
+      // of network cost. Dropping the town drops its addresses with it.
+      table: 'geocodes',
+      count: 'SELECT count(*) AS n FROM geocodes WHERE jurisdiction = ?',
+      delete: 'DELETE FROM geocodes WHERE jurisdiction = ?',
     },
     {
       table: 'jurisdictions',

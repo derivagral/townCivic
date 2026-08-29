@@ -340,15 +340,51 @@ CREATE TRIGGER IF NOT EXISTS interpretations_fts_update AFTER UPDATE ON interpre
   INSERT INTO interpretations_fts(rowid, text) VALUES (new.rowid, new.text);
 END;
 
--- Where a matter is, when it has a place. One row per matter, including the
--- ones that failed to resolve — a recorded miss stops the geocoder being asked
--- the same unanswerable question on every run.
+-- What a geocoder answered about one address, keyed by the question rather than
+-- by whoever asked it.
+--
+-- This exists because `link` is a full rebuild: it deletes every matter for a
+-- town and re-inserts them, and `places.matter_id` cascades, so before this
+-- table every `link` run threw away every point in that town. The scheduled
+-- refresh runs `link` and then `geocode --limit 50` twice a day, which meant a
+-- town with more than fifty addresses never finished being placed and the
+-- Census geocoder was asked the same questions forever.
+--
+-- So the expensive, external, slow-changing thing — a street address does not
+-- move — is stored against the thing that identifies it: the town and the
+-- normalized address, which is `matters.key`. Matters come and go underneath it.
+-- Misses are cached too, so an address the geocoder cannot parse is asked about
+-- once rather than on every run.
+CREATE TABLE IF NOT EXISTS geocodes (
+  jurisdiction TEXT NOT NULL,
+  -- The normalized address: the same value as `matters.key` for an address
+  -- matter, so re-linking can rejoin them without re-asking anyone.
+  key          TEXT NOT NULL,
+  -- What was actually sent, which is the prettier label rather than the key.
+  -- Kept because it is the only way to see why an answer came back odd.
+  query        TEXT NOT NULL,
+  provider     TEXT NOT NULL,             -- census | manual
+  lat          REAL,
+  lon          REAL,
+  -- The address as the geocoder understood it. Storing it is how a plausible
+  -- but wrong match becomes visible instead of just being a pin in the water.
+  matched      TEXT,
+  -- Set when the lookup ran but produced nothing usable, or produced a point
+  -- outside the town. A recorded miss is the reason to ask only once.
+  failure      TEXT,
+  retrieved_at TEXT NOT NULL,
+  PRIMARY KEY (jurisdiction, key, provider)
+);
+
+-- Where a matter is, when it has a place.
+--
+-- Now a projection of `geocodes` onto the current matters rather than a store
+-- in its own right: `link` refills it from the cache, and `geocode` only ever
+-- asks about addresses the cache has never seen. Dropping it costs nothing.
 CREATE TABLE IF NOT EXISTS places (
   matter_id      TEXT PRIMARY KEY REFERENCES matters(id) ON DELETE CASCADE,
   lat            REAL,
   lon            REAL,
-  -- The address as the geocoder understood it. Storing it is how a plausible
-  -- but wrong match becomes visible instead of just being a pin in the water.
   matched        TEXT,
   -- census | manual | none
   provider       TEXT NOT NULL,

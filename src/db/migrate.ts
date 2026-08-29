@@ -25,7 +25,7 @@ import { config } from '../config.ts';
  * finds most of them already done, and lands in the same place as a fresh one.
  */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /** Columns introduced after the first release. Additive, so an upgrade is free. */
 const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
@@ -75,6 +75,25 @@ const MIGRATIONS: Migration[] = [
     version: 3,
     name: 'the statewide sources are namespaced by town',
     up: renameSources,
+  },
+  {
+    version: 4,
+    name: 'seed the geocode cache from the points already resolved',
+    up(db) {
+      // Every point in `places` was paid for with a request to the Census
+      // geocoder. The cache is new, but the answers are not, and an upgrade
+      // that made the next `link` re-ask for all of them would be the very
+      // thing the cache exists to stop.
+      db.exec(`
+        INSERT OR IGNORE INTO geocodes
+          (jurisdiction, key, query, provider, lat, lon, matched, failure, retrieved_at)
+        SELECT m.jurisdiction, m.key, m.label, p.provider, p.lat, p.lon, p.matched, p.failure,
+               p.geocoded_at
+          FROM places p
+          JOIN matters m ON m.id = p.matter_id
+         WHERE m.kind = 'address'
+      `);
+    },
   },
 ];
 
