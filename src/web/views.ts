@@ -15,7 +15,45 @@ export function escapeHtml(input: unknown): string {
     .replace(/'/g, '&#39;');
 }
 
+/**
+ * The town this page is about, and the ones a reader could switch to.
+ *
+ * Threaded through every view instead of a bare label string, because with more
+ * than one town the label is no longer the only thing the page needs: links
+ * have to carry the town, and the header has to offer the others.
+ */
+export interface TownView {
+  id: string;
+  label: string;
+  /**
+   * Every town, for the switcher. A single entry hides the switcher *and*
+   * suppresses the `town` query parameter — a one-town install keeps exactly
+   * the URLs it has today, which is the point of doing it this way rather than
+   * with a path prefix.
+   */
+  options: { id: string; label: string }[];
+  /** The current path, so switching towns stays on the same kind of page. */
+  path: string;
+}
+
+export const isMultiTown = (town: TownView): boolean => town.options.length > 1;
+
+/** An internal link that stays in the current town. */
+export function withTown(path: string, town: TownView, params: Record<string, string> = {}): string {
+  const search = new URLSearchParams(params);
+  if (isMultiTown(town)) search.set('town', town.id);
+  const qs = search.toString();
+  return qs ? `${path}?${qs}` : path;
+}
+
+/** The same page, in another town. Filters are dropped: they mean nothing there. */
+function switchTownHref(path: string, id: string): string {
+  return `${path}?town=${encodeURIComponent(id)}`;
+}
+
 export interface Filters {
+  /** Set only when the install serves more than one town. */
+  town?: string;
   channel?: string;
   source?: string;
   body?: string;
@@ -33,6 +71,8 @@ export const EMPTY_FILTERS: Filters = { when: 'all', page: 1 };
 export function href(filters: Filters, patch: Partial<Filters> = {}, path = '/'): string {
   const next = { ...filters, ...patch };
   const params = new URLSearchParams();
+  // First, so a shared link reads as the town before it reads as the filter.
+  if (next.town) params.set('town', next.town);
   if (next.channel) params.set('channel', next.channel);
   if (next.source) params.set('source', next.source);
   if (next.body) params.set('body', next.body);
@@ -67,7 +107,7 @@ export interface Facet {
 
 export interface LayoutOptions {
   title: string;
-  jurisdictionLabel: string;
+  town: TownView;
   filters: Filters;
   sampleData: boolean;
   body: string;
@@ -78,7 +118,7 @@ export interface LayoutOptions {
 }
 
 export function layout(options: LayoutOptions): string {
-  const { filters } = options;
+  const { filters, town } = options;
   const tabs = [
     { value: '', label: 'Everything' },
     ...CHANNELS.map((c) => ({ value: c, label: CHANNEL_LABELS[c] })),
@@ -89,6 +129,21 @@ export function layout(options: LayoutOptions): string {
       return `<a class="${on ? 'on' : ''}" href="${escapeHtml(url)}">${escapeHtml(tab.label)}</a>`;
     })
     .join('');
+
+  // The switcher is the whole multi-town UI: the same pages, a different town.
+  // It deliberately drops the current filters — "Planning Board" is a different
+  // board in the next town over, and a board filter that silently follows you
+  // across the town line is worse than no filter at all.
+  const switcher = isMultiTown(town)
+    ? `<nav class="towns" aria-label="Town">${town.options
+        .map(
+          (option) =>
+            `<a class="${option.id === town.id ? 'on' : ''}" href="${escapeHtml(
+              switchTownHref(town.path, option.id),
+            )}">${escapeHtml(option.label.split(',')[0] ?? option.label)}</a>`,
+        )
+        .join('')}<a href="${escapeHtml(withTown('/towns', town))}">All towns</a></nav>`
+    : '';
 
   const banner = options.sampleData
     ? `<div class="banner"><strong>Sample data.</strong> Some entries below were loaded from synthetic fixtures for development
@@ -109,13 +164,14 @@ ${options.feedUrl ? `<link rel="alternate" type="application/atom+xml" title="${
 <header class="site">
   <div class="wrap">
     <div class="brand">
-      <h1><a href="/">townCivic</a></h1>
-      <span class="tag">${escapeHtml(options.jurisdictionLabel)} · primary-source civic record</span>
+      <h1><a href="${escapeHtml(withTown('/', town))}">townCivic</a></h1>
+      <span class="tag">${escapeHtml(town.label)} · primary-source civic record</span>
       <span class="spacer"></span>
-      <span class="util"><a href="/matters">Timelines</a><a href="/map">Map</a><a href="/sources">Sources</a><a href="/feeds">Feeds</a>${
+      <span class="util"><a href="${escapeHtml(withTown('/matters', town))}">Timelines</a><a href="${escapeHtml(withTown('/map', town))}">Map</a><a href="${escapeHtml(withTown('/sources', town))}">Sources</a><a href="${escapeHtml(withTown('/feeds', town))}">Feeds</a>${
         options.account ? `<a href="/my">${escapeHtml(options.account)}</a>` : '<a href="/login">Sign in</a>'
       }</span>
     </div>
+    ${switcher}
     <nav class="channels">${tabs}</nav>
   </div>
 </header>
@@ -125,7 +181,9 @@ ${options.feedUrl ? `<link rel="alternate" type="application/atom+xml" title="${
   <footer class="site">
     <p>Every entry links to the primary source. townCivic does not summarize, editorialize, or decide what is newsworthy —
        it records what was published, by whom, and when.</p>
-    <p><a href="/feeds">Atom &amp; JSON feeds</a> · <a href="/sources">Source registry</a></p>
+    <p><a href="${escapeHtml(withTown('/feeds', town))}">Atom &amp; JSON feeds</a> · <a href="${escapeHtml(withTown('/sources', town))}">Source registry</a>${
+      isMultiTown(town) ? ` · <a href="${escapeHtml(withTown('/towns', town))}">Towns</a>` : ''
+    }</p>
   </footer>
 </div>
 </body>
@@ -211,11 +269,17 @@ export interface IndexViewModel {
   total: number;
   facets: { sources: FacetGroup; bodies: FacetGroup; levels: FacetGroup };
   sampleData: boolean;
-  jurisdictionLabel: string;
+  town: TownView;
   pageSize: number;
   feedUrl: string;
   /** Whether the interpretation stage has produced anything to search. */
   hasDerived: boolean;
+  /**
+   * True when this town is registered but has nothing enabled yet. Its empty
+   * page then says what is actually true of it, rather than telling a reader to
+   * run `ingest` against sources that do not exist.
+   */
+  townDormant?: boolean;
   account?: string | null;
 }
 
@@ -254,6 +318,7 @@ export function renderIndex(model: IndexViewModel): string {
   const aside = `
 <form class="search" action="/" method="get">
   <input type="search" name="q" value="${escapeHtml(filters.q ?? '')}" placeholder="Search records" aria-label="Search records">
+  ${filters.town ? `<input type="hidden" name="town" value="${escapeHtml(filters.town)}">` : ''}
   ${filters.channel ? `<input type="hidden" name="channel" value="${escapeHtml(filters.channel)}">` : ''}
   <button type="submit">Go</button>
   ${derivedToggle}
@@ -280,13 +345,20 @@ ${
     : '';
 
   const empty =
-    !model.upcoming.length && !model.past.length
-      ? `<div class="empty">
-           <p>No records match these filters.</p>
-           <p>If the database is empty, load the development fixtures with <code>npm run seed</code>,
-              or fetch the live site with <code>npm run ingest</code>.</p>
-         </div>`
-      : '';
+    model.upcoming.length || model.past.length
+      ? ''
+      : model.townDormant
+        ? `<div class="empty">
+             <p>Nothing has been collected for ${escapeHtml(model.town.label)} yet.</p>
+             <p>It is registered — its URL shapes are written down — but no source has been confirmed
+                against the live site, so nothing fetches. Run <code>npm run discover</code> for its board
+                ids, then <code>npm run verify</code>, and enable what answered.</p>
+           </div>`
+        : `<div class="empty">
+             <p>No records match these filters.</p>
+             <p>If the database is empty, load the development fixtures with <code>npm run seed</code>,
+                or fetch the live site with <code>npm run ingest</code>.</p>
+           </div>`;
 
   const body = `
 <div class="toolbar">
@@ -312,8 +384,8 @@ ${
   return layout({
     title: filters.channel
       ? `${CHANNEL_LABELS[filters.channel as Channel] ?? filters.channel} — townCivic`
-      : `townCivic — ${model.jurisdictionLabel}`,
-    jurisdictionLabel: model.jurisdictionLabel,
+      : `townCivic — ${model.town.label}`,
+    town: model.town,
     filters,
     sampleData: model.sampleData,
     body,
@@ -337,7 +409,7 @@ export interface NoticeView {
 export interface EventViewModel {
   row: EventRow;
   sampleData: boolean;
-  jurisdictionLabel: string;
+  town: TownView;
   notice?: NoticeView | null;
   /** The matters this record belongs to, so a reader can jump to the timeline. */
   matters?: (MatterRow & { stage: string })[];
@@ -347,7 +419,7 @@ export interface EventViewModel {
 }
 
 export function renderEvent(model: EventViewModel): string {
-  const { row, sampleData, jurisdictionLabel } = model;
+  const { row, sampleData, town } = model;
   const notice = model.notice ?? null;
   const subjects = parseJsonArray(row.subjects);
   const tags = parseJsonArray(row.tags);
@@ -426,7 +498,7 @@ export function renderEvent(model: EventViewModel): string {
 
   return layout({
     title: `${row.title} — townCivic`,
-    jurisdictionLabel,
+    town,
     filters: EMPTY_FILTERS,
     sampleData,
     body,
@@ -512,7 +584,7 @@ export interface MattersViewModel {
   includeSingletons: boolean;
   linked: boolean;
   sampleData: boolean;
-  jurisdictionLabel: string;
+  town: TownView;
   account?: string | null;
 }
 
@@ -520,6 +592,7 @@ export function renderMatters(model: MattersViewModel): string {
   const params = (patch: Record<string, string | undefined>) => {
     const search = new URLSearchParams();
     const merged = {
+      town: isMultiTown(model.town) ? model.town.id : undefined,
       kind: model.kind,
       q: model.q,
       all: model.includeSingletons ? '1' : undefined,
@@ -563,6 +636,7 @@ export function renderMatters(model: MattersViewModel): string {
 </div>
 <form class="search" action="/matters" method="get" style="margin:14px 0">
   <input type="search" name="q" value="${escapeHtml(model.q ?? '')}" placeholder="Find an address or article" aria-label="Find a matter">
+  ${isMultiTown(model.town) ? `<input type="hidden" name="town" value="${escapeHtml(model.town.id)}">` : ''}
   ${model.kind ? `<input type="hidden" name="kind" value="${escapeHtml(model.kind)}">` : ''}
   ${model.includeSingletons ? '<input type="hidden" name="all" value="1">' : ''}
   <button type="submit">Go</button>
@@ -575,7 +649,7 @@ ${empty}`;
 
   return layout({
     title: 'Timelines — townCivic',
-    jurisdictionLabel: model.jurisdictionLabel,
+    town: model.town,
     filters: EMPTY_FILTERS,
     sampleData: model.sampleData,
     body,
@@ -591,7 +665,7 @@ export interface MatterViewModel {
   signedIn?: boolean;
   csrfToken?: string;
   sampleData: boolean;
-  jurisdictionLabel: string;
+  town: TownView;
   account?: string | null;
 }
 
@@ -639,8 +713,8 @@ export function renderMatter(model: MatterViewModel): string {
   }${matter.first_at ? ` · first seen ${escapeHtml(formatDate(matter.first_at))}` : ''}</p>
   <div class="actions">
     ${watch}
-    <a href="/?q=${encodeURIComponent(matter.label)}">Search records for this</a>
-    ${model.place ? `<a href="/map?matter=${escapeHtml(matter.id)}">Show on the map</a>` : ''}
+    <a href="${escapeHtml(withTown('/', model.town, { q: matter.label }))}">Search records for this</a>
+    ${model.place ? `<a href="${escapeHtml(withTown('/map', model.town, { matter: matter.id }))}">Show on the map</a>` : ''}
   </div>
   ${
     matter.event_count === 1
@@ -655,7 +729,7 @@ export function renderMatter(model: MatterViewModel): string {
 
   return layout({
     title: `${matter.label} — townCivic`,
-    jurisdictionLabel: model.jurisdictionLabel,
+    town: model.town,
     filters: EMPTY_FILTERS,
     sampleData: model.sampleData,
     body,
@@ -671,7 +745,7 @@ export interface AuthViewModel {
   email?: string | undefined;
   next?: string | undefined;
   sampleData: boolean;
-  jurisdictionLabel: string;
+  town: TownView;
 }
 
 export function renderAuth(model: AuthViewModel): string {
@@ -713,7 +787,7 @@ export function renderAuth(model: AuthViewModel): string {
 
   return layout({
     title: `${signup ? 'Create an account' : 'Sign in'} — townCivic`,
-    jurisdictionLabel: model.jurisdictionLabel,
+    town: model.town,
     filters: EMPTY_FILTERS,
     sampleData: model.sampleData,
     body,
@@ -725,6 +799,10 @@ export interface ProfileSubscription {
   value: string;
   label: string;
   alerts: string;
+  /** The town it was followed in, or `*` for every town. */
+  jurisdiction: string;
+  /** How that town says its name. */
+  townLabel: string;
 }
 
 export interface ProfileViewModel {
@@ -737,7 +815,7 @@ export interface ProfileViewModel {
   csrfToken: string;
   notice?: string | undefined;
   sampleData: boolean;
-  jurisdictionLabel: string;
+  town: TownView;
   account: string;
 }
 
@@ -759,11 +837,13 @@ export function renderProfile(model: ProfileViewModel): string {
         ? `<a href="/matter/${escapeHtml(subscription.value)}">${escapeHtml(subscription.label)}</a>`
         : escapeHtml(subscription.label)
     }
+    <span class="badge subject">${escapeHtml(subscription.townLabel)}</span>
   </span>
   <form method="post" action="/my/unsubscribe">
     <input type="hidden" name="csrf" value="${escapeHtml(model.csrfToken)}">
     <input type="hidden" name="kind" value="${escapeHtml(subscription.kind)}">
     <input type="hidden" name="value" value="${escapeHtml(subscription.value)}">
+    <input type="hidden" name="town" value="${escapeHtml(subscription.jurisdiction)}">
     <button type="submit">Remove</button>
   </form>
 </div>`,
@@ -801,6 +881,7 @@ export function renderProfile(model: ProfileViewModel): string {
     <h2>Follow something</h2>
     <form method="post" action="/my/subscribe" class="search" style="align-items:center">
       <input type="hidden" name="csrf" value="${escapeHtml(model.csrfToken)}">
+      <input type="hidden" name="town" value="${escapeHtml(model.town.id)}">
       <select name="kind" aria-label="What to follow">
         <option value="body">A board or department</option>
         <option value="channel">A channel</option>
@@ -813,7 +894,9 @@ export function renderProfile(model: ProfileViewModel): string {
     </form>
     <p class="count" style="margin-top:4px">For a channel, use its id — ${CHANNELS.slice(0, 4)
       .map((c) => `<code>${escapeHtml(c)}</code>`)
-      .join(', ')} and so on.</p>
+      .join(', ')} and so on. Whatever you follow is followed
+      <strong>in ${escapeHtml(model.town.label)}</strong>: a board's name means a different board in
+      each town, so switch towns first to follow one there.</p>
   </section>
 
   <section class="agenda">
@@ -833,7 +916,7 @@ ${
 
   return layout({
     title: 'Your feed — townCivic',
-    jurisdictionLabel: model.jurisdictionLabel,
+    town: model.town,
     filters: EMPTY_FILTERS,
     sampleData: model.sampleData,
     body,
@@ -841,7 +924,7 @@ ${
   });
 }
 
-export function renderSources(sources: SourceRow[], sampleData: boolean, jurisdictionLabel: string): string {
+export function renderSources(sources: SourceRow[], sampleData: boolean, town: TownView): string {
   const rows = sources
     .map(
       (source) => `<tr>
@@ -869,14 +952,14 @@ export function renderSources(sources: SourceRow[], sampleData: boolean, jurisdi
 
   return layout({
     title: 'Sources — townCivic',
-    jurisdictionLabel,
+    town,
     filters: EMPTY_FILTERS,
     sampleData,
     body,
   });
 }
 
-export function renderFeedIndex(sampleData: boolean, jurisdictionLabel: string, baseUrl: string): string {
+export function renderFeedIndex(sampleData: boolean, town: TownView, baseUrl: string): string {
   const items = [
     { value: 'all', label: 'Everything' },
     ...CHANNELS.map((c) => ({ value: c, label: CHANNEL_LABELS[c] })),
@@ -888,8 +971,8 @@ export function renderFeedIndex(sampleData: boolean, jurisdictionLabel: string, 
           ? 'Every channel except routine administration.'
           : CHANNEL_DESCRIPTIONS[entry.value as Channel],
       )}</span></td>
-      <td class="url"><a href="/feeds/${escapeHtml(entry.value)}.atom">${escapeHtml(baseUrl)}/feeds/${escapeHtml(entry.value)}.atom</a></td>
-      <td class="url"><a href="/feeds/${escapeHtml(entry.value)}.json">JSON Feed</a></td>
+      <td class="url"><a href="${escapeHtml(withTown(`/feeds/${entry.value}.atom`, town))}">${escapeHtml(baseUrl)}${escapeHtml(withTown(`/feeds/${entry.value}.atom`, town))}</a></td>
+      <td class="url"><a href="${escapeHtml(withTown(`/feeds/${entry.value}.json`, town))}">JSON Feed</a></td>
     </tr>`,
     )
     .join('');
@@ -898,6 +981,13 @@ export function renderFeedIndex(sampleData: boolean, jurisdictionLabel: string, 
   <h1>Feeds</h1>
   <p>Atom and JSON Feed for each channel. Add <code>?source=</code>, <code>?body=</code> or <code>?q=</code> to any feed
      URL to narrow it the same way the web filters do.</p>
+  ${
+    isMultiTown(town)
+      ? `<p class="count">These are ${escapeHtml(town.label)}'s feeds. Every feed is one town: add
+           <code>?town=&lt;id&gt;</code> for another, and a feed URL without one is always the default town —
+           a subscription should never quietly change which town it is about.</p>`
+      : ''
+  }
   <table class="sources">
     <thead><tr><th>Channel</th><th>Atom</th><th>JSON</th></tr></thead>
     <tbody>${items}</tbody>
@@ -906,9 +996,85 @@ export function renderFeedIndex(sampleData: boolean, jurisdictionLabel: string, 
 
   return layout({
     title: 'Feeds — townCivic',
-    jurisdictionLabel,
+    town,
     filters: EMPTY_FILTERS,
     sampleData,
     body,
+  });
+}
+
+/* -------------------------------------------------------------------- towns */
+
+export interface TownsViewModel {
+  town: TownView;
+  towns: {
+    id: string;
+    label: string;
+    events: number;
+    matters: number;
+    sources: number;
+    enabledSources: number;
+    lastFetchAt: string | null;
+    registered: boolean;
+    boundary: boolean;
+    notes: string | null;
+  }[];
+  sampleData: boolean;
+  account?: string | null;
+}
+
+/**
+ * Every town this install carries, and how real each one is.
+ *
+ * The numbers are the point. A town in the registry with no enabled sources has
+ * been *written down*, not ingested, and saying so plainly here is what keeps
+ * the switcher from implying coverage that does not exist.
+ */
+export function renderTowns(model: TownsViewModel): string {
+  const rows = model.towns
+    .map((town) => {
+      const state = !town.registered
+        ? '<span class="pill off">not in the registry</span>'
+        : town.enabledSources === 0
+          ? '<span class="pill off">registered, nothing enabled</span>'
+          : town.events === 0
+            ? '<span class="pill">enabled, never ingested</span>'
+            : '<span class="pill ok">live</span>';
+
+      return `<tr>
+  <td><strong><a href="${escapeHtml(switchTownHref('/', town.id))}">${escapeHtml(town.label)}</a></strong>
+      <br><span class="count">${escapeHtml(town.id)}</span>
+      ${town.notes ? `<br><span class="count">${escapeHtml(town.notes)}</span>` : ''}</td>
+  <td>${state}</td>
+  <td>${town.events.toLocaleString('en-US')}</td>
+  <td>${town.matters.toLocaleString('en-US')}</td>
+  <td>${town.enabledSources} of ${town.sources}</td>
+  <td>${town.boundary ? 'yes' : '<span class="count">no outline</span>'}</td>
+  <td>${town.lastFetchAt ? escapeHtml(formatDate(town.lastFetchAt)) : '<span class="count">never</span>'}</td>
+</tr>`;
+    })
+    .join('');
+
+  const body = `<div class="detail">
+  <h1>Towns</h1>
+  <p>One database, one schema, one row per town. Everything else — the channels, the timelines, the map, the
+     feeds — works the same way in each of them, which is the reason a new town is a registry file rather than
+     a deployment.</p>
+  <table class="sources">
+    <thead><tr><th>Town</th><th>State</th><th>Records</th><th>Matters</th><th>Sources on</th><th>Outline</th><th>Last fetch</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <p class="count" style="margin-top:14px">A town listed as <em>registered, nothing enabled</em> has its URL shapes
+     written down but nothing confirmed against the live site. Run <code>npm run discover</code> for its board ids and
+     <code>npm run verify</code> before enabling anything — an unverified claim does not get to make requests.</p>
+</div>`;
+
+  return layout({
+    title: 'Towns — townCivic',
+    town: model.town,
+    filters: EMPTY_FILTERS,
+    sampleData: model.sampleData,
+    body,
+    ...(model.account !== undefined ? { account: model.account } : {}),
   });
 }

@@ -80,6 +80,14 @@ jobs:
           curl -fsS "http://localhost:8787/?channel=land-use" > /dev/null
           curl -fsS "http://localhost:8787/?q=Pleasant&derived=1" > /dev/null
           curl -fsS http://localhost:8787/sources > /dev/null
+
+          # Multi-town: the switcher lists every registered town, and a town
+          # with no records answers with its empty state rather than 404ing.
+          curl -fsS http://localhost:8787/towns -o /tmp/towns.html
+          grep -q 'weymouth-ma' /tmp/towns.html || { echo "the town list is missing a town"; exit 1; }
+          curl -fsS "http://localhost:8787/?town=weymouth-ma" -o /tmp/weymouth.html
+          grep -q 'Weymouth, Massachusetts' /tmp/weymouth.html || { echo "switching towns did not"; exit 1; }
+          curl -fsS "http://localhost:8787/feeds/all.atom?town=weymouth-ma" > /dev/null
           # The town outline is committed, so it must draw with no geocoding and
           # no network. A blank map here means the boundary failed to load.
           curl -fsS http://localhost:8787/map -o /tmp/map.html

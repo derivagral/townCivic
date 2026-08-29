@@ -1,10 +1,11 @@
 import type { Db } from '../db/index.ts';
 import { config } from '../config.ts';
 import { censusUrl, parseCensusResponse } from '../geo/census.ts';
-import { MILTON_BBOX, withinBox } from '../geo/project.ts';
+import { withinBox } from '../geo/project.ts';
 import type { BoundingBox } from '../geo/project.ts';
 import { loadBoundary, pointInBoundary } from '../geo/boundary.ts';
 import type { Boundary } from '../geo/boundary.ts';
+import { getProfile } from '../registry/index.ts';
 
 /**
  * Resolve address matters to coordinates, once each, and remember the answer.
@@ -14,19 +15,30 @@ import type { Boundary } from '../geo/boundary.ts';
  * network to work. Results are cached permanently — a street address does not
  * move — and failures are cached too, so an address the geocoder cannot parse
  * is asked about once rather than on every run.
+ *
+ * The town, the state and the fence all come from the matter's own
+ * jurisdiction. That is not tidiness: "271 Pleasant Street" exists in most of
+ * these towns, so qualifying it with the wrong town name does not fail — it
+ * confidently returns a house a reader has never heard of. Each answer is then
+ * checked against that town's outline before it is kept.
  */
 
 export interface GeocodeOptions {
   jurisdiction?: string;
-  /** Town and state to qualify a bare street address with. */
+  /**
+   * Override the town and state a bare street address is qualified with.
+   * Normally read from the matter's jurisdiction; a single value only makes
+   * sense for a single-town run.
+   */
   town?: string;
   state?: string;
   /**
    * Reject results outside the town's own outline. Defaults to the committed
-   * boundary for the jurisdiction, and falls back to `box` where none exists.
+   * boundary for each matter's jurisdiction, and falls back to `box` where none
+   * exists.
    */
   boundary?: Boundary | null;
-  /** The fence used when there is no boundary for this jurisdiction. */
+  /** The fence used when there is no boundary for a jurisdiction. */
   box?: BoundingBox;
   /** Re-resolve matters that already have a place. */
   force?: boolean;
@@ -50,6 +62,7 @@ export interface GeocodeReport {
 interface Candidate {
   id: string;
   label: string;
+  jurisdiction: string;
 }
 
 function selectCandidates(db: Db, options: GeocodeOptions): Candidate[] {
@@ -65,7 +78,7 @@ function selectCandidates(db: Db, options: GeocodeOptions): Candidate[] {
   // arguing about are the ones that got resolved.
   return db
     .prepare(
-      `SELECT m.id, m.label
+      `SELECT m.id, m.label, m.jurisdiction
          FROM matters m
          LEFT JOIN places p ON p.matter_id = m.id
         WHERE ${conditions.join(' AND ')}
@@ -97,26 +110,48 @@ function record(
   );
 }
 
+/**
+ * Everything that varies per town, resolved once and reused for every matter in
+ * it — the outline in particular is a file read and a few thousand vertices.
+ */
+interface TownFence {
+  town: string;
+  state: string;
+  inside(point: { lat: number; lon: number }): boolean;
+}
+
 export async function geocodeMatters(db: Db, options: GeocodeOptions = {}): Promise<GeocodeReport[]> {
   const doFetch = options.fetchImpl ?? fetch;
-  const box = options.box ?? MILTON_BBOX;
-  const town = options.town ?? 'Milton';
-  const state = options.state ?? 'MA';
+  const fences = new Map<string, TownFence>();
 
-  // The town's real outline where we have one; the rectangle only as a fallback
-  // for a jurisdiction whose boundary has not been fetched yet.
-  const boundary =
-    options.boundary !== undefined
-      ? options.boundary
-      : loadBoundary(options.jurisdiction ?? config.defaultJurisdiction);
+  const fenceFor = (jurisdiction: string): TownFence => {
+    const cached = fences.get(jurisdiction);
+    if (cached) return cached;
 
-  const insideTown = (point: { lat: number; lon: number }) =>
-    boundary ? pointInBoundary(point, boundary) : withinBox(point, box);
+    const profile = getProfile(jurisdiction);
+    // The town's real outline where we have one; the declared rectangle only as
+    // a fallback for a jurisdiction whose boundary has not been fetched yet.
+    const boundary = options.boundary !== undefined ? options.boundary : loadBoundary(jurisdiction);
+    const box = options.box ?? profile.bbox;
+
+    const fence: TownFence = {
+      town: options.town ?? profile.name,
+      state: options.state ?? profile.state,
+      inside: (point) => (boundary ? pointInBoundary(point, boundary) : withinBox(point, box)),
+    };
+    fences.set(jurisdiction, fence);
+    return fence;
+  };
 
   const reports: GeocodeReport[] = [];
 
   for (const candidate of selectCandidates(db, options)) {
     const report: GeocodeReport = { matterId: candidate.id, label: candidate.label, ok: false };
+    const {
+      town,
+      state,
+      inside: insideTown,
+    } = fenceFor(candidate.jurisdiction || options.jurisdiction || config.defaultJurisdiction);
 
     try {
       const response = await doFetch(censusUrl(candidate.label, town, state), {
@@ -132,9 +167,10 @@ export async function geocodeMatters(db: Db, options: GeocodeOptions = {}): Prom
       } else if (!insideTown(match)) {
         // Two different mistakes this catches. There is a Milton in Vermont,
         // New Hampshire and Florida, so a geocoder can answer confidently about
-        // the wrong state entirely. And Milton borders Boston, Quincy, Canton
-        // and Randolph, so a street that continues over the line can resolve to
-        // a house that is not in this town. Only the outline catches the second.
+        // the wrong state entirely. And these towns all border others — Milton
+        // touches Boston, Quincy, Canton and Randolph — so a street that
+        // continues over the line can resolve to a house that is not in this
+        // town. Only the outline catches the second.
         report.error = `outside ${town} (${match.lat.toFixed(4)}, ${match.lon.toFixed(4)})`;
         record(db, candidate.id, {
           lat: null,

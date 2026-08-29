@@ -132,7 +132,7 @@ export function parseClockTime(input: string): { hour: number; minute: number } 
  * Parse a date and an optional separate time into a single instant, both read
  * as town-local. Falls back to the date alone when the time is unusable.
  */
-export function parseLocalDateTime(dateText: string, timeText = ''): string | null {
+export function parseLocalDateTime(dateText: string, timeText = '', timeZone = TIMEZONE): string | null {
   const dateIso = parseLooseDate(dateText);
   if (!dateIso) return null;
 
@@ -146,13 +146,14 @@ export function parseLocalDateTime(dateText: string, timeText = ''): string | nu
     date.getUTCDate(),
     clock.hour,
     clock.minute,
+    timeZone,
   );
 }
 
 /** Parse the clerk's posting stamp, e.g. "08/17/2026 02:55 pm". */
-export function parsePostingStamp(input: string): string | null {
+export function parsePostingStamp(input: string, timeZone = TIMEZONE): string | null {
   const match = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(input);
-  if (!match) return parseLocalDateTime(input, input);
+  if (!match) return parseLocalDateTime(input, input, timeZone);
   const clock = parseClockTime(input);
   return zonedToUtc(
     Number(match[3]),
@@ -160,6 +161,7 @@ export function parsePostingStamp(input: string): string | null {
     Number(match[2]),
     clock?.hour ?? 12,
     clock?.minute ?? 0,
+    timeZone,
   );
 }
 

@@ -112,7 +112,7 @@ export function createAnthropicInterpreter(options: AnthropicOptions = {}): Inte
           {
             role: 'user',
             content: [
-              `Town: Milton, Massachusetts`,
+              `Town: ${request.jurisdictionLabel}`,
               `Body: ${request.body ?? 'unknown'}`,
               `Document: ${request.title}`,
               '',

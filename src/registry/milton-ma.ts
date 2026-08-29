@@ -1,5 +1,8 @@
 import type { SourceInput } from '../types.ts';
-import type { Channel, Priority } from '../taxonomy.ts';
+import { defineJurisdiction } from './profile.ts';
+import type { JurisdictionProfile } from './profile.ts';
+import { agendaCenterSource, agendaIndexSource, bidsSource, rssSource, stateSources } from './civicplus.ts';
+import type { AgendaCategory } from './civicplus.ts';
 
 /**
  * Milton, Massachusetts.
@@ -25,6 +28,12 @@ import type { Channel, Priority } from '../taxonomy.ts';
  * feed returned a single item pointing at an undated `PreviousVersions` URL.
  * The listing also embeds the meeting date and the agenda/minutes distinction
  * in the href, so the parser reads structure instead of prose.
+ *
+ * This file writes its sources out one at a time rather than through
+ * `civicPlusSources()`. Every row here carries a note or an `enabled: false`
+ * earned by looking at what the live feed actually returned, and flattening
+ * that into a generic call would throw away the evidence. A town whose sources
+ * are all alike should use the compact form — see `hull-ma.ts`.
  */
 
 export const MILTON_BASE = 'https://www.miltonma.gov';
@@ -52,7 +61,7 @@ export const MODULES = {
  *
  * `cid` values are the real Agenda Center category ids.
  */
-export const AGENDA_CATEGORIES = [
+export const AGENDA_CATEGORIES: readonly AgendaCategory[] = [
   { slug: 'Select-Board', cid: 6, body: 'Select Board' },
   { slug: 'Planning-Board', cid: 39, body: 'Planning Board' },
   { slug: 'Board-of-Appeals', cid: 38, body: 'Board of Appeals' },
@@ -67,196 +76,96 @@ export const AGENDA_CATEGORIES = [
   { slug: 'Board-of-Registrars', cid: 11, body: 'Board of Registrars' },
   { slug: 'Historical-Commission', cid: 24, body: 'Historical Commission' },
   { slug: 'Affordable-Housing-Trust', cid: 32, body: 'Affordable Housing Trust' },
-] as const;
-
-/**
- * Different systems name the same body differently — the Agenda Center says
- * "Board of Appeals" where a meeting notice says "Zoning Board of Appeals".
- * Collapsing them keeps the filter rail from splitting one board into two.
- */
-export const BODY_ALIASES: Record<string, string> = {
-  'zoning board of appeals': 'Board of Appeals',
-  zba: 'Board of Appeals',
-  'conservation comm': 'Conservation Commission',
-  concom: 'Conservation Commission',
-  'community preservation committee (cpc)': 'Community Preservation Committee',
-  'trustees of the affordable housing trust': 'Affordable Housing Trust',
-  selectboard: 'Select Board',
-  "selectmen's office": 'Select Board',
-  'board of selectmen': 'Select Board',
-};
-
-export function canonicalBody(name: string): string {
-  return BODY_ALIASES[name.trim().toLowerCase()] ?? name.trim();
-}
-
-/**
- * Municipal buildings, which are where meetings happen rather than what they
- * are about.
- *
- * Every meeting notice carries the Town Clerk's address in its template, so
- * without this every record in the town would list "525 Canton Avenue" as a
- * subject and the one address that actually matters would be lost in it.
- */
-export const VENUE_ADDRESSES = [
-  '525 Canton Avenue',
-  '515 Canton Avenue',
-  '40 Highland Street',
-  '1 Wharf Street',
 ];
 
-export function isVenueAddress(address: string): boolean {
-  const normalized = address
-    .toLowerCase()
-    .replace(/\bave\b\.?/g, 'avenue')
-    .replace(/\bst\b\.?/g, 'street');
-  return VENUE_ADDRESSES.some((venue) => normalized.startsWith(venue.toLowerCase()));
-}
-
 /**
- * How a public body's name maps into the taxonomy.
+ * The shell of the profile, before its sources.
  *
- * Used both for the static registry and for anything `discover` turns up, so a
- * newly created committee lands in the right channel without a code change.
- * First match wins; order matters.
+ * The source builders need the profile — they read the town's name for the
+ * agency string and its body rules for the channel — so it is built in two
+ * steps rather than one. The alternative is passing the same four fields to
+ * every builder.
  */
-export const BODY_RULES: { pattern: RegExp; channel: Channel; priority: Priority }[] = [
-  { pattern: /planning board|master plan/i, channel: 'land-use', priority: 'high' },
-  { pattern: /board of appeals|zoning|zba/i, channel: 'land-use', priority: 'high' },
-  { pattern: /conservation|open space/i, channel: 'land-use', priority: 'high' },
-  { pattern: /design review|historic|sign review/i, channel: 'land-use', priority: 'medium' },
-  { pattern: /housing|affordable/i, channel: 'land-use', priority: 'high' },
-  {
-    pattern: /warrant committee|finance|capital|budget|appropriat|audit|assessors|retirement|taxation|pilot/i,
-    channel: 'money',
-    priority: 'high',
+const milton: JurisdictionProfile = defineJurisdiction({
+  id: JURISDICTION,
+  name: 'Milton',
+  baseUrl: MILTON_BASE,
+  boundary: { provider: 'massgis', townName: 'MILTON' },
+  /**
+   * Roughly the extent of Milton, padded outwards.
+   *
+   * A sanity fence, not cartography: it exists so that a geocoder answering
+   * with a Milton in another state — there are several — is rejected rather
+   * than drawn. The committed MassGIS outline supersedes it.
+   */
+  bbox: { south: 42.18, west: -71.15, north: 42.31, east: -70.99 },
+  /**
+   * Different systems name the same body differently — the Agenda Center says
+   * "Board of Appeals" where a meeting notice says "Zoning Board of Appeals".
+   * Collapsing them keeps the filter rail from splitting one board into two.
+   * The statewide ones live in `DEFAULT_BODY_ALIASES`; these are Milton's own.
+   */
+  bodyAliases: {
+    'trustees of the affordable housing trust': 'Affordable Housing Trust',
+    "selectmen's office": 'Select Board',
   },
-  { pattern: /procurement|purchasing|bid|rfp|community preservation/i, channel: 'money', priority: 'high' },
-  { pattern: /town meeting|by-?law|charter|town government study/i, channel: 'law', priority: 'high' },
-  { pattern: /school|education|curriculum/i, channel: 'schools', priority: 'high' },
-  { pattern: /registrar|election|town clerk|electronic voting/i, channel: 'elections', priority: 'high' },
-  {
-    pattern: /board of health|water|sewer|public works|dpw|traffic|police|fire|emergency|animal/i,
-    channel: 'public-safety',
-    priority: 'medium',
+  /**
+   * Municipal buildings, which are where meetings happen rather than what they
+   * are about.
+   *
+   * Every meeting notice carries the Town Clerk's address in its template, so
+   * without this every record in the town would list "525 Canton Avenue" as a
+   * subject and the one address that actually matters would be lost in it.
+   */
+  venueAddresses: ['525 Canton Avenue', '515 Canton Avenue', '40 Highland Street', '1 Wharf Street'],
+  fixtures: {
+    'milton-ma:agenda:index': 'milton-ma/agenda-center-index.html',
+    'milton-ma:agenda:select-board': 'milton-ma/select-board-6.html',
+    'milton-ma:agenda:planning-board': 'milton-ma/planning-board-39.html',
+    'milton-ma:agenda:board-of-health': 'milton-ma/board-of-health-42.html',
+    'milton-ma:bids': 'milton-ma/bids.html',
+    'milton-ma:news': 'milton-ma/newsflash.xml',
+    'milton-ma:calendar': 'milton-ma/calendar.xml',
   },
-  { pattern: /select board|town administrator|personnel/i, channel: 'meetings', priority: 'high' },
-  {
-    pattern:
-      /library|recreation|park|council on aging|cemetery|cultural|veterans|youth|coalition|anniversary/i,
-    channel: 'admin',
-    priority: 'low',
-  },
-];
+});
 
-export function classifyBody(name: string): { channel: Channel; priority: Priority } {
-  for (const rule of BODY_RULES) {
-    if (rule.pattern.test(name)) return { channel: rule.channel, priority: rule.priority };
-  }
-  return { channel: 'meetings', priority: 'medium' };
-}
-
-/** Build the source entry for one Agenda Center category. */
-export function agendaCenterSource(category: { slug: string; cid: number; body: string }): SourceInput {
-  const body = canonicalBody(category.body);
-  const { channel, priority } = classifyBody(body);
-  return {
-    id: `${JURISDICTION}:agenda:${category.slug.toLowerCase()}`,
-    jurisdiction: JURISDICTION,
-    label: `${body} — agendas & minutes`,
-    adapter: 'civicplus-agenda-center',
-    url: `${MILTON_BASE}/AgendaCenter/${category.slug}-${category.cid}`,
-    level: 'municipal',
-    agency: `Milton ${body}`,
-    body,
-    channel,
-    priority,
-    tier: 1,
-    // A board's own listing outranks the site-wide index for the same file.
-    precedence: 10,
-    confidence: 'verified',
-    enabled: true,
-    options: {
-      cid: category.cid,
-      slug: category.slug,
-      rssFeed: `${MILTON_BASE}/RSSFeed.aspx?ModID=${MODULES.agendaCenter}&CID=${category.slug}-${category.cid}`,
-    },
-  };
-}
+const verified = { confidence: 'verified', enabled: true } as const;
 
 const tier1: SourceInput[] = [
-  ...AGENDA_CATEGORIES.map((c) => agendaCenterSource({ ...c })),
+  ...AGENDA_CATEGORIES.map((category) => agendaCenterSource(milton, category, MODULES, verified)),
 
-  {
-    id: `${JURISDICTION}:agenda:index`,
-    jurisdiction: JURISDICTION,
-    label: 'Agenda Center — all boards (index)',
-    adapter: 'civicplus-agenda-center',
-    url: `${MILTON_BASE}/AgendaCenter`,
-    level: 'municipal',
-    agency: 'Town of Milton',
-    channel: 'meetings',
-    priority: 'medium',
-    tier: 1,
-    // Catches boards the curated list omits, but yields to a board's own page.
-    precedence: 20,
-    confidence: 'verified',
-    enabled: true,
-    options: { isIndex: true },
+  agendaIndexSource(milton, {
+    ...verified,
     notes:
       'Covers all 78 categories, including ones not curated above. Also the input to `towncivic discover`.',
-  },
+  }),
 
-  {
-    id: `${JURISDICTION}:bids`,
-    jurisdiction: JURISDICTION,
-    label: 'Bids, RFPs and invitations for bid',
-    adapter: 'civicplus-bids',
-    url: `${MILTON_BASE}/bids.aspx`,
-    level: 'municipal',
+  bidsSource(milton, {
+    ...verified,
     agency: 'Milton Procurement Department',
-    body: 'Procurement Department',
-    channel: 'money',
-    eventType: 'bid_posted',
-    priority: 'high',
-    tier: 1,
-    precedence: 10,
-    confidence: 'verified',
-    enabled: true,
     notes:
       'Defaults to open bids only. Add `?showAllBids=on` for closed and awarded postings once history matters.',
-  },
+  }),
 
-  {
-    id: `${JURISDICTION}:news`,
-    jurisdiction: JURISDICTION,
+  rssSource(milton, {
+    ...verified,
+    key: 'news',
     label: 'Town news flash',
-    adapter: 'rss',
-    url: `${MILTON_BASE}/RSSFeed.aspx?ModID=${MODULES.newsFlash}&CID=All-newsflash.xml`,
-    level: 'municipal',
-    agency: 'Town of Milton',
+    modId: MODULES.newsFlash,
+    cid: 'All-newsflash.xml',
     channel: 'meetings',
     eventType: 'news_notice',
-    priority: 'medium',
-    tier: 1,
-    precedence: 30,
-    confidence: 'verified',
-    enabled: true,
     notes: 'Mixed quality — carries election notices and road closures alongside recreation signups.',
-  },
+  }),
 
-  {
-    id: `${JURISDICTION}:alerts`,
-    jurisdiction: JURISDICTION,
+  rssSource(milton, {
+    key: 'alerts',
     label: 'Emergency alerts',
-    adapter: 'rss',
-    url: `${MILTON_BASE}/RSSFeed.aspx?ModID=${MODULES.alertCenter}&CID=Town-of-Milton-Emergency-Alerts-14`,
-    level: 'municipal',
-    agency: 'Town of Milton',
+    modId: MODULES.alertCenter,
+    cid: 'Town-of-Milton-Emergency-Alerts-14',
     channel: 'public-safety',
     eventType: 'alert',
     priority: 'high',
-    tier: 1,
     precedence: 10,
     confidence: 'verified',
     // Reachable and correctly addressed, but Milton publishes nothing through
@@ -264,59 +173,48 @@ const tier1: SourceInput[] = [
     // Registered and off, so it costs one flag if that changes.
     enabled: false,
     notes: 'Feed is live but empty. Emergency notices go out through News Flash and Notify Me instead.',
-  },
+  }),
 
-  {
-    id: `${JURISDICTION}:alerts:dpw`,
-    jurisdiction: JURISDICTION,
+  rssSource(milton, {
+    key: 'alerts:dpw',
     label: 'Public Works notices',
-    adapter: 'rss',
-    url: `${MILTON_BASE}/RSSFeed.aspx?ModID=${MODULES.alertCenter}&CID=Public-Works-8`,
-    level: 'municipal',
-    agency: 'Milton Department of Public Works',
-    body: 'Department of Public Works',
+    modId: MODULES.alertCenter,
+    cid: 'Public-Works-8',
     channel: 'public-safety',
     eventType: 'alert',
-    priority: 'medium',
-    tier: 1,
+    agency: 'Milton Department of Public Works',
+    body: 'Department of Public Works',
     precedence: 10,
     confidence: 'verified',
     enabled: false,
     notes: 'Feed is live but empty (checked Aug 2026).',
-  },
+  }),
 
-  {
-    id: `${JURISDICTION}:alerts:clerk`,
-    jurisdiction: JURISDICTION,
+  rssSource(milton, {
+    key: 'alerts:clerk',
     label: 'Town Clerk notices',
-    adapter: 'rss',
-    url: `${MILTON_BASE}/RSSFeed.aspx?ModID=${MODULES.alertCenter}&CID=Town-Clerk-15`,
-    level: 'municipal',
-    agency: 'Milton Town Clerk',
-    body: 'Town Clerk',
+    modId: MODULES.alertCenter,
+    cid: 'Town-Clerk-15',
     channel: 'elections',
     eventType: 'election_notice',
+    agency: 'Milton Town Clerk',
+    body: 'Town Clerk',
     priority: 'high',
-    tier: 1,
     precedence: 10,
     confidence: 'verified',
     enabled: false,
     notes:
       'Elections, ballot questions and filing deadlines — the clerk is the statutory posting point. Feed is live but empty (checked Aug 2026); the Town Clerk Agenda Center category carries this material instead.',
-  },
+  }),
 
-  {
-    id: `${JURISDICTION}:calendar`,
-    jurisdiction: JURISDICTION,
+  rssSource(milton, {
+    key: 'calendar',
     label: 'Town calendar (posted meeting notices)',
-    adapter: 'rss',
-    url: `${MILTON_BASE}/RSSFeed.aspx?ModID=${MODULES.calendar}&CID=All-calendar.xml`,
-    level: 'municipal',
-    agency: 'Town of Milton',
+    modId: MODULES.calendar,
+    cid: 'All-calendar.xml',
     channel: 'meetings',
     eventType: 'meeting_notice',
     priority: 'high',
-    tier: 1,
     precedence: 40,
     confidence: 'verified',
     // Verified as reachable and well-formed, but the town publishes no items
@@ -326,55 +224,9 @@ const tier1: SourceInput[] = [
     options: { bodyFromTitlePrefix: true },
     notes:
       'Feed is live but empty (checked Aug 2026). Meeting notices come through the Agenda Center instead. Re-check with `verify --all`.',
-  },
+  }),
 ];
 
-/**
- * Tier 2 — state systems, queried for this town.
- *
- * Shipped disabled: the URLs are real, but each needs an adapter that can drive
- * a search form rather than read a listing. Turning these on is the next
- * meaningful expansion after Tier 1 is solid.
- */
-const tier2: SourceInput[] = [
-  {
-    id: 'ma:ago:municipal-law-unit',
-    jurisdiction: JURISDICTION,
-    label: 'AG Municipal Law Unit — bylaw decisions',
-    adapter: 'html-links',
-    url: 'https://massaqo.onbaseonline.com/Massaqo/1700PublicAccess/MLU.htm',
-    level: 'state',
-    agency: "Massachusetts Attorney General's Office",
-    channel: 'law',
-    eventType: 'bylaw_decision',
-    priority: 'high',
-    tier: 2,
-    precedence: 10,
-    confidence: 'unverified',
-    enabled: false,
-    options: { town: 'Milton' },
-    notes:
-      'Closes the bylaw lifecycle: town meeting adopts → clerk submits within 30 days → AG decides within 90. Needs a form-driving adapter; the page is an OnBase search app.',
-  },
-  {
-    id: 'ma:commbuys',
-    jurisdiction: JURISDICTION,
-    label: 'COMMBUYS — contracts where Milton is the purchasing org',
-    adapter: 'html-links',
-    url: 'https://www.commbuys.com/bso/',
-    level: 'state',
-    agency: 'Commonwealth of Massachusetts',
-    channel: 'money',
-    eventType: 'bid_posted',
-    priority: 'medium',
-    tier: 2,
-    precedence: 20,
-    confidence: 'unverified',
-    enabled: false,
-    options: { purchasingOrg: 'Town of Milton' },
-    notes:
-      'Filter by purchasing organization, never ingest the statewide vendor universe. Needs session handling.',
-  },
-];
+milton.sources = [...tier1, ...stateSources(milton)];
 
-export const miltonSources: SourceInput[] = [...tier1, ...tier2];
+export const miltonProfile = milton;

@@ -38,12 +38,17 @@ export interface UserRow {
 export interface SubscriptionRow {
   id: string;
   user_id: string;
+  /** The town this was followed in, or `*` for every town. */
+  jurisdiction: string;
   kind: string;
   value: string;
   label: string;
   alerts: string;
   created_at: string;
 }
+
+/** A subscription that applies to every town, rather than to one. */
+export const ALL_JURISDICTIONS = '*';
 
 export const SUBSCRIPTION_KINDS = ['matter', 'body', 'channel', 'search'] as const;
 export type SubscriptionKind = (typeof SUBSCRIPTION_KINDS)[number];
@@ -257,35 +262,75 @@ export function checkCsrf(session: Session | null, supplied: string | undefined)
 
 /* ------------------------------------------------------------ subscriptions */
 
+/**
+ * What one reader follows, across every town.
+ *
+ * Deliberately not scoped to a jurisdiction: an account is a person, and a
+ * person who follows a property in Milton and the school committee in Hull has
+ * one list, not two. The town lives on each row, so the feed query knows which
+ * "Planning Board" each subscription meant — see `personalFeed`.
+ */
 export function listSubscriptions(db: Db, userId: string): SubscriptionRow[] {
   return db
-    .prepare('SELECT * FROM subscriptions WHERE user_id = ? ORDER BY kind, label')
+    .prepare('SELECT * FROM subscriptions WHERE user_id = ? ORDER BY jurisdiction, kind, label')
     .all(userId) as unknown as SubscriptionRow[];
 }
 
 export function addSubscription(
   db: Db,
   userId: string,
-  input: { kind: SubscriptionKind; value: string; label: string; alerts?: string },
+  input: {
+    kind: SubscriptionKind;
+    value: string;
+    label: string;
+    /** The town it was followed in. Defaults to every town. */
+    jurisdiction?: string;
+    alerts?: string;
+  },
 ): void {
   db.prepare(
-    `INSERT INTO subscriptions (id, user_id, kind, value, label, alerts, created_at)
-     VALUES (?,?,?,?,?,?,?)
-     ON CONFLICT(user_id, kind, value) DO UPDATE SET label = excluded.label, alerts = excluded.alerts`,
-  ).run(token(12), userId, input.kind, input.value, input.label, input.alerts ?? 'none', nowIso());
-}
-
-export function removeSubscription(db: Db, userId: string, kind: string, value: string): void {
-  db.prepare('DELETE FROM subscriptions WHERE user_id = ? AND kind = ? AND value = ?').run(
+    `INSERT INTO subscriptions (id, user_id, jurisdiction, kind, value, label, alerts, created_at)
+     VALUES (?,?,?,?,?,?,?,?)
+     ON CONFLICT(user_id, jurisdiction, kind, value)
+       DO UPDATE SET label = excluded.label, alerts = excluded.alerts`,
+  ).run(
+    token(12),
     userId,
-    kind,
-    value,
+    input.jurisdiction ?? ALL_JURISDICTIONS,
+    input.kind,
+    input.value,
+    input.label,
+    input.alerts ?? 'none',
+    nowIso(),
   );
 }
 
-export function isWatching(db: Db, userId: string, kind: string, value: string): boolean {
+/** Omit `jurisdiction` to remove the subscription whichever town it was made in. */
+export function removeSubscription(
+  db: Db,
+  userId: string,
+  kind: string,
+  value: string,
+  jurisdiction?: string,
+): void {
+  db.prepare(
+    `DELETE FROM subscriptions
+      WHERE user_id = ? AND kind = ? AND value = ?${jurisdiction ? ' AND jurisdiction = ?' : ''}`,
+  ).run(...([userId, kind, value, ...(jurisdiction ? [jurisdiction] : [])] as never[]));
+}
+
+export function isWatching(
+  db: Db,
+  userId: string,
+  kind: string,
+  value: string,
+  jurisdiction?: string,
+): boolean {
   const row = db
-    .prepare('SELECT 1 AS hit FROM subscriptions WHERE user_id = ? AND kind = ? AND value = ?')
-    .get(userId, kind, value);
+    .prepare(
+      `SELECT 1 AS hit FROM subscriptions
+        WHERE user_id = ? AND kind = ? AND value = ?${jurisdiction ? ' AND jurisdiction = ?' : ''}`,
+    )
+    .get(...([userId, kind, value, ...(jurisdiction ? [jurisdiction] : [])] as never[]));
   return Boolean(row);
 }

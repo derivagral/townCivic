@@ -1,8 +1,9 @@
 import * as cheerio from 'cheerio';
 import { fetchSource } from '../fetch/http.ts';
 import { extractAgendaCategories } from '../adapters/index.ts';
-import { classifyBody, MILTON_BASE, JURISDICTION } from '../registry/milton-ma.ts';
-import { loadSources } from '../registry/index.ts';
+import { classifyBody } from '../registry/profile.ts';
+import { getProfile, loadSources } from '../registry/index.ts';
+import { config } from '../config.ts';
 import { clean } from '../util/text.ts';
 
 export interface DiscoveredCategory {
@@ -126,8 +127,9 @@ export interface DiscoverOptions {
  * registry — the registry stays a reviewed artifact, not a crawl output.
  */
 export async function discover(options: DiscoverOptions = {}): Promise<DiscoverReport> {
-  const base = options.base ?? MILTON_BASE;
-  const jurisdiction = options.jurisdiction ?? JURISDICTION;
+  const jurisdiction = options.jurisdiction ?? config.defaultJurisdiction;
+  const profile = getProfile(jurisdiction);
+  const base = options.base ?? profile.baseUrl;
   const known = new Set(
     loadSources(jurisdiction)
       .map((s) => (typeof s.options['cid'] === 'number' ? (s.options['cid'] as number) : null))
@@ -159,19 +161,25 @@ export async function discover(options: DiscoverOptions = {}): Promise<DiscoverR
   report.categories = [...merged.values()]
     .sort((a, b) => a.body.localeCompare(b.body))
     .map((category) => {
-      const { channel, priority } = classifyBody(category.body);
+      const { channel, priority } = classifyBody(profile, category.body);
       return { ...category, channel, priority, known: known.has(category.cid) };
     });
 
   return report;
 }
 
-/** Render newly found categories as registry entries a human can paste in. */
-export function toRegistrySnippet(categories: DiscoveredCategory[]): string {
+/**
+ * Render newly found categories as registry entries a human can paste in.
+ *
+ * This is how a new town gets its board list: `discover` prints the categories
+ * with the ids read off the live site, and a person decides which of them are
+ * worth following. The registry stays a reviewed artifact.
+ */
+export function toRegistrySnippet(categories: DiscoveredCategory[], jurisdiction: string): string {
   const fresh = categories.filter((c) => !c.known);
   if (!fresh.length) return '// nothing new — every discovered category is already registered';
   const lines = fresh.map(
     (c) => `  { slug: '${c.slug}', cid: ${c.cid}, body: ${JSON.stringify(c.body)} }, // → ${c.channel}`,
   );
-  return `// add to CONFIRMED_AGENDA_CATEGORIES in src/registry/milton-ma.ts\n${lines.join('\n')}`;
+  return `// add to agendaCategories in src/registry/${jurisdiction}.ts\n${lines.join('\n')}`;
 }

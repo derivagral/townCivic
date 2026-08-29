@@ -2,9 +2,13 @@ name: Refresh
 
 # The ingest → analyse cycle, run on a schedule.
 #
-# Twice a day, deliberately. Milton posts meeting notices under a 48-hour clock,
-# so a 12-hour worst case still leaves a day and a half of notice — and these
-# are small municipal servers. Hourly would buy nothing and cost them something.
+# Twice a day, deliberately. These towns post meeting notices under a 48-hour
+# clock, so a 12-hour worst case still leaves a day and a half of notice — and
+# these are small municipal servers. Hourly would buy nothing and cost them
+# something. Every step runs `--jurisdiction all`, so adding a town to the
+# registry adds it to the schedule with no edit here; the per-host politeness
+# delay in `fetch/http.ts` is what keeps several towns in one run from becoming
+# a burst at any one of them.
 #
 # The database is a cache, not a source of truth: the raw document store is the
 # authority, and everything else can be rebuilt from it. So this restores the
@@ -58,23 +62,25 @@ jobs:
           restore-keys: |
             towncivic-db-
 
+      # Every registered town, in one pass. A town whose sources are all
+      # disabled costs nothing here — it makes no requests.
       - name: Ingest
-        run: npm run ingest
+        run: npm run ingest -- --jurisdiction all
 
       # Documents are the slow part. Cap each run so a first run over a
       # nine-year archive spreads across several runs instead of timing out.
       - name: Extract documents
-        run: npm run extract -- --limit 150
+        run: npm run extract -- --jurisdiction all --limit 150
 
       - name: Link records into timelines
-        run: npm run link
+        run: npm run link -- --jurisdiction all
 
       - name: Read minutes
-        run: npm run interpret
+        run: npm run interpret -- --jurisdiction all
 
       # The only step that talks to anyone other than the town.
       - name: Geocode new addresses
-        run: npm run geocode -- --limit 50
+        run: npm run geocode -- --jurisdiction all --limit 50
         continue-on-error: true
 
       - name: Save the database
@@ -89,7 +95,7 @@ jobs:
       # means a source is failing or has gone quiet.
       - name: Status
         if: always()
-        run: npm run status
+        run: npm run status -- --jurisdiction all
 
       - name: Publish the database
         if: always()

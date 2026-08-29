@@ -1,5 +1,6 @@
 import type { Db } from './index.ts';
 import type { NormalizedEvent, SourceDef } from '../types.ts';
+import type { JurisdictionProfile } from '../registry/profile.ts';
 import type { Channel, Level, Priority } from '../taxonomy.ts';
 
 export interface EventRow {
@@ -79,6 +80,86 @@ export interface SourceRow {
 }
 
 const nowIso = () => new Date().toISOString();
+
+/* ------------------------------------------------------------ jurisdictions */
+
+export interface JurisdictionRow {
+  id: string;
+  name: string;
+  label: string;
+  state: string;
+  time_zone: string;
+  platform: string;
+  base_url: string;
+  bbox: string;
+  boundary: string | null;
+  notes: string | null;
+  updated_at: string;
+}
+
+/** One town, as the UI sees it: the registry row plus what is actually in the db. */
+export interface JurisdictionSummary extends JurisdictionRow {
+  events: number;
+  matters: number;
+  sources: number;
+  enabled_sources: number;
+  last_fetch_at: string | null;
+  last_event_at: string | null;
+}
+
+export function upsertJurisdiction(db: Db, profile: JurisdictionProfile): void {
+  db.prepare(
+    `INSERT INTO jurisdictions (id, name, label, state, time_zone, platform, base_url, bbox, boundary, notes, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name, label = excluded.label, state = excluded.state,
+       time_zone = excluded.time_zone, platform = excluded.platform, base_url = excluded.base_url,
+       bbox = excluded.bbox, boundary = excluded.boundary, notes = excluded.notes,
+       updated_at = excluded.updated_at`,
+  ).run(
+    profile.id,
+    profile.name,
+    profile.label,
+    profile.state,
+    profile.timeZone,
+    profile.platform,
+    profile.baseUrl,
+    JSON.stringify(profile.bbox),
+    profile.boundary ? JSON.stringify(profile.boundary) : null,
+    profile.notes ?? null,
+    nowIso(),
+  );
+}
+
+/**
+ * Every town in the database, with the counts the switcher and `/towns` show.
+ *
+ * One query rather than one per town: the numbers are what tell a reader which
+ * towns are live and which are registered but not yet ingested, so they are on
+ * the hot path for the town list.
+ */
+export function listJurisdictionRows(db: Db): JurisdictionSummary[] {
+  const rows = db
+    .prepare(
+      `SELECT j.*,
+              (SELECT count(*) FROM events e WHERE e.jurisdiction = j.id) AS events,
+              (SELECT count(*) FROM matters m WHERE m.jurisdiction = j.id) AS matters,
+              (SELECT count(*) FROM sources s WHERE s.jurisdiction = j.id) AS sources,
+              (SELECT count(*) FROM sources s WHERE s.jurisdiction = j.id AND s.enabled = 1) AS enabled_sources,
+              (SELECT max(s.last_fetch_at) FROM sources s WHERE s.jurisdiction = j.id) AS last_fetch_at,
+              (SELECT max(coalesce(e.occurred_at, e.published_at, e.first_seen_at))
+                 FROM events e WHERE e.jurisdiction = j.id) AS last_event_at
+         FROM jurisdictions j
+        ORDER BY events DESC, j.label`,
+    )
+    .all();
+  return rows as unknown as JurisdictionSummary[];
+}
+
+export function getJurisdictionRow(db: Db, id: string): JurisdictionRow | undefined {
+  return db.prepare('SELECT * FROM jurisdictions WHERE id = ?').get(id) as unknown as
+    JurisdictionRow | undefined;
+}
 
 /* ------------------------------------------------------------------ sources */
 
@@ -503,6 +584,8 @@ export function getEvent(db: Db, id: string): EventRow | undefined {
 export interface FeedSubscription {
   kind: string;
   value: string;
+  /** The town it was made in, or `*` for every town. Absent behaves as `*`. */
+  jurisdiction?: string;
 }
 
 /**
@@ -524,26 +607,39 @@ export function personalFeed(
   const params: unknown[] = [];
 
   for (const subscription of subscriptions) {
+    let clause: string | null = null;
     switch (subscription.kind) {
       case 'matter':
-        clauses.push('e.id IN (SELECT event_id FROM matter_events WHERE matter_id = ?)');
+        clause = 'e.id IN (SELECT event_id FROM matter_events WHERE matter_id = ?)';
         params.push(subscription.value);
         break;
       case 'body':
-        clauses.push('e.body = ?');
+        clause = 'e.body = ?';
         params.push(subscription.value);
         break;
       case 'channel':
-        clauses.push('e.channel = ?');
+        clause = 'e.channel = ?';
         params.push(subscription.value);
         break;
       case 'search':
-        clauses.push('e.rowid IN (SELECT rowid FROM events_fts WHERE events_fts MATCH ?)');
+        clause = 'e.rowid IN (SELECT rowid FROM events_fts WHERE events_fts MATCH ?)';
         params.push(toMatchQuery(subscription.value));
         break;
       default:
         break;
     }
+    if (!clause) continue;
+
+    // Each subscription carries its own town, so "the Planning Board" means the
+    // one the reader was looking at when they followed it. A matter id is
+    // already globally unique, but scoping it too costs nothing and keeps the
+    // rule "a subscription is a town plus a thing" true without exceptions.
+    const town = subscription.jurisdiction;
+    if (town && town !== '*') {
+      clause = `(${clause} AND e.jurisdiction = ?)`;
+      params.push(town);
+    }
+    clauses.push(clause);
   }
   if (!clauses.length) return [];
 
@@ -593,10 +689,23 @@ export function interpretationsForEvent(db: Db, eventId: string): Interpretation
   return rows as unknown as InterpretationRow[];
 }
 
-export function countInterpretations(db: Db): number {
-  const row = db.prepare("SELECT count(*) AS n FROM interpretations WHERE text <> ''").get() as {
-    n: number;
-  };
+/**
+ * How many derived readings exist, optionally for one town.
+ *
+ * `interpretations` hangs off `events` rather than carrying its own
+ * jurisdiction — a reading belongs to a document, and the document already
+ * knows what town it is from — so the scoping is a join rather than a column.
+ */
+export function countInterpretations(db: Db, jurisdiction?: string): number {
+  const row = jurisdiction
+    ? (db
+        .prepare(
+          `SELECT count(*) AS n FROM interpretations i
+             JOIN events e ON e.id = i.event_id
+            WHERE i.text <> '' AND e.jurisdiction = ?`,
+        )
+        .get(jurisdiction) as { n: number })
+    : (db.prepare("SELECT count(*) AS n FROM interpretations WHERE text <> ''").get() as { n: number });
   return row.n;
 }
 

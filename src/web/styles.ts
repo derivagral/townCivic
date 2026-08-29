@@ -46,6 +46,16 @@ header.site .wrap { padding-top: 22px; padding-bottom: 0; }
 .brand .spacer { flex: 1; }
 .brand .util { font-size: 13px; color: var(--muted); display: flex; gap: 14px; }
 
+/*
+ * The town switcher. Deliberately quieter than the channel tabs below it and
+ * visually above them: which town you are in is a bigger question than which
+ * channel, and asking it twice a session should not compete with the content.
+ */
+nav.towns { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0 0; font-size: 13px; }
+nav.towns a { color: var(--muted); text-decoration: none; }
+nav.towns a:hover { color: var(--ink); text-decoration: underline; }
+nav.towns a.on { color: var(--ink); font-weight: 600; }
+
 nav.channels { display: flex; gap: 4px; flex-wrap: wrap; margin: 16px 0 0; }
 nav.channels a {
   padding: 7px 12px; font-size: 13.5px; text-decoration: none; color: var(--muted);

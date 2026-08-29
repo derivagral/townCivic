@@ -135,10 +135,37 @@ function cleanRowText(context: string, linkText: string, board: string): string 
 }
 
 /**
- * Read the Agenda Center index for the `<Board-Slug>-<CID>` categories it links.
+ * The slug CivicPlus builds a category URL from.
+ *
+ * `/AgendaCenter/Board-of-Health-4` is the category name with spaces hyphenated
+ * and punctuation dropped. Deriving it is what lets the collapse layout below —
+ * which prints the name and the id but never the URL — still produce a source a
+ * town file can use. `verify` is what confirms the guess against the live site.
+ */
+export function categorySlug(name: string): string {
+  return clean(name)
+    .replace(/&/g, ' ')
+    .replace(/[^A-Za-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-{2,}/g, '-');
+}
+
+/**
+ * Read the Agenda Center index for the categories it publishes.
  *
  * Category ids are assigned per site and are not guessable, so this is how the
- * registry learns about boards nobody hard-coded.
+ * registry learns about boards nobody hard-coded. Two layouts, because two of
+ * these towns' installs are themed differently and both are current CivicPlus:
+ *
+ *   1. Milton links each board — `<a href="/AgendaCenter/Select-Board-6">`.
+ *   2. Weymouth renders each board as a collapsible panel whose id carries the
+ *      category id — `<div class="listing" id="cat4"><h2>Board of Health</h2>` —
+ *      and never links the category at all.
+ *
+ * Reading both matters more than it looks: on layout 2 the old parser found
+ * zero categories and `discover` reported a town with no boards, which is
+ * indistinguishable from a town that publishes nothing.
  */
 export function extractAgendaCategories(body: string): { slug: string; cid: number; body: string }[] {
   const $ = cheerio.load(body);
@@ -155,6 +182,20 @@ export function extractAgendaCategories(body: string): { slug: string; cid: numb
     const text = clean($(element).text());
     const name = text && text.length <= 80 ? text : slug.replace(/-/g, ' ');
     if (!byCid.has(cid)) byCid.set(cid, { slug, cid, body: name });
+  });
+
+  // Layout 2. Only fills gaps: where a category is linked, the site's own slug
+  // is the truth and beats anything derived from the heading.
+  $('[id^="cat"]').each((_, element) => {
+    const id = $(element).attr('id') ?? '';
+    const match = /^cat(\d+)$/.exec(id);
+    if (!match) return;
+    const cid = Number(match[1]);
+    if (byCid.has(cid)) return;
+
+    const name = clean($(element).find('h1, h2, h3, h4').first().text());
+    if (!name || name.length > 100) return;
+    byCid.set(cid, { slug: categorySlug(name), cid, body: name });
   });
 
   return [...byCid.values()].sort((a, b) => a.cid - b.cid);

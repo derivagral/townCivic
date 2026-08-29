@@ -4,9 +4,13 @@
  * A municipality spans a couple of kilometres, so the choice of projection is
  * not the interesting question — at this scale everything is a rectangle. The
  * only correction that matters is that a degree of longitude is shorter than a
- * degree of latitude, by cos(latitude); without it Milton comes out visibly
+ * degree of latitude, by cos(latitude); without it a town comes out visibly
  * stretched east-west and two properties on the same street look further apart
  * than two on the same avenue.
+ *
+ * Nothing here knows about any particular town. A town's bounding box lives on
+ * its profile in `src/registry/`, because it is data about a place rather than
+ * about drawing.
  */
 
 export interface LatLon {
@@ -20,21 +24,6 @@ export interface BoundingBox {
   north: number;
   east: number;
 }
-
-/**
- * Roughly the extent of Milton, Massachusetts, padded outwards.
- *
- * This is a sanity fence, not cartography: it exists so that a geocoder
- * answering with a Milton in another state — there are several — is rejected
- * rather than drawn. Widen it before trusting it as a boundary, and take the
- * real one from MassGIS if the map ever needs to draw the town's outline.
- */
-export const MILTON_BBOX: BoundingBox = {
-  south: 42.18,
-  west: -71.15,
-  north: 42.31,
-  east: -70.99,
-};
 
 export function withinBox(point: LatLon, box: BoundingBox): boolean {
   return point.lat >= box.south && point.lat <= box.north && point.lon >= box.west && point.lon <= box.east;

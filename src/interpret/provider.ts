@@ -27,6 +27,8 @@ export type InterpretationKind = (typeof INTERPRETATION_KINDS)[number];
 
 export interface InterpretRequest {
   eventId: string;
+  /** The town the document belongs to, as the reader would say it. */
+  jurisdictionLabel: string;
   title: string;
   body: string | null;
   eventType: string;

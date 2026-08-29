@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import type { NormalizedEvent, RawItem, SourceDef } from '../types.ts';
 import { classify } from './classify.ts';
 import { extractSubjects, truncate } from '../util/text.ts';
-import { canonicalBody, classifyBody } from '../registry/milton-ma.ts';
+import { getProfile } from '../registry/index.ts';
+import { canonicalBody, classifyBody } from '../registry/profile.ts';
+import type { JurisdictionProfile } from '../registry/profile.ts';
 
 /**
  * Stable identity for an item.
@@ -41,23 +43,30 @@ function titlePrefixBody(title: string): string | undefined {
  * That last one is off by default because a headline like "Blue Hill Avenue
  * water main work — road closure" would otherwise invent a board.
  */
-function resolveBody(source: SourceDef, item: RawItem): string | null {
+function resolveBody(profile: JurisdictionProfile, source: SourceDef, item: RawItem): string | null {
   const fromAdapter = typeof item.extra?.['board'] === 'string' ? (item.extra['board'] as string) : undefined;
   const raw =
     fromAdapter ??
     source.body ??
     (source.options['bodyFromTitlePrefix'] ? titlePrefixBody(item.title) : undefined);
-  return raw ? canonicalBody(raw) : null;
+  return raw ? canonicalBody(profile, raw) : null;
 }
 
+/**
+ * `profile` is looked up from the source's own jurisdiction rather than passed
+ * down: normalization is the point where a record stops being one town's HTML
+ * and becomes a row, and the town's alias table is part of that translation.
+ * Reading it from the source means a single ingest run can span towns.
+ */
 export function normalize(source: SourceDef, item: RawItem): NormalizedEvent {
-  const body = resolveBody(source, item);
+  const profile = getProfile(source.jurisdiction);
+  const body = resolveBody(profile, source, item);
 
   // A source that covers one board already answers the channel question. For a
   // site-wide feed the board name is the better signal than the source default,
   // so a Planning Board agenda found on the index lands in land-use just as it
   // would have from the board's own page.
-  const derived = body && !source.body ? classifyBody(body) : null;
+  const derived = body && !source.body ? classifyBody(profile, body) : null;
   const scoped: RawItem = derived ? { ...item, channel: item.channel ?? derived.channel } : item;
 
   const { channel, eventType, priority, tags } = classify(source, scoped);

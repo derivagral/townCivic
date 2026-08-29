@@ -4,7 +4,15 @@ import { parseArgs } from 'node:util';
 import { serve } from '@hono/node-server';
 import { config } from './config.ts';
 import { getDb, closeDb } from './db/index.ts';
-import { syncSources, loadSources, listJurisdictions } from './registry/index.ts';
+import {
+  syncSources,
+  syncJurisdictions,
+  loadSources,
+  listJurisdictions,
+  listProfiles,
+  getProfile,
+  orphanJurisdictions,
+} from './registry/index.ts';
 import { ingest } from './pipeline/ingest.ts';
 import { extractDocuments } from './pipeline/extract.ts';
 import { linkMatters } from './pipeline/link.ts';
@@ -15,8 +23,9 @@ import { discover, toRegistrySnippet } from './commands/discover.ts';
 import { status } from './commands/status.ts';
 import { fetchBoundary } from './commands/boundary.ts';
 import { seed, clearSampleData, hasSampleData } from './commands/seed.ts';
+import { CLEAR_SCOPES, clearJurisdiction, clearOrphans, isClearScope } from './commands/clear.ts';
 import { createApp } from './web/server.ts';
-import { countEvents, queryEvents } from './db/repo.ts';
+import { countEvents, listJurisdictionRows, queryEvents } from './db/repo.ts';
 
 const USAGE = `townCivic — a primary-source civic record for one town.
 
@@ -34,13 +43,15 @@ Commands
   boundary             Refetch the town outline from MassGIS (maintenance; commit the result)
   discover             Probe the CivicPlus site for boards and feeds not yet registered
   serve                Run the web UI and the Atom / JSON feeds
+  towns                List every registered town and what the database holds for it
   sources              Print the source registry
   events               Print recent records as JSON
+  clear                Delete one town's rows: derived data, records, or the town
   clear-samples        Delete every event loaded from fixtures
   help                 Show this message
 
 Options
-  --jurisdiction <id>  Town to operate on (default: ${config.defaultJurisdiction})
+  --jurisdiction <id>  Town to operate on, or \`all\` (default: ${config.defaultJurisdiction})
   --source <id>        Restrict to one source; repeatable
   --all                Include sources marked disabled
   --force              Ignore stored ETag / Last-Modified and refetch
@@ -50,11 +61,19 @@ Options
   --limit <n>          Row limit for events / documents to extract
   --since <date>       Only extract records dated on or after this ISO date
   --provider <name>    Interpreter for \`interpret\`: ${PROVIDERS.join(' | ')} (default: rules)
+  --scope <what>       For \`clear\`: ${CLEAR_SCOPES.join(' | ')} (default: derived)
+  --orphans            For \`clear\`: every town in the database the registry has dropped
+
+Towns
+  ${listJurisdictions().join(', ')}
 
 Examples
   npm run seed && npm run serve
   npx tsx src/cli.ts verify --all
   npx tsx src/cli.ts ingest --source milton-ma:agenda:planning-board
+  npx tsx src/cli.ts ingest --jurisdiction all
+  npx tsx src/cli.ts discover --jurisdiction weymouth-ma
+  npx tsx src/cli.ts clear --jurisdiction weymouth-ma --scope records --dry-run
 `;
 
 const { values, positionals } = parseArgs({
@@ -70,6 +89,8 @@ const { values, positionals } = parseArgs({
     limit: { type: 'string' },
     since: { type: 'string' },
     provider: { type: 'string' },
+    scope: { type: 'string' },
+    orphans: { type: 'boolean', default: false },
     help: { type: 'boolean', default: false },
   },
 });
@@ -78,8 +99,54 @@ const command = positionals[0] ?? 'help';
 const jurisdiction = values.jurisdiction ?? config.defaultJurisdiction;
 const sourceIds = values.source ?? [];
 
+/**
+ * Which towns a command runs over.
+ *
+ * `--jurisdiction all` is what makes a scheduled refresh a single line no
+ * matter how many towns are registered, and it is deliberately spelled out
+ * rather than being the default: a command that quietly fetched four towns
+ * because someone omitted a flag would be a bad surprise for four town
+ * servers.
+ */
+const ALL = 'all';
+const targets = jurisdiction === ALL ? listJurisdictions() : [jurisdiction];
+
 const check = (ok: boolean) => (ok ? '[32mok[0m' : '[31mFAIL[0m');
 const dim = (text: string) => `[2m${text}[0m`;
+const bold = (text: string) => `[1m${text}[0m`;
+
+/**
+ * Machine-readable output, collected rather than printed as it goes.
+ *
+ * One town prints exactly what it printed before this file knew about several,
+ * so anything parsing `--json` keeps working; `--jurisdiction all` prints an
+ * array of `{ jurisdiction, report }`, which is the only shape that can say
+ * which town each result came from.
+ */
+const jsonReports: { jurisdiction: string; report: unknown }[] = [];
+
+function emitJson(town: string, report: unknown): number {
+  jsonReports.push({ jurisdiction: town, report });
+  return 0;
+}
+
+function flushJson(): void {
+  if (!values.json || !jsonReports.length) return;
+  const single = jsonReports.length === 1 && targets.length === 1;
+  console.log(JSON.stringify(single ? jsonReports[0]!.report : jsonReports, null, 2));
+}
+
+/** Run a command body once per target town, returning the worst exit code. */
+async function forEachTown(run: (town: string) => Promise<number>): Promise<number> {
+  let worst = 0;
+  for (const town of targets) {
+    if (targets.length > 1 && !values.json) {
+      console.log(`\n${bold(getProfile(town).label)} ${dim(town)}`);
+    }
+    worst = Math.max(worst, await run(town));
+  }
+  return worst;
+}
 
 async function main(): Promise<number> {
   if (values.help || command === 'help') {
@@ -87,113 +154,123 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  if (!listJurisdictions().includes(jurisdiction) && command !== 'discover') {
-    console.error(`Unknown jurisdiction "${jurisdiction}". Known: ${listJurisdictions().join(', ')}`);
+  // `clear` is the exception: its whole job can be to remove a town the
+  // registry no longer knows, so it validates its own target.
+  const unchecked = command === 'discover' || command === 'clear' || command === 'towns';
+  if (jurisdiction !== ALL && !listJurisdictions().includes(jurisdiction) && !unchecked) {
+    console.error(
+      `Unknown jurisdiction "${jurisdiction}". Known: ${listJurisdictions().join(', ')}, or \`all\`.`,
+    );
     return 1;
   }
 
   switch (command) {
     case 'seed': {
       const db = getDb();
-      const reports = seed(db);
-      if (values.json) {
-        console.log(JSON.stringify(reports, null, 2));
+      return forEachTown(async (town) => {
+        const reports = seed(db, { jurisdiction: town });
+        if (values.json) return emitJson(town, reports);
+        for (const report of reports) {
+          console.log(
+            `${check(true)}  ${report.sourceId.padEnd(34)} ${String(report.items).padStart(3)} items  ` +
+              dim(
+                `${report.created} new, ${report.revised} revised, ${report.unchanged} unchanged  ← ${report.fixture}`,
+              ),
+          );
+        }
+        if (!reports.length) {
+          console.log(dim(`No fixtures for ${town} — only towns with committed fixtures can be seeded.`));
+        }
+        console.log(`\n${countEvents(db, { jurisdiction: town })} records for ${town}.`);
+        console.log(dim('These are synthetic fixtures, not real records. Run `ingest` for the live site.'));
         return 0;
-      }
-      for (const report of reports) {
-        console.log(
-          `${check(true)}  ${report.sourceId.padEnd(34)} ${String(report.items).padStart(3)} items  ` +
-            dim(
-              `${report.created} new, ${report.revised} revised, ${report.unchanged} unchanged  ← ${report.fixture}`,
-            ),
-        );
-      }
-      console.log(`\n${countEvents(db, { jurisdiction })} records in the database.`);
-      console.log(dim('These are synthetic fixtures, not real records. Run `ingest` for the live site.'));
-      return 0;
+      });
     }
 
     case 'ingest': {
       const db = getDb();
-      const reports = await ingest(db, {
-        jurisdiction,
-        ...(sourceIds.length ? { sourceIds } : {}),
-        ...(values.all ? { includeDisabled: true } : {}),
-        ...(values.force ? { force: true } : {}),
-        ...(values['dry-run'] ? { dryRun: true } : {}),
-        onProgress(report) {
-          if (values.json) return;
-          const state = report.notModified
-            ? dim('not modified')
-            : `${String(report.items).padStart(3)} items`;
-          console.log(
-            `${check(report.ok)}  ${report.sourceId.padEnd(40)} ${String(report.status).padStart(3)}  ${state}  ` +
-              dim(`${report.created} new, ${report.revised} revised, ${report.duplicate} dup`) +
-              (report.error ? `\n     [31m${report.error}[0m` : ''),
-          );
-        },
+      return forEachTown(async (town) => {
+        const reports = await ingest(db, {
+          jurisdiction: town,
+          ...(sourceIds.length ? { sourceIds } : {}),
+          ...(values.all ? { includeDisabled: true } : {}),
+          ...(values.force ? { force: true } : {}),
+          ...(values['dry-run'] ? { dryRun: true } : {}),
+          onProgress(report) {
+            if (values.json) return;
+            const state = report.notModified
+              ? dim('not modified')
+              : `${String(report.items).padStart(3)} items`;
+            console.log(
+              `${check(report.ok)}  ${report.sourceId.padEnd(40)} ${String(report.status).padStart(3)}  ${state}  ` +
+                dim(`${report.created} new, ${report.revised} revised, ${report.duplicate} dup`) +
+                (report.error ? `\n     [31m${report.error}[0m` : ''),
+            );
+          },
+        });
+        if (values.json) return emitJson(town, reports);
+        const failed = reports.filter((r) => !r.ok);
+        if (failed.length) {
+          console.log(`\n${failed.length} of ${reports.length} sources failed.`);
+        }
+        if (!reports.length) {
+          console.log(dim(`No enabled sources for ${town}. Run \`discover\` and \`verify\` first.`));
+        }
+        return failed.length === reports.length && reports.length > 0 ? 1 : 0;
       });
-      if (values.json) console.log(JSON.stringify(reports, null, 2));
-      const failed = reports.filter((r) => !r.ok);
-      if (failed.length && !values.json) {
-        console.log(`\n${failed.length} of ${reports.length} sources failed.`);
-      }
-      return failed.length === reports.length && reports.length > 0 ? 1 : 0;
     }
 
     case 'extract': {
       const db = getDb();
-      let structured = 0;
-      const reports = await extractDocuments(db, {
-        jurisdiction,
-        ...(sourceIds.length ? { sourceIds } : {}),
-        ...(values.force ? { force: true } : {}),
-        ...(values.limit ? { limit: Number(values.limit) } : {}),
-        ...(values.since ? { since: values.since } : {}),
-        onProgress(report) {
-          if (report.structured) structured++;
-          if (values.json) return;
-          const detail = report.ok
-            ? `${String(report.pages).padStart(2)}p  ${String(report.agendaItems).padStart(2)} items  ` +
-              `${report.structured ? '\u001b[32mstructured\u001b[0m' : dim('text only ')}` +
-              (report.subjects.length ? `  ${dim(report.subjects.slice(0, 3).join(', '))}` : '')
-            : `\u001b[31m${report.error ?? 'failed'}\u001b[0m`;
-          console.log(`${check(report.ok)}  ${report.title.slice(0, 46).padEnd(46)} ${detail}`);
-        },
+      return forEachTown(async (town) => {
+        let structured = 0;
+        const reports = await extractDocuments(db, {
+          jurisdiction: town,
+          ...(sourceIds.length ? { sourceIds } : {}),
+          ...(values.force ? { force: true } : {}),
+          ...(values.limit ? { limit: Number(values.limit) } : {}),
+          ...(values.since ? { since: values.since } : {}),
+          onProgress(report) {
+            if (report.structured) structured++;
+            if (values.json) return;
+            const detail = report.ok
+              ? `${String(report.pages).padStart(2)}p  ${String(report.agendaItems).padStart(2)} items  ` +
+                `${report.structured ? '\u001b[32mstructured\u001b[0m' : dim('text only ')}` +
+                (report.subjects.length ? `  ${dim(report.subjects.slice(0, 3).join(', '))}` : '')
+              : `\u001b[31m${report.error ?? 'failed'}\u001b[0m`;
+            console.log(`${check(report.ok)}  ${report.title.slice(0, 46).padEnd(46)} ${detail}`);
+          },
+        });
+        if (values.json) return emitJson(town, reports);
+        const failed = reports.filter((r) => !r.ok).length;
+        const scanned = reports.filter((r) => r.likelyScanned).length;
+        console.log(
+          `\n${reports.length} documents: ${structured} structured, ${reports.length - structured - failed} text only, ${failed} failed.`,
+        );
+        if (scanned) console.log(dim(`${scanned} look scanned and would need OCR.`));
+        return failed === reports.length && reports.length > 0 ? 1 : 0;
       });
-      if (values.json) {
-        console.log(JSON.stringify(reports, null, 2));
-        return 0;
-      }
-      const failed = reports.filter((r) => !r.ok).length;
-      const scanned = reports.filter((r) => r.likelyScanned).length;
-      console.log(
-        `\n${reports.length} documents: ${structured} structured, ${reports.length - structured - failed} text only, ${failed} failed.`,
-      );
-      if (scanned) console.log(dim(`${scanned} look scanned and would need OCR.`));
-      return failed === reports.length && reports.length > 0 ? 1 : 0;
     }
 
     case 'link': {
       const db = getDb();
-      const summary = linkMatters(db, { jurisdiction });
-      if (values.json) {
-        console.log(JSON.stringify(summary, null, 2));
-        return 0;
-      }
-      // Only the multi-record ones are worth printing — a matter with one
-      // record is a subject, not a story.
-      for (const report of summary.reports.filter((r) => r.events > 1).slice(0, 25)) {
+      return forEachTown(async (town) => {
+        const summary = linkMatters(db, { jurisdiction: town });
+        if (values.json) return emitJson(town, summary);
+        // Only the multi-record ones are worth printing — a matter with one
+        // record is a subject, not a story.
+        for (const report of summary.reports.filter((r) => r.events > 1).slice(0, 25)) {
+          console.log(
+            `  ${String(report.events).padStart(3)} records  ${report.label.slice(0, 44).padEnd(44)} ` +
+              dim(`${report.kind}  ${report.status ?? ''}`),
+          );
+        }
         console.log(
-          `  ${String(report.events).padStart(3)} records  ${report.label.slice(0, 44).padEnd(44)} ` +
-            dim(`${report.kind}  ${report.status ?? ''}`),
+          `\n${summary.eventsConsidered} records → ${summary.matters} matters, ${summary.links} links.`,
         );
-      }
-      console.log(
-        `\n${summary.eventsConsidered} records → ${summary.matters} matters, ${summary.links} links.`,
-      );
-      console.log(dim(`${summary.timelines} carry more than one record.`));
-      return 0;
+        console.log(dim(`${summary.timelines} carry more than one record.`));
+        return 0;
+      });
     }
 
     case 'interpret': {
@@ -204,262 +281,374 @@ async function main(): Promise<number> {
         return 1;
       }
 
-      let found = 0;
-      const reports = await interpretDocuments(db, {
-        jurisdiction,
-        provider,
-        ...(values.force ? { force: true } : {}),
-        ...(values.limit ? { limit: Number(values.limit) } : {}),
-        ...(values.since ? { since: values.since } : {}),
-        onProgress(report) {
-          found += report.found;
-          if (values.json || report.skipped === 'unchanged') return;
-          console.log(
-            `${check(report.ok)}  ${report.title.slice(0, 52).padEnd(52)} ` +
-              (report.ok
-                ? report.found
-                  ? `${report.found} reading${report.found === 1 ? '' : 's'}`
-                  : dim('nothing recorded')
-                : `[31m${report.error ?? 'failed'}[0m`),
-          );
-        },
-      });
+      return forEachTown(async (town) => {
+        let found = 0;
+        const reports = await interpretDocuments(db, {
+          jurisdiction: town,
+          provider,
+          ...(values.force ? { force: true } : {}),
+          ...(values.limit ? { limit: Number(values.limit) } : {}),
+          ...(values.since ? { since: values.since } : {}),
+          onProgress(report) {
+            found += report.found;
+            if (values.json || report.skipped === 'unchanged') return;
+            console.log(
+              `${check(report.ok)}  ${report.title.slice(0, 52).padEnd(52)} ` +
+                (report.ok
+                  ? report.found
+                    ? `${report.found} reading${report.found === 1 ? '' : 's'}`
+                    : dim('nothing recorded')
+                  : `[31m${report.error ?? 'failed'}[0m`),
+            );
+          },
+        });
 
-      if (values.json) {
-        console.log(JSON.stringify(reports, null, 2));
-        return 0;
-      }
-      const skipped = reports.filter((r) => r.skipped === 'unchanged').length;
-      const failed = reports.filter((r) => !r.ok).length;
-      console.log(
-        `\n${reports.length} documents read by \`${provider}\`: ${found} reading${found === 1 ? '' : 's'}, ${failed} failed` +
-          (skipped ? `, ${skipped} already current` : '') +
-          '.',
-      );
-      console.log(
-        dim('Readings are derived, not the record. They are stored and shown separately, and searched'),
-      );
-      console.log(dim('only when a reader asks for them.'));
-      return failed === reports.length && reports.length > 0 ? 1 : 0;
+        if (values.json) return emitJson(town, reports);
+        const skipped = reports.filter((r) => r.skipped === 'unchanged').length;
+        const failed = reports.filter((r) => !r.ok).length;
+        console.log(
+          `\n${reports.length} documents read by \`${provider}\`: ${found} reading${found === 1 ? '' : 's'}, ${failed} failed` +
+            (skipped ? `, ${skipped} already current` : '') +
+            '.',
+        );
+        console.log(
+          dim('Readings are derived, not the record. They are stored and shown separately, and searched'),
+        );
+        console.log(dim('only when a reader asks for them.'));
+        return failed === reports.length && reports.length > 0 ? 1 : 0;
+      });
     }
 
     case 'geocode': {
       const db = getDb();
-      const reports = await geocodeMatters(db, {
-        jurisdiction,
-        ...(values.force ? { force: true } : {}),
-        ...(values.limit ? { limit: Number(values.limit) } : {}),
-        onProgress(report) {
-          if (values.json) return;
-          console.log(
-            `${check(report.ok)}  ${report.label.slice(0, 40).padEnd(40)} ` +
-              (report.ok
-                ? `${report.lat!.toFixed(5)}, ${report.lon!.toFixed(5)}  ${dim(report.matched ?? '')}`
-                : `[33m${report.error ?? 'no match'}[0m`),
-          );
-        },
-      });
-      if (values.json) {
-        console.log(JSON.stringify(reports, null, 2));
+      return forEachTown(async (town) => {
+        const reports = await geocodeMatters(db, {
+          jurisdiction: town,
+          ...(values.force ? { force: true } : {}),
+          ...(values.limit ? { limit: Number(values.limit) } : {}),
+          onProgress(report) {
+            if (values.json) return;
+            console.log(
+              `${check(report.ok)}  ${report.label.slice(0, 40).padEnd(40)} ` +
+                (report.ok
+                  ? `${report.lat!.toFixed(5)}, ${report.lon!.toFixed(5)}  ${dim(report.matched ?? '')}`
+                  : `[33m${report.error ?? 'no match'}[0m`),
+            );
+          },
+        });
+        if (values.json) return emitJson(town, reports);
+        const placed = reports.filter((r) => r.ok).length;
+        console.log(`\n${placed} of ${reports.length} addresses placed.`);
+        if (placed < reports.length) {
+          console.log(dim('Unplaced addresses are listed on /map rather than dropped.'));
+        }
         return 0;
-      }
-      const placed = reports.filter((r) => r.ok).length;
-      console.log(`\n${placed} of ${reports.length} addresses placed.`);
-      if (placed < reports.length) {
-        console.log(dim('Unplaced addresses are listed on /map rather than dropped.'));
-      }
-      return 0;
+      });
     }
 
     case 'verify': {
       const db = getDb();
-      const results = await verify(db, {
-        jurisdiction,
-        ...(sourceIds.length ? { sourceIds } : {}),
-        ...(values.all ? { includeDisabled: true } : {}),
-        onResult(result) {
-          if (values.json) return;
-          const suggestion = result.suggestedConfidence
-            ? `  [33m→ mark ${result.suggestedConfidence}[0m`
-            : result.empty
-              ? '  [33mempty[0m'
-              : '';
-          console.log(
-            `${check(result.ok)}  ${result.sourceId.padEnd(40)} ${String(result.status).padStart(3)}  ` +
-              `${String(result.items).padStart(4)} items  ${dim(result.confidence.padEnd(10))}${suggestion}` +
-              (result.error ? `\n     [31m${result.error}[0m` : ''),
-          );
-        },
+      return forEachTown(async (town) => {
+        const results = await verify(db, {
+          jurisdiction: town,
+          ...(sourceIds.length ? { sourceIds } : {}),
+          ...(values.all ? { includeDisabled: true } : {}),
+          onResult(result) {
+            if (values.json) return;
+            const suggestion = result.suggestedConfidence
+              ? `  [33m→ mark ${result.suggestedConfidence}[0m`
+              : result.empty
+                ? '  [33mempty[0m'
+                : '';
+            console.log(
+              `${check(result.ok)}  ${result.sourceId.padEnd(40)} ${String(result.status).padStart(3)}  ` +
+                `${String(result.items).padStart(4)} items  ${dim(result.confidence.padEnd(10))}${suggestion}` +
+                (result.error ? `\n     [31m${result.error}[0m` : ''),
+            );
+          },
+        });
+        if (values.json) return emitJson(town, results);
+        const broken = results.filter((r) => !r.ok);
+        const empty = results.filter((r) => r.empty);
+        console.log(
+          broken.length
+            ? `\n${broken.length} of ${results.length} sources failed. Try \`discover\` for the CivicPlus ids.`
+            : `\nAll ${results.length} sources answered and parsed.`,
+        );
+        if (empty.length) {
+          console.log(dim(`${empty.length} answered but published nothing — correct URL, unpopulated feed.`));
+        }
+        return broken.length ? 1 : 0;
       });
-      if (values.json) {
-        console.log(JSON.stringify(results, null, 2));
-        return 0;
-      }
-      const broken = results.filter((r) => !r.ok);
-      const empty = results.filter((r) => r.empty);
-      console.log(
-        broken.length
-          ? `\n${broken.length} of ${results.length} sources failed. Try \`discover\` for the CivicPlus ids.`
-          : `\nAll ${results.length} sources answered and parsed.`,
-      );
-      if (empty.length) {
-        console.log(dim(`${empty.length} answered but published nothing — correct URL, unpopulated feed.`));
-      }
-      return broken.length ? 1 : 0;
     }
 
     case 'discover': {
-      const report = await discover({ jurisdiction });
-      if (values.json) {
-        console.log(JSON.stringify(report, null, 2));
-        return 0;
-      }
-      console.log(`Probing ${report.base}\n`);
+      return forEachTown(async (town) => {
+        const report = await discover({ jurisdiction: town });
+        if (values.json) return emitJson(town, report);
+        console.log(`Probing ${report.base}\n`);
 
-      console.log('Agenda Center categories');
-      if (!report.categories.length) console.log(dim('  none found'));
-      for (const category of report.categories) {
-        console.log(
-          `  ${category.known ? dim('known') : '[32mNEW  [0m'} ` +
-            `cid=${String(category.cid).padStart(4)}  ${category.body.padEnd(34)} ${dim(`→ ${category.channel}`)}`,
-        );
-      }
+        console.log('Agenda Center categories');
+        if (!report.categories.length) console.log(dim('  none found'));
+        for (const category of report.categories) {
+          console.log(
+            `  ${category.known ? dim('known') : '[32mNEW  [0m'} ` +
+              `cid=${String(category.cid).padStart(4)}  ${category.body.padEnd(34)} ${dim(`→ ${category.channel}`)}`,
+          );
+        }
 
-      // Grouped by module, because the useful output is the ModID→module map.
-      console.log('\nPublished RSS modules');
-      const byModule = new Map<string, { modId: string | null; feeds: typeof report.feeds }>();
-      for (const feed of report.feeds) {
-        const entry = byModule.get(feed.module) ?? { modId: feed.modId, feeds: [] };
-        entry.feeds.push(feed);
-        byModule.set(feed.module, entry);
-      }
-      if (!byModule.size) console.log(dim('  none found'));
-      for (const [module, entry] of byModule) {
-        console.log(
-          `  ModID=${(entry.modId ?? '?').padEnd(4)} ${module}  ${dim(`${entry.feeds.length} feed(s)`)}`,
-        );
-        for (const feed of entry.feeds.slice(0, 3)) console.log(dim(`         ${feed.label} — ${feed.url}`));
-        if (entry.feeds.length > 3) console.log(dim(`         … ${entry.feeds.length - 3} more`));
-      }
+        // Grouped by module, because the useful output is the ModID→module map.
+        console.log('\nPublished RSS modules');
+        const byModule = new Map<string, { modId: string | null; feeds: typeof report.feeds }>();
+        for (const feed of report.feeds) {
+          const entry = byModule.get(feed.module) ?? { modId: feed.modId, feeds: [] };
+          entry.feeds.push(feed);
+          byModule.set(feed.module, entry);
+        }
+        if (!byModule.size) console.log(dim('  none found'));
+        for (const [module, entry] of byModule) {
+          console.log(
+            `  ModID=${(entry.modId ?? '?').padEnd(4)} ${module}  ${dim(`${entry.feeds.length} feed(s)`)}`,
+          );
+          for (const feed of entry.feeds.slice(0, 3))
+            console.log(dim(`         ${feed.label} — ${feed.url}`));
+          if (entry.feeds.length > 3) console.log(dim(`         … ${entry.feeds.length - 3} more`));
+        }
 
-      for (const error of report.errors) console.error(`\n[31m${error}[0m`);
-      console.log(`\n${toRegistrySnippet(report.categories)}`);
-      return report.errors.length ? 1 : 0;
+        for (const error of report.errors) console.error(`\n[31m${error}[0m`);
+        console.log(`\n${toRegistrySnippet(report.categories, town)}`);
+        return report.errors.length ? 1 : 0;
+      });
     }
 
     case 'status': {
       const db = getDb();
-      const report = status(db, jurisdiction);
-      if (values.json) {
-        console.log(JSON.stringify(report, null, 2));
-        // Non-zero on a problem, so a cron job or a monitor can just check
-        // the exit code without parsing anything.
-        return report.ok ? 0 : 1;
-      }
+      return forEachTown(async (town) => {
+        const report = status(db, town);
+        if (values.json) {
+          // Non-zero on a problem, so a cron job or a monitor can just check
+          // the exit code without parsing anything.
+          emitJson(town, report);
+          return report.ok ? 0 : 1;
+        }
 
-      console.log(
-        `${report.events} records · ${report.matters} matters · ` +
-          `${report.placed.resolved}/${report.placed.total} addresses placed · ` +
-          `${report.boundary ? `outline ${report.boundary.points} pts` : '[33mno outline[0m'} · ` +
-          `${report.interpretations} derived reading${report.interpretations === 1 ? '' : 's'}`,
-      );
-      console.log(
-        dim(`${report.documentsExtracted} documents read, ${report.documentsPending} pending extraction\n`),
-      );
-
-      for (const source of report.sources) {
-        const state = !source.enabled
-          ? dim('off       ')
-          : source.lastError || (source.lastStatus ?? 0) >= 400
-            ? '[31mFAIL      [0m'
-            : source.stale
-              ? `[33mstale ${String(source.staleDays).padStart(3)}d[0m`
-              : '[32mok        [0m';
         console.log(
-          `  ${state} ${source.sourceId.padEnd(40)} ${String(source.events).padStart(4)} records  ` +
-            dim(source.lastFetchAt ? `last fetch ${source.lastFetchAt.slice(0, 10)}` : 'never fetched'),
+          `${report.events} records · ${report.matters} matters · ` +
+            `${report.placed.resolved}/${report.placed.total} addresses placed · ` +
+            `${report.boundary ? `outline ${report.boundary.points} pts` : '[33mno outline[0m'} · ` +
+            `${report.interpretations} derived reading${report.interpretations === 1 ? '' : 's'}`,
         );
-      }
+        console.log(
+          dim(`${report.documentsExtracted} documents read, ${report.documentsPending} pending extraction\n`),
+        );
 
-      if (report.problems.length) {
-        console.log(`\n[33m${report.problems.length} thing(s) to look at:[0m`);
-        for (const problem of report.problems) console.log(`  ${problem}`);
-      } else {
-        console.log(`\n[32mNothing to look at.[0m`);
-      }
-      return report.ok ? 0 : 1;
+        for (const source of report.sources) {
+          const state = !source.enabled
+            ? dim('off       ')
+            : source.lastError || (source.lastStatus ?? 0) >= 400
+              ? '[31mFAIL      [0m'
+              : source.stale
+                ? `[33mstale ${String(source.staleDays).padStart(3)}d[0m`
+                : '[32mok        [0m';
+          console.log(
+            `  ${state} ${source.sourceId.padEnd(40)} ${String(source.events).padStart(4)} records  ` +
+              dim(source.lastFetchAt ? `last fetch ${source.lastFetchAt.slice(0, 10)}` : 'never fetched'),
+          );
+        }
+
+        if (report.problems.length) {
+          console.log(`\n[33m${report.problems.length} thing(s) to look at:[0m`);
+          for (const problem of report.problems) console.log(`  ${problem}`);
+        } else {
+          console.log(`\n[32mNothing to look at.[0m`);
+        }
+        return report.ok ? 0 : 1;
+      });
     }
 
     case 'boundary': {
-      const report = await fetchBoundary({
-        jurisdiction,
-        ...(values['dry-run'] ? { dryRun: true } : {}),
+      return forEachTown(async (town) => {
+        const report = await fetchBoundary({
+          jurisdiction: town,
+          ...(values['dry-run'] ? { dryRun: true } : {}),
+        });
+        if (values.json) {
+          emitJson(town, report);
+          return report.ok ? 0 : 1;
+        }
+        if (!report.ok) {
+          console.error(`[31m${report.error ?? 'failed'}[0m`);
+          return 1;
+        }
+        const area = report.landAreaSqM
+          ? `  ${(report.landAreaSqM / 2_589_988).toFixed(2)} sq mi of land`
+          : '';
+        console.log(
+          `${check(true)}  ${report.jurisdiction.padEnd(14)} ${report.change.padEnd(9)} ` +
+            `${report.polygons} polygon(s), ${report.points} points, ${(report.bytes / 1024).toFixed(1)} KB${area}`,
+        );
+        console.log(dim(`  ${report.file}`));
+        if (report.change === 'unchanged') {
+          console.log(dim('  Identical to what is committed — nothing to do.'));
+        } else if (values['dry-run']) {
+          console.log(dim('  Dry run; nothing written.'));
+        } else {
+          console.log(dim('  Written. Review the diff before committing — this is source data.'));
+        }
+        return 0;
       });
-      if (values.json) {
-        console.log(JSON.stringify(report, null, 2));
-        return report.ok ? 0 : 1;
-      }
-      if (!report.ok) {
-        console.error(`[31m${report.error ?? 'failed'}[0m`);
-        return 1;
-      }
-      const area = report.landAreaSqM ? `  ${(report.landAreaSqM / 2_589_988).toFixed(2)} sq mi of land` : '';
-      console.log(
-        `${check(true)}  ${report.jurisdiction.padEnd(14)} ${report.change.padEnd(9)} ` +
-          `${report.polygons} polygon(s), ${report.points} points, ${(report.bytes / 1024).toFixed(1)} KB${area}`,
-      );
-      console.log(dim(`  ${report.file}`));
-      if (report.change === 'unchanged') {
-        console.log(dim('  Identical to what is committed — nothing to do.'));
-      } else if (values['dry-run']) {
-        console.log(dim('  Dry run; nothing written.'));
-      } else {
-        console.log(dim('  Written. Review the diff before committing — this is source data.'));
-      }
-      return 0;
     }
 
     case 'sources': {
-      const sources = loadSources(jurisdiction);
-      if (values.json) {
-        console.log(JSON.stringify(sources, null, 2));
+      return forEachTown(async (town) => {
+        const sources = loadSources(town);
+        if (values.json) return emitJson(town, sources);
+        for (const source of sources) {
+          console.log(
+            `${source.enabled ? ' ' : dim('·')} tier ${source.tier}  ${source.id.padEnd(34)} ` +
+              `${source.channel.padEnd(14)} ${dim(source.confidence.padEnd(11))}${source.url}`,
+          );
+        }
+        console.log(`\n${sources.length} sources (${sources.filter((s) => s.enabled).length} enabled).`);
         return 0;
-      }
-      for (const source of sources) {
-        console.log(
-          `${source.enabled ? ' ' : dim('·')} tier ${source.tier}  ${source.id.padEnd(34)} ` +
-            `${source.channel.padEnd(14)} ${dim(source.confidence.padEnd(11))}${source.url}`,
-        );
-      }
-      console.log(`\n${sources.length} sources (${sources.filter((s) => s.enabled).length} enabled).`);
-      return 0;
+      });
     }
 
     case 'events': {
       const db = getDb();
-      const rows = queryEvents(db, { jurisdiction, limit: Number(values.limit ?? 25) });
+      const rows = queryEvents(db, {
+        ...(jurisdiction === ALL ? {} : { jurisdiction }),
+        limit: Number(values.limit ?? 25),
+      });
       console.log(JSON.stringify(rows, null, 2));
       return 0;
     }
 
     case 'clear-samples': {
       const db = getDb();
-      const removed = clearSampleData(db);
+      const removed = clearSampleData(db, jurisdiction === ALL ? undefined : jurisdiction);
       console.log(`Removed ${removed} sample record${removed === 1 ? '' : 's'}.`);
+      return 0;
+    }
+
+    case 'clear': {
+      const db = getDb();
+      const scope = values.scope ?? 'derived';
+      if (!isClearScope(scope)) {
+        console.error(`Unknown scope "${scope}". Known: ${CLEAR_SCOPES.join(', ')}`);
+        return 1;
+      }
+
+      const dryRun = Boolean(values['dry-run']);
+      const reports = values.orphans
+        ? clearOrphans(db, dryRun ? { dryRun: true } : {})
+        : (jurisdiction === ALL ? listJurisdictions() : [jurisdiction]).map((town) =>
+            clearJurisdiction(db, { jurisdiction: town, scope, ...(dryRun ? { dryRun: true } : {}) }),
+          );
+
+      if (values.json) {
+        console.log(JSON.stringify(reports, null, 2));
+        return 0;
+      }
+      if (!reports.length) {
+        console.log('Nothing to clear.');
+        return 0;
+      }
+
+      for (const report of reports) {
+        const total = Object.values(report.removed).reduce((n, count) => n + count, 0);
+        console.log(
+          `${report.dryRun ? dim('would remove') : 'removed     '} ` +
+            `${String(total).padStart(6)} rows  ${report.jurisdiction.padEnd(14)} ` +
+            dim(`scope ${report.scope}${report.orphan ? ', not in the registry' : ''}`),
+        );
+        for (const [table, n] of Object.entries(report.removed)) {
+          if (n) console.log(dim(`         ${String(n).padStart(6)}  ${table}`));
+        }
+        if (report.scope === 'town' && report.documentsKept) {
+          console.log(
+            dim(
+              `         ${report.documentsKept} stored document(s) are left on disk — the content store is the ` +
+                'authority and is never deleted here.',
+            ),
+          );
+        }
+      }
+      console.log(
+        dim(
+          reports[0]!.dryRun
+            ? '\nDry run; nothing written. Drop --dry-run to do it.'
+            : '\nEverything removed is derivable: re-run the stage that fills it.',
+        ),
+      );
+      return 0;
+    }
+
+    case 'towns': {
+      const db = getDb();
+      // Materialize first, so a town added to the registry since the last run
+      // appears here — with its source counts — rather than only after the
+      // next ingest.
+      syncJurisdictions(db);
+      for (const town of listJurisdictions()) syncSources(db, town);
+      const rows = listJurisdictionRows(db);
+      const orphans = new Set(orphanJurisdictions(db).map((o) => o.jurisdiction));
+
+      if (values.json) {
+        console.log(
+          JSON.stringify(
+            rows.map((row) => ({ ...row, registered: !orphans.has(row.id) })),
+            null,
+            2,
+          ),
+        );
+        return 0;
+      }
+
+      for (const row of rows) {
+        const state = orphans.has(row.id)
+          ? '[31morphan   [0m'
+          : row.enabled_sources === 0
+            ? dim('registered')
+            : row.events === 0
+              ? '[33mnever ran [0m'
+              : '[32mlive      [0m';
+        console.log(
+          `  ${state} ${row.id.padEnd(14)} ${String(row.events).padStart(6)} records  ` +
+            `${String(row.matters).padStart(5)} matters  ` +
+            dim(`${row.enabled_sources}/${row.sources} sources on  ${row.label}`),
+        );
+      }
+      const registered = listProfiles();
+      console.log(
+        `\n${registered.length} town(s) registered; ${rows.filter((r) => r.events > 0).length} with records.`,
+      );
+      for (const profile of registered) {
+        if (profile.sources.some((source) => source.enabled)) continue;
+        console.log(dim(`  ${profile.id}: nothing enabled yet — \`discover\` for its ids, then \`verify\`.`));
+      }
       return 0;
     }
 
     case 'serve': {
       const db = getDb();
-      syncSources(db, jurisdiction);
+      // Every town this build knows, so the switcher is the registry.
+      for (const town of listJurisdictions()) syncSources(db, town);
       const port = Number(values.port ?? config.port);
       // Feed self-links have to match where the server actually is, not the
       // default port, or an --port run publishes URLs that do not resolve.
       const baseUrl = process.env.TOWNCIVIC_BASE_URL ?? `http://localhost:${port}`;
-      const app = createApp(db, { jurisdiction, baseUrl });
+      const app = createApp(db, {
+        ...(jurisdiction === ALL ? {} : { jurisdiction }),
+        baseUrl,
+      });
       serve({ fetch: app.fetch, port }, (info) => {
         console.log(`townCivic → http://localhost:${info.port}`);
-        console.log(dim(`  ${countEvents(db, { jurisdiction })} records · ${jurisdiction}`));
+        for (const town of listJurisdictions()) {
+          console.log(
+            dim(`  ${String(countEvents(db, { jurisdiction: town })).padStart(6)} records · ${town}`),
+          );
+        }
         if (hasSampleData(db)) {
           console.log(dim('  database contains synthetic sample data (run `clear-samples` to drop it)'));
         }
@@ -475,6 +664,7 @@ async function main(): Promise<number> {
 }
 
 const code = await main();
+flushJson();
 if (code >= 0) {
   closeDb();
   process.exit(code);
