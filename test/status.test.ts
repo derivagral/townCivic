@@ -8,8 +8,29 @@ let seq = 0;
 
 const NOW = new Date('2026-09-01T00:00:00.000Z');
 
+/**
+ * Short names for real registered source ids.
+ *
+ * They have to be real: `status` now reports a source row the registry does not
+ * list, because with a multi-town registry that is how a renamed or dropped
+ * source announces itself. A fixture called `a` would be exactly that.
+ */
+const IDS: Record<string, string> = {
+  a: 'milton-ma:news',
+  b: 'milton-ma:bids',
+  c: 'milton-ma:calendar',
+  d: 'milton-ma:alerts',
+  ok: 'milton-ma:news',
+  broken: 'milton-ma:bids',
+  gone: 'milton-ma:calendar',
+  empty: 'milton-ma:alerts',
+  off: 'milton-ma:alerts:dpw',
+};
+
+const id = (name: string): string => IDS[name] ?? name;
+
 function source(
-  id: string,
+  name: string,
   overrides: {
     enabled?: boolean;
     lastFetchAt?: string | null;
@@ -22,8 +43,8 @@ function source(
                           tier, confidence, enabled, last_fetch_at, last_status, last_error)
      VALUES (?,'milton-ma',?,'rss','https://x','municipal','Town of Milton','meetings','high',1,'verified',?,?,?,?)`,
   ).run(
-    id,
-    id,
+    id(name),
+    name,
     overrides.enabled === false ? 0 : 1,
     overrides.lastFetchAt ?? null,
     overrides.lastStatus ?? null,
@@ -31,13 +52,13 @@ function source(
   );
 }
 
-function event(sourceId: string, firstSeenAt: string): void {
+function event(name: string, firstSeenAt: string): void {
   db.prepare(
     `INSERT INTO events (id, jurisdiction, source_id, level, agency, channel, event_type, priority,
                          title, url, first_seen_at, last_seen_at, subjects, tags, content_hash)
      VALUES (?,'milton-ma',?,'municipal','Town of Milton','meetings','meeting_agenda','high','A record',
              'https://x/1',?,?,'[]','[]',?)`,
-  ).run(`e${++seq}`, sourceId, firstSeenAt, firstSeenAt, `h${seq}`);
+  ).run(`e${++seq}`, id(name), firstSeenAt, firstSeenAt, `h${seq}`);
 }
 
 beforeEach(() => {
@@ -47,7 +68,7 @@ beforeEach(() => {
 
 describe('status', () => {
   it('says an unrun install is unrun, once, rather than listing every source', () => {
-    for (const id of ['a', 'b', 'c', 'd']) source(id);
+    for (const name of ['a', 'b', 'c', 'd']) source(name);
     const report = status(db, 'milton-ma', NOW);
 
     expect(report.ok).toBe(false);
@@ -91,8 +112,8 @@ describe('status', () => {
     source('gone', { lastFetchAt: '2026-08-31T00:00:00.000Z', lastStatus: 404 });
 
     const problems = status(db, 'milton-ma', NOW).problems.join('\n');
-    expect(problems).toContain('broken: last fetch failed — ECONNRESET');
-    expect(problems).toContain('gone: HTTP 404');
+    expect(problems).toContain(`${id('broken')}: last fetch failed — ECONNRESET`);
+    expect(problems).toContain(`${id('gone')}: HTTP 404`);
   });
 
   it('reports a source that answers but yields nothing', () => {
@@ -101,7 +122,7 @@ describe('status', () => {
     source('empty', { lastFetchAt: '2026-08-31T00:00:00.000Z', lastStatus: 200 });
 
     expect(status(db, 'milton-ma', NOW).problems.join('\n')).toContain(
-      'empty: answered but has produced no records',
+      `${id('empty')}: answered but has produced no records`,
     );
   });
 
@@ -112,7 +133,7 @@ describe('status', () => {
     source('off', { enabled: false });
 
     expect(status(db, 'milton-ma', NOW).problems).toEqual([]);
-    expect(status(db, 'milton-ma', NOW).sources.find((s) => s.sourceId === 'off')!.stale).toBe(false);
+    expect(status(db, 'milton-ma', NOW).sources.find((s) => s.sourceId === id('off'))!.stale).toBe(false);
   });
 
   it('counts the downstream stages so a stalled one is visible', () => {

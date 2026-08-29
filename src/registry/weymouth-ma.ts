@@ -81,14 +81,12 @@ export const weymouthProfile = defineJurisdiction({
     'zoning board of appeals': 'Board of Zoning Appeals',
   },
   /**
-   * Weymouth's own names, tried before the statewide rules.
-   *
-   * Union Point — the redeveloped naval air station — is the largest land-use
-   * question in town and is run through two redevelopment authorities, neither
-   * of which any generic rule would recognise as land use.
+   * Weymouth's own names, tried before the statewide rules. Its two
+   * redevelopment authorities — Union Point, the redeveloped naval air station —
+   * are covered by the statewide `redevelopment` rule instead.
    */
   bodyRules: [
-    { pattern: /redevelopment|planning & community/i, channel: 'land-use', priority: 'high' },
+    { pattern: /planning & community/i, channel: 'land-use', priority: 'high' },
     { pattern: /waterfront/i, channel: 'land-use', priority: 'medium' },
   ],
   // The municipal buildings that appear on notice templates. Not yet confirmed

@@ -157,11 +157,30 @@ export function clearJurisdiction(db: Db, options: ClearOptions): ClearReport {
   for (const step of steps) report.removed[step.table] = count(db, step.count, jurisdiction);
   if (options.dryRun) return report;
 
+  /**
+   * Clearing records has to clear the conditional-request state with them.
+   *
+   * `ingest` sends the stored ETag and `Last-Modified`; the town answers 304;
+   * nothing is written. So a town whose records were just deleted would refill
+   * with nothing at all and look like a broken adapter. Forgetting this is the
+   * kind of mistake that costs an afternoon, so it is part of the operation
+   * rather than a line in the docs saying to pass `--force`.
+   */
+  const forgetConditionalHeaders = scope !== 'derived';
+
   // One transaction: a half-cleared town — matters gone, events left — would
   // look to `link` like a town whose records simply have no subjects.
   db.exec('BEGIN');
   try {
     for (const step of steps) db.prepare(step.delete).run(jurisdiction);
+    if (forgetConditionalHeaders) {
+      db.prepare(
+        `UPDATE sources
+            SET etag = NULL, last_modified = NULL, last_fetch_at = NULL,
+                last_status = NULL, last_error = NULL
+          WHERE jurisdiction = ?`,
+      ).run(jurisdiction);
+    }
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');

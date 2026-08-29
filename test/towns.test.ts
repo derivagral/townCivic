@@ -16,7 +16,7 @@ import {
   syncSources,
 } from '../src/registry/index.ts';
 import { canonicalBody, classifyBody, isVenueAddress } from '../src/registry/profile.ts';
-import { miltonProfile, weymouthProfile, hullProfile } from '../src/registry/index.ts';
+import { miltonProfile, weymouthProfile, hullProfile, scituateProfile } from '../src/registry/index.ts';
 import { clearJurisdiction, clearOrphans } from '../src/commands/clear.ts';
 import { countEvents, facetCounts, personalFeed, queryEvents } from '../src/db/repo.ts';
 import { addSubscription, listSubscriptions } from '../src/web/accounts.ts';
@@ -137,10 +137,27 @@ describe('per-town knowledge', () => {
   });
 
   it('lets a town override how its own bodies are classified', () => {
-    // Union Point's redevelopment authorities are the biggest land-use question
-    // in Weymouth and nothing generic would recognise them as land use.
-    expect(classifyBody(weymouthProfile, 'Southfield Redevelopment Authority').channel).toBe('land-use');
-    expect(classifyBody(miltonProfile, 'Southfield Redevelopment Authority').channel).toBe('meetings');
+    // Scituate's Advisory Committee is its finance committee. Nowhere else can
+    // that be assumed — most towns have a dozen advisory committees about
+    // everything but the budget — so the rule belongs to the town.
+    expect(classifyBody(scituateProfile, 'Advisory Committee').channel).toBe('money');
+    expect(classifyBody(miltonProfile, 'Advisory Committee').channel).toBe('meetings');
+
+    // Weymouth's planning department, which no generic rule would recognise:
+    // "Planning & Community Development" does not contain "planning board".
+    expect(classifyBody(weymouthProfile, 'Planning & Community Development').channel).toBe('land-use');
+    expect(classifyBody(miltonProfile, 'Planning & Community Development').channel).toBe('meetings');
+  });
+
+  it('classifies a redevelopment authority as land use everywhere', () => {
+    // Three of these towns have one — Union Point, Nantasket, Scituate Harbor —
+    // and each is the largest land-use question in its town. A rule that had to
+    // be repeated three times belongs in the statewide defaults.
+    for (const profile of [weymouthProfile, hullProfile, scituateProfile]) {
+      expect(classifyBody(profile, 'Redevelopment Authority').channel).toBe('land-use');
+    }
+    // Ahead of the admin rule, or a name with "Parkway" in it files as routine.
+    expect(classifyBody(scituateProfile, 'Cole Parkway Redevelopment Committee').channel).toBe('land-use');
   });
 
   it('knows a city’s ordinances are a town’s by-laws', () => {
@@ -184,6 +201,38 @@ describe('Weymouth', () => {
     for (const source of weymouthProfile.sources) {
       if (source.level === 'municipal') expect(source.url.startsWith('https://weymouth.ma.us/')).toBe(true);
     }
+  });
+});
+
+describe('Hull and Scituate', () => {
+  it('registers what each install actually publishes', () => {
+    const hull = hullProfile.sources.map((s) => s.id);
+    // Hull is the one install of the four with a live /rss.aspx, so it is the
+    // only one with feed sources — all registered off, because every one of
+    // them answered with no items.
+    expect(hullProfile.sources.some((s) => s.adapter === 'rss')).toBe(true);
+    expect(hullProfile.sources.filter((s) => s.adapter === 'rss').every((s) => s.enabled === false)).toBe(
+      true,
+    );
+    expect(hull).toContain('hull-ma:bids');
+
+    // Scituate publishes neither, so neither is registered.
+    expect(scituateProfile.sources.some((s) => s.adapter === 'rss')).toBe(false);
+    expect(scituateProfile.sources.some((s) => s.id.endsWith(':bids'))).toBe(false);
+  });
+
+  it('keeps the town’s own spelling in the registry and fixes it in the alias table', () => {
+    // Hull's Agenda Center says "School Commitee". The registry says what the
+    // site says; the filter rail says what a reader expects.
+    expect(hullProfile.sources.some((s) => s.id === 'hull-ma:agenda:school-commitee')).toBe(true);
+    expect(canonicalBody(hullProfile, 'School Commitee')).toBe('School Committee');
+  });
+
+  it('classifies the bodies that are peculiar to a small coastal town', () => {
+    // The municipal light plant, which is a utility rather than a committee.
+    expect(classifyBody(hullProfile, 'Light Board').channel).toBe('public-safety');
+    expect(classifyBody(hullProfile, 'Stormwater Authority').channel).toBe('public-safety');
+    expect(classifyBody(scituateProfile, 'Coastal Advisory Commission').channel).toBe('land-use');
   });
 });
 
@@ -351,6 +400,44 @@ describe('migrating a database written before there were towns', () => {
     upgraded.close();
   });
 
+  it('moves a renamed source without taking its records with it', () => {
+    const file = path.join(dir, 'rename.db');
+    const legacy = openDb(file);
+    // The pre-rename id, with a record hanging off it. `ma:commbuys` was unique
+    // for exactly as long as there was one town.
+    legacy
+      .prepare(
+        `INSERT INTO sources (id, jurisdiction, label, adapter, url, level, agency, channel, priority,
+                              tier, confidence, enabled)
+         VALUES ('ma:commbuys','milton-ma','COMMBUYS','html-links','https://x','state','Commonwealth',
+                 'money','medium',2,'unverified',0)`,
+      )
+      .run();
+    legacy
+      .prepare(
+        `INSERT INTO events (id, jurisdiction, source_id, level, agency, channel, event_type, priority,
+                             title, url, first_seen_at, last_seen_at, subjects, tags, content_hash)
+         VALUES ('ev1','milton-ma','ma:commbuys','state','Commonwealth','money','bid_posted','medium',
+                 'A contract','https://x/1','2026-01-01','2026-01-01','[]','[]','h1')`,
+      )
+      .run();
+    legacy.exec('PRAGMA user_version = 2');
+    legacy.close();
+
+    const upgraded = openDb(file);
+    const sources = upgraded.prepare('SELECT id FROM sources').all() as unknown as { id: string }[];
+    expect(sources.map((s) => s.id)).toEqual(['milton-ma:state:commbuys']);
+
+    // The record survived and followed its source. Dropping and recreating the
+    // row instead would have cascaded it away.
+    const events = upgraded.prepare('SELECT id, source_id FROM events').all() as unknown as {
+      id: string;
+      source_id: string;
+    }[];
+    expect(events).toEqual([{ id: 'ev1', source_id: 'milton-ma:state:commbuys' }]);
+    upgraded.close();
+  });
+
   it('is safe to run twice', () => {
     const file = path.join(dir, 'twice.db');
     openDb(file).close();
@@ -415,6 +502,33 @@ describe('clearing one town', () => {
       expect(n, `${table} still holds rows`).toBe(0);
     }
     expect(countEvents(db, { jurisdiction: 'milton-ma' })).toBe(1);
+  });
+
+  it('forgets the conditional headers, so a refill actually refills', () => {
+    db.prepare(
+      "UPDATE sources SET etag = 'W/\"abc\"', last_fetch_at = '2026-01-01' WHERE jurisdiction = ?",
+    ).run('weymouth-ma');
+    clearJurisdiction(db, { jurisdiction: 'weymouth-ma', scope: 'records' });
+
+    // Left in place, `ingest` would send the ETag, get a 304 and write nothing
+    // — a town with no records and a fetcher convinced it is up to date.
+    const row = db
+      .prepare("SELECT etag, last_fetch_at FROM sources WHERE jurisdiction = 'weymouth-ma' LIMIT 1")
+      .get() as { etag: string | null; last_fetch_at: string | null };
+    expect(row.etag).toBeNull();
+    expect(row.last_fetch_at).toBeNull();
+  });
+
+  it('leaves the conditional headers alone when only derived data goes', () => {
+    db.prepare('UPDATE sources SET etag = \'W/"abc"\' WHERE jurisdiction = ?').run('weymouth-ma');
+    clearJurisdiction(db, { jurisdiction: 'weymouth-ma', scope: 'derived' });
+
+    // `link` rebuilds from `events`; re-fetching would cost the town requests
+    // for nothing.
+    const row = db.prepare("SELECT etag FROM sources WHERE jurisdiction = 'weymouth-ma' LIMIT 1").get() as {
+      etag: string | null;
+    };
+    expect(row.etag).toBe('W/"abc"');
   });
 
   it('counts without deleting when asked to', () => {

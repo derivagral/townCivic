@@ -53,6 +53,8 @@ export interface StatusReport {
    * `status` is what an operator and a monitor actually run.
    */
   orphans: { jurisdiction: string; events: number }[];
+  /** Source rows in the database that this town's registry entry no longer lists. */
+  orphanSources: string[];
   sources: SourceStatus[];
   /** Anything an operator should look at. Empty means healthy. */
   problems: string[];
@@ -180,6 +182,28 @@ export function status(db: Db, jurisdiction: string, now = new Date()): StatusRe
     );
   }
 
+  /**
+   * Source rows this town no longer registers.
+   *
+   * Reported rather than removed. A source id is a foreign key with
+   * `ON DELETE CASCADE`, so deleting the row would take every record it ever
+   * produced with it — which is right for a source that was dropped and wrong
+   * for one that was renamed. A rename belongs in `migrate.ts`; this is here so
+   * the difference is noticed rather than discovered.
+   */
+  const registeredIds = new Set(loadSources(jurisdiction).map((source) => source.id));
+  // Skipped for a jurisdiction the registry does not know at all: every one of
+  // its sources would be an orphan, and it already has a problem of its own.
+  const orphanSources = hasJurisdiction(jurisdiction)
+    ? sources.filter((source) => !registeredIds.has(source.sourceId))
+    : [];
+  for (const source of orphanSources) {
+    problems.push(
+      `${source.sourceId}: in the database but not in the registry, holding ${source.events} record(s) — ` +
+        'renamed sources belong in `migrate.ts`; dropping the row would drop its records',
+    );
+  }
+
   const addressMatters = scalar(
     db,
     "SELECT count(*) AS n FROM matters WHERE kind='address' AND jurisdiction=?",
@@ -219,6 +243,7 @@ export function status(db: Db, jurisdiction: string, now = new Date()): StatusRe
         }
       : null,
     orphans,
+    orphanSources: orphanSources.map((source) => source.sourceId),
     sources,
     problems,
     ok: problems.length === 0,

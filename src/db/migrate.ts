@@ -25,7 +25,7 @@ import { config } from '../config.ts';
  * finds most of them already done, and lands in the same place as a fresh one.
  */
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /** Columns introduced after the first release. Additive, so an upgrade is free. */
 const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
@@ -71,7 +71,72 @@ const MIGRATIONS: Migration[] = [
     name: 'subscriptions carry the jurisdiction they were made in',
     up: addSubscriptionJurisdiction,
   },
+  {
+    version: 3,
+    name: 'the statewide sources are namespaced by town',
+    up: renameSources,
+  },
 ];
+
+/**
+ * Source ids that changed, and what they changed to.
+ *
+ * `ma:commbuys` was a fine id for exactly as long as there was one town: the
+ * query it describes ("contracts where this town is the purchasing org") is
+ * per-town even though the system is statewide, so with two towns there would
+ * have been two sources claiming the same primary key.
+ *
+ * A rename rather than a delete-and-recreate, because a source id is a foreign
+ * key: dropping the row would cascade to every record it ever produced. These
+ * two happen to be disabled and empty, but the mechanism is what a rename of a
+ * *populated* source will need, and getting it right once is cheaper than
+ * finding out later.
+ */
+const SOURCE_RENAMES: { from: string; to: string }[] = [
+  { from: 'ma:ago:municipal-law-unit', to: 'milton-ma:state:ago-municipal-law' },
+  { from: 'ma:commbuys', to: 'milton-ma:state:commbuys' },
+];
+
+function sourceExists(db: DatabaseSync, id: string): boolean {
+  return Boolean(db.prepare('SELECT 1 AS hit FROM sources WHERE id = ?').get(id));
+}
+
+function renameSources(db: DatabaseSync): void {
+  const pending = SOURCE_RENAMES.filter((rename) => sourceExists(db, rename.from));
+  if (!pending.length) return;
+
+  db.exec('BEGIN');
+  try {
+    // Updating a primary key that other tables point at would fail immediately
+    // under normal enforcement. Deferring the check to COMMIT lets the parent
+    // and its children move together, which is the whole point.
+    db.exec('PRAGMA defer_foreign_keys = ON');
+
+    for (const { from, to } of pending) {
+      // Children first, and deliberately: `ON DELETE CASCADE` is an action
+      // rather than a check, so deferring foreign keys does not defer it.
+      // Dropping the old row while records still pointed at it would take the
+      // records with it.
+      for (const table of ['events', 'fetches', 'documents']) {
+        db.prepare(`UPDATE ${table} SET source_id = ? WHERE source_id = ?`).run(to, from);
+      }
+      if (sourceExists(db, to)) {
+        // Both ids present — a database that has already seen a newer build.
+        // The new row is the one to keep.
+        db.prepare('DELETE FROM sources WHERE id = ?').run(from);
+      } else {
+        db.prepare('UPDATE sources SET id = ? WHERE id = ?').run(to, from);
+      }
+    }
+
+    const violations = db.prepare('PRAGMA foreign_key_check').all();
+    if (violations.length) throw new Error(`${violations.length} foreign key violation(s) after rename`);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
 
 /**
  * Give `subscriptions` a jurisdiction, and move the uniqueness constraint onto

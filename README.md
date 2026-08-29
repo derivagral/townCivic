@@ -6,9 +6,8 @@ A primary-source feed of what a town's government actually did this week. It
 records what was published, by whom, and when. It does not summarize, editorialize,
 or decide what is newsworthy.
 
-Covering **Milton** and **Weymouth, Massachusetts**, with **Hull** and **Scituate**
-registered and awaiting a `discover` run. One database, one schema, one row per
-town — see [Towns](#towns).
+Covering **Milton**, **Weymouth**, **Hull** and **Scituate, Massachusetts**. One
+database, one schema, one row per town — see [Towns](#towns).
 
 The system answers four questions, and only these four:
 
@@ -97,20 +96,20 @@ and the agenda-versus-minutes distinction are all in the URL, so a theme change
 degrades ingestion to "found nothing" rather than to plausible garbage.
 
 A live Milton run currently yields **~718 records back to 2017** across 14 curated
-boards, plus the site-wide index, bid postings and the news flash. Weymouth's
-first run yields ~295 across its own 14, from the Agenda Center alone.
+boards, plus the site-wide index, bid postings and the news flash. First runs
+elsewhere: Hull ~446, Scituate ~427, Weymouth ~295, each from its Agenda Center.
 
 ### Source tiers
 
 | Tier | What                                                                 | Status                                            |
 | ---- | -------------------------------------------------------------------- | ------------------------------------------------- |
-| 1    | The town itself — Agenda Center, bids, news flash                    | **Live**, 17 sources                              |
+| 1    | The town itself — Agenda Center, bids, news flash                    | **Live** in four towns                            |
 | 2    | State systems queried for the town — AG Municipal Law Unit, COMMBUYS | Registered, disabled, needs form-driving adapters |
 | 3    | Federal actions resolving to the municipality                        | Not started                                       |
 | 4    | Town-controlled social accounts                                      | Not started; discovery only, never canonical      |
 
-Everything registered lives in `src/registry/milton-ma.ts` — one file, reviewed by
-a human. `discover` proposes additions; it never writes them.
+Everything registered lives in `src/registry/<town>.ts` — one file per town,
+reviewed by a human. `discover` proposes additions; it never writes them.
 
 ### Channels
 
@@ -596,12 +595,12 @@ committee in Weymouth is one account either way. Cross-town questions stay one
 query rather than a fan-out. And adding or dropping a town is writing rows, which
 is what `clear` does.
 
-| Town     | State                                                      |
-| -------- | ---------------------------------------------------------- |
-| Milton   | live — 14 boards, bids, news                               |
-| Weymouth | live — 14 boards; this install has no RSS and no bids page |
-| Hull     | registered, nothing enabled                                |
-| Scituate | registered, nothing enabled                                |
+| Town     | Boards | What this install publishes                                              |
+| -------- | ------ | ------------------------------------------------------------------------ |
+| Milton   | 14     | Agenda Center, bids, news flash; calendar and alert feeds live but empty |
+| Weymouth | 14     | Agenda Center only — no `/rss.aspx`, no `/bids.aspx`                     |
+| Hull     | 18     | Agenda Center, bids, and every RSS module — all of the feeds empty       |
+| Scituate | 16     | Agenda Center only; no School Committee category                         |
 
 `npm run towns` prints that table with real counts, and `/towns` is the same
 thing in the browser. A town listed as _registered, nothing enabled_ has its URL
@@ -673,16 +672,74 @@ touches the content-addressed document store. `--orphans` runs `town` scope for
 every jurisdiction that has rows but is no longer in the registry; `status`
 reports those, so they get cleaned up deliberately rather than accumulating.
 
-Schema changes go through `src/db/migrate.ts`, in increasing order of violence:
-`schema.sql` is re-executed on every open and is all `CREATE ... IF NOT EXISTS`;
-`ADDED_COLUMNS` handles new columns; `MIGRATIONS` handles what SQLite cannot do in
-place, guarded by `PRAGMA user_version` and written to be idempotent anyway. The
-multi-town change needed one of each: new `jurisdictions` table and
-jurisdiction-leading indexes from the schema file, and a rebuild of
-`subscriptions`, whose `UNIQUE(user_id, kind, value)` said a reader may follow one
-board called "Planning Board", full stop. Existing rows are backfilled with the
-configured default town, never with the every-town wildcard — silently widening
-someone's subscriptions is the one outcome nobody asked for.
+`records` and `town` also clear each source's stored ETag and `Last-Modified`.
+That is not tidiness: `ingest` sends those, the town answers `304 Not Modified`,
+and a town whose records you just deleted would refill with _nothing_ and look
+like a broken adapter. It is part of the operation rather than a line in the
+docs saying to remember `--force`.
+
+### After a `git pull`
+
+Usually nothing. The next command that opens the database migrates it in place,
+and the migration is idempotent, so there is no ordering to get right:
+
+```bash
+git pull && npm i
+npm run towns                            # what the registry now holds
+npm run ingest -- --jurisdiction all     # pick up towns the pull added
+npm run status -- --jurisdiction all
+```
+
+Upgrading a database written before this change does four things, all
+automatically: it adds the `jurisdictions` table and the jurisdiction-leading
+indexes (dropping the two they supersede), gives `subscriptions` its
+jurisdiction column and rebuilds the table around the new uniqueness
+constraint, and renames the two statewide source ids that were not namespaced by
+town. The rename moves each source's records with it — a source id is a foreign
+key with `ON DELETE CASCADE`, so dropping and recreating the row would have
+taken its records along.
+
+### Starting over
+
+In increasing order of violence. The first three keep every other town intact:
+
+| What you want                                                  | What to run                                                                                |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| The derived layer rebuilt (matter keys or stage rules changed) | `npm run clear -- --jurisdiction all --scope derived`, then `link`, `geocode`, `interpret` |
+| One town re-fetched from scratch                               | `npm run clear -- --jurisdiction hull-ma --scope records`, then `ingest`, `extract`        |
+| One town gone entirely                                         | `npm run clear -- --jurisdiction hull-ma --scope town`                                     |
+| The database gone, the archive kept                            | `rm -f data/towncivic.db*`, then `ingest`                                                  |
+| Everything gone, including the archive                         | `rm -rf data/`                                                                             |
+
+Two details worth knowing. The `*` in `data/towncivic.db*` is doing real work:
+WAL mode leaves `-wal` and `-shm` files beside the database, and deleting only
+the main file leaves them behind. And the last row is the only one that loses
+something a re-run cannot get back — the town's site publishes what it currently
+publishes, so a nine-year archive is only re-fetchable while the town still
+has it.
+
+### How a schema change is made
+
+`src/db/migrate.ts`, in increasing order of violence: `schema.sql` is
+re-executed on every open and is all `CREATE ... IF NOT EXISTS`, so a new table
+or index needs nothing else; `ADDED_COLUMNS` handles new columns, because
+`CREATE TABLE IF NOT EXISTS` will not add one to a table that exists;
+`MIGRATIONS` handles what SQLite cannot do in place, guarded by
+`PRAGMA user_version` and written to be idempotent anyway, so a database from
+before the file existed replays every step and lands where a fresh one does.
+
+The multi-town change needed all three. The one worth reading is the
+`subscriptions` rebuild: `UNIQUE(user_id, kind, value)` said a reader may follow
+one board called "Planning Board", full stop, and SQLite cannot alter a UNIQUE
+constraint in place. Existing rows are backfilled with the configured default
+town, never with the every-town wildcard — silently widening someone's
+subscriptions is the one outcome nobody asked for.
+
+One trap the schema file cannot catch on its own: `CREATE INDEX IF NOT EXISTS`
+will not _rebuild_ an index that already exists under that name, so redefining
+one silently leaves upgraded databases differing from fresh ones. Rename it and
+drop the old name in a migration, which is what `idx_matters_recent` →
+`idx_matters_town_recent` does.
 
 ## Deliberately not built yet
 

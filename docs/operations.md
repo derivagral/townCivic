@@ -77,6 +77,32 @@ npx tsx src/cli.ts clear --orphans        # towns with rows but no registry entr
 `jurisdictions`. Nothing in any scope touches `data/documents/`, which is the
 authority. `--dry-run` counts what would go using the same SQL the delete uses.
 
+`records` and `town` also clear each source's stored ETag and `Last-Modified`,
+because otherwise the next `ingest` sends them, the town answers 304, and the
+town you just emptied refills with nothing.
+
+### After an upgrade
+
+```bash
+git pull && npm i
+npm run towns                            # what the registry now holds
+npm run ingest -- --jurisdiction all     # pick up towns the pull added
+npm run status -- --jurisdiction all
+```
+
+Nothing else. The next command that opens the database migrates it in place, and
+every migration is idempotent, so there is no ordering to get right and no step
+to skip if it has already run. `status` names anything the upgrade could not
+decide on its own — a town with rows that the registry no longer lists, or a
+source row that was dropped rather than renamed.
+
+Starting over is a matter of choosing a layer: `clear --scope derived` to
+rebuild timelines and the map, `--scope records` to re-fetch one town,
+`rm -f data/towncivic.db*` to rebuild everything from the document store (the
+`*` matters — WAL leaves `-wal` and `-shm` beside it), and `rm -rf data/` only
+when the archive itself is disposable, which it is not once the town has stopped
+publishing something it used to.
+
 ## Three shapes that work
 
 ### 1. Scheduled job, no server — what this repo does

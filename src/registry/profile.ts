@@ -81,13 +81,18 @@ export interface JurisdictionProfile {
  */
 export const DEFAULT_BODY_RULES: BodyRule[] = [
   { pattern: /planning board|master plan/i, channel: 'land-use', priority: 'high' },
+  // A redevelopment authority is a land-use body wherever one exists — Weymouth's
+  // Union Point, Hull's Nantasket, Scituate's harbour — and no other rule here
+  // would recognise one. Ahead of the `park`/`cultural` admin rule on purpose,
+  // or "Cole Parkway Redevelopment Committee" files as routine administration.
+  { pattern: /redevelopment/i, channel: 'land-use', priority: 'high' },
   { pattern: /board of appeals|zoning|zba/i, channel: 'land-use', priority: 'high' },
   { pattern: /conservation|open space/i, channel: 'land-use', priority: 'high' },
   { pattern: /design review|historic|sign review/i, channel: 'land-use', priority: 'medium' },
   { pattern: /housing|affordable/i, channel: 'land-use', priority: 'high' },
   {
     pattern:
-      /warrant committee|advisory board|finance|capital|budget|appropriat|audit|assessors|retirement|taxation|pilot/i,
+      /warrant committee|advisory board|financ|capital|budget|appropriat|audit|assessors|retirement|taxation|pilot/i,
     channel: 'money',
     priority: 'high',
   },
@@ -129,6 +134,7 @@ export const DEFAULT_BODY_RULES: BodyRule[] = [
  * Appeals" are the same board in every town that has one.
  */
 export const DEFAULT_BODY_ALIASES: Record<string, string> = {
+  'board of selectman': 'Select Board',
   'zoning board of appeals': 'Board of Appeals',
   zba: 'Board of Appeals',
   'conservation comm': 'Conservation Commission',
