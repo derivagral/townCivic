@@ -3,6 +3,8 @@ import path from 'node:path';
 import { config } from '../config.ts';
 import { BOUNDARY_DIR, boundaryPath, loadBoundary, readPolygons } from '../geo/boundary.ts';
 import type { Polygon } from '../geo/boundary.ts';
+import { getProfile, hasJurisdiction } from '../registry/index.ts';
+import type { BoundarySource } from '../registry/profile.ts';
 
 /**
  * Refetch a town's outline from MassGIS.
@@ -12,23 +14,15 @@ import type { Polygon } from '../geo/boundary.ts';
  * diff and commits it. Nothing in the running system calls it.
  *
  * MassGIS publishes every Massachusetts municipality in one layer, which is why
- * adding a second town costs one query rather than one asset pipeline.
+ * adding a second town costs one query rather than one asset pipeline. The town
+ * name to query with lives on the jurisdiction profile, so a new town's outline
+ * needs no edit here at all.
  */
 
 export const MASSGIS_TOWNS =
   'https://arcgisserver.digital.mass.gov/arcgisserver/rest/services/AGOL/Census2020_Towns/FeatureServer/2';
 
-export interface BoundarySource {
-  /** Town name as the layer spells it, upper case. */
-  townName: string;
-  jurisdiction: string;
-  url?: string;
-}
-
-/** Known towns. A new jurisdiction is a line here plus one `boundary` run. */
-export const BOUNDARY_SOURCES: Record<string, BoundarySource> = {
-  'milton-ma': { jurisdiction: 'milton-ma', townName: 'MILTON' },
-};
+export type { BoundarySource };
 
 export interface BoundaryReport {
   jurisdiction: string;
@@ -99,7 +93,7 @@ export interface FetchBoundaryOptions {
 
 export async function fetchBoundary(options: FetchBoundaryOptions = {}): Promise<BoundaryReport> {
   const jurisdiction = options.jurisdiction ?? config.defaultJurisdiction;
-  const source = BOUNDARY_SOURCES[jurisdiction];
+  const source = hasJurisdiction(jurisdiction) ? getProfile(jurisdiction).boundary : null;
   const file = boundaryPath(jurisdiction);
 
   const report: BoundaryReport = {
@@ -114,7 +108,9 @@ export async function fetchBoundary(options: FetchBoundaryOptions = {}): Promise
   };
 
   if (!source) {
-    report.error = `No boundary source registered for "${jurisdiction}". Add one to BOUNDARY_SOURCES.`;
+    report.error =
+      `No boundary source registered for "${jurisdiction}". Add a \`boundary\` to its profile in ` +
+      'src/registry/ — for a Massachusetts town that is the name as MassGIS spells it, upper case.';
     return report;
   }
 

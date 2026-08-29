@@ -22,6 +22,8 @@
     "boundary": "tsx src/cli.ts boundary",
     "verify": "tsx src/cli.ts verify",
     "discover": "tsx src/cli.ts discover",
+    "towns": "tsx src/cli.ts towns",
+    "clear": "tsx src/cli.ts clear",
     "serve": "tsx src/cli.ts serve",
     "clear-samples": "tsx src/cli.ts clear-samples",
     "dev": "tsx watch src/cli.ts serve",

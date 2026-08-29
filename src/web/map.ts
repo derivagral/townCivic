@@ -1,6 +1,7 @@
 import { escapeHtml } from './views.ts';
-import { MILTON_BBOX, fitBox, project, round, scaleBar, viewportFor } from '../geo/project.ts';
-import type { LatLon } from '../geo/project.ts';
+import { fitBox, project, round, scaleBar, viewportFor } from '../geo/project.ts';
+import type { BoundingBox, LatLon } from '../geo/project.ts';
+import { MASSACHUSETTS_BBOX } from '../registry/profile.ts';
 import { boundaryBox, boundarySvgPath } from '../geo/boundary.ts';
 import type { Boundary } from '../geo/boundary.ts';
 import { CHANNEL_LABELS } from '../taxonomy.ts';
@@ -40,6 +41,12 @@ export interface MapModel {
   geocoded: boolean;
   /** The town outline. Absent for a jurisdiction whose boundary is not committed. */
   boundary?: Boundary | null;
+  /**
+   * The town's declared extent, used to frame the map when there is neither an
+   * outline nor a single placed point — a town that has been registered but not
+   * yet geocoded still gets a map of itself rather than a map of the state.
+   */
+  box?: BoundingBox;
   highlight?: string | undefined;
 }
 
@@ -81,12 +88,13 @@ function gridStep(span: number): number {
 
 export function renderMapSvg(model: MapModel): string {
   // With an outline, frame the whole town every time. That is the honest view:
-  // a cluster of pins fitted tightly to itself looks like the whole of Milton,
-  // and the reader has no way to tell that it is three streets. Without one,
-  // fall back to fitting the points and let the scale bar carry the meaning.
+  // a cluster of pins fitted tightly to itself looks like the whole town, and
+  // the reader has no way to tell that it is three streets. Without one, fall
+  // back to fitting the points and let the scale bar carry the meaning.
+  const fallback = model.box ?? MASSACHUSETTS_BBOX;
   const box = model.boundary
-    ? (fitBox(cornersOf(boundaryBox(model.boundary))) ?? MILTON_BBOX)
-    : (fitBox(model.points) ?? MILTON_BBOX);
+    ? (fitBox(cornersOf(boundaryBox(model.boundary))) ?? fallback)
+    : (fitBox(model.points) ?? fallback);
   const viewport = viewportFor(box, WIDTH);
   const height = round(viewport.height);
 

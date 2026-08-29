@@ -2,11 +2,12 @@
 
 **RSS for the jurisdiction — not an automated local newspaper.**
 
-A primary-source feed of what one town's government actually did this week. It
+A primary-source feed of what a town's government actually did this week. It
 records what was published, by whom, and when. It does not summarize, editorialize,
 or decide what is newsworthy.
 
-Currently scoped to **Milton, Massachusetts**.
+Covering **Milton**, **Weymouth**, **Hull** and **Scituate, Massachusetts**. One
+database, one schema, one row per town — see [Towns](#towns).
 
 The system answers four questions, and only these four:
 
@@ -81,8 +82,9 @@ are present. `npm run clear-samples` removes them.
 
 ## What it collects
 
-Milton runs CivicPlus CivicEngage. Two URL shapes carry nearly everything, and
-both put the facts in the path rather than the markup:
+These towns all run CivicPlus CivicEngage — which is why they are the ones being
+added first. Two URL shapes carry nearly everything, and both put the facts in
+the path rather than the markup:
 
 ```
 /AgendaCenter/<Board-Slug>-<CID>                       per-board agenda + minutes listing
@@ -93,20 +95,21 @@ The adapters key off those hrefs, not CSS classes. The meeting date, the file id
 and the agenda-versus-minutes distinction are all in the URL, so a theme change
 degrades ingestion to "found nothing" rather than to plausible garbage.
 
-A live run currently yields **~718 records back to 2017** across 14 curated boards,
-plus the site-wide index, bid postings and the news flash.
+A live Milton run currently yields **~718 records back to 2017** across 14 curated
+boards, plus the site-wide index, bid postings and the news flash. First runs
+elsewhere: Hull ~446, Scituate ~427, Weymouth ~295, each from its Agenda Center.
 
 ### Source tiers
 
 | Tier | What                                                                 | Status                                            |
 | ---- | -------------------------------------------------------------------- | ------------------------------------------------- |
-| 1    | The town itself — Agenda Center, bids, news flash                    | **Live**, 17 sources                              |
+| 1    | The town itself — Agenda Center, bids, news flash                    | **Live** in four towns                            |
 | 2    | State systems queried for the town — AG Municipal Law Unit, COMMBUYS | Registered, disabled, needs form-driving adapters |
 | 3    | Federal actions resolving to the municipality                        | Not started                                       |
 | 4    | Town-controlled social accounts                                      | Not started; discovery only, never canonical      |
 
-Everything registered lives in `src/registry/milton-ma.ts` — one file, reviewed by
-a human. `discover` proposes additions; it never writes them.
+Everything registered lives in `src/registry/<town>.ts` — one file per town,
+reviewed by a human. `discover` proposes additions; it never writes them.
 
 ### Channels
 
@@ -138,12 +141,19 @@ npx tsx src/cli.ts <command>
 | `discover`           | Probe the CivicPlus site for boards and feeds not yet registered             |
 | `serve`              | Web UI plus Atom and JSON feeds                                              |
 | `seed`               | Load synthetic fixtures                                                      |
+| `towns`              | List every registered town and what the database holds for each              |
 | `sources` / `events` | Print the registry / recent records                                          |
+| `clear`              | Delete one town's derived data, its records, or the town itself              |
 | `clear-samples`      | Delete everything loaded from fixtures                                       |
 
-Useful flags: `--source <id>` (repeatable), `--all` (include disabled),
-`--force` (ignore ETag / re-extract), `--dry-run`, `--limit <n>`, `--since <date>`,
-`--provider <name>`, `--json`.
+Useful flags: `--jurisdiction <id>` or `--jurisdiction all`, `--source <id>`
+(repeatable), `--all` (include disabled), `--force` (ignore ETag / re-extract),
+`--dry-run`, `--limit <n>`, `--since <date>`, `--provider <name>`, `--scope`, `--json`.
+
+Every pipeline command takes `--jurisdiction all`, which is how the scheduled
+refresh covers every town in one pass. It is spelled out rather than being the
+default: a command that quietly fetched four towns because someone omitted a flag
+would be a bad surprise for four town servers.
 
 The first three are the pipeline, and they run in that order because each
 depends on what the one before it wrote. `link` and `interpret` touch nothing
@@ -542,9 +552,15 @@ municipal servers.
 `status` is the whole monitoring story:
 
 ```bash
-npm run status                            # human-readable
-npm run status -- --json | jq .problems   # exits non-zero on a problem
+npm run status                                     # the default town
+npm run status -- --jurisdiction all               # every town; worst exit code wins
+npm run status -- --json | jq .problems            # exits non-zero on a problem
 ```
+
+A town registered with nothing enabled yet reports its counts and no problems: a
+red light that is always on is the same as no red light. `status` also names any
+jurisdiction with rows that the registry no longer knows, which is the one thing
+a multi-town database can accumulate that a single-town one could not.
 
 It is built around the _quiet_ failure. A crawler that errors is obvious; a
 crawler that keeps returning 200 while the town silently stops publishing looks
@@ -565,20 +581,165 @@ Add `?source=`, `?body=`, `?q=` or `?matter=` to narrow any feed the same way th
 web filters do. JSON Feed entries carry a `_towncivic` object with the
 jurisdiction, source level, agency, body, channel, event type and permalink.
 
-## Adding a town
+## Towns
 
-The state and federal adapters are meant to be reused; a new town is mostly
-configuration.
+One database, one schema, one row per town. Every table that holds a record
+carries `jurisdiction` as a plain column and every query that reads records
+filters on it; no table's name or shape depends on which town it holds. A town is
+data.
 
-1. Copy `src/registry/milton-ma.ts`, set the base URL and jurisdiction id.
-2. Run `discover` against the new site to get its real module and category ids.
-3. Curate the boards worth following, and write `BODY_RULES` for its committee names.
-4. Register it in `src/registry/index.ts` and add a label in `src/web/server.ts`.
-5. Run `verify` before enabling anything.
+A database per town was the obvious alternative and was rejected because the
+expensive parts are shared. `users`, `sessions` and `subscriptions` are
+per-person, not per-town — a reader following a property in Milton and the school
+committee in Weymouth is one account either way. Cross-town questions stay one
+query rather than a fan-out. And adding or dropping a town is writing rows, which
+is what `clear` does.
 
-Per-jurisdiction classification currently lives in the Milton registry module and
-is imported directly by `src/pipeline/normalize.ts`. That import is the one thing
-that should move behind an interface when a second town lands.
+| Town     | Boards | What this install publishes                                              |
+| -------- | ------ | ------------------------------------------------------------------------ |
+| Milton   | 14     | Agenda Center, bids, news flash; calendar and alert feeds live but empty |
+| Weymouth | 14     | Agenda Center only — no `/rss.aspx`, no `/bids.aspx`                     |
+| Hull     | 18     | Agenda Center, bids, and every RSS module — all of the feeds empty       |
+| Scituate | 16     | Agenda Center only; no School Committee category                         |
+
+`npm run towns` prints that table with real counts, and `/towns` is the same
+thing in the browser. A town listed as _registered, nothing enabled_ has its URL
+shapes written down and nothing confirmed against the live site — an unverified
+claim does not get to make requests.
+
+### What a town is, in code
+
+A jurisdiction is a value: `src/registry/<id>.ts` exports a `JurisdictionProfile`
+and `src/registry/index.ts` lists it. Nothing else in the codebase knows a town by
+name. The profile carries what varies:
+
+| Field                      | Why it cannot be shared                                                                                                  |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `baseUrl`, `sources`       | different site, different per-install ids                                                                                |
+| `bodyAliases`, `bodyRules` | "Advisory Board" is Hull's finance committee; Weymouth has a Town Council and ordinances, not a Select Board and by-laws |
+| `venueAddresses`           | the clerk's own address is printed on every notice, and it is a different address in each town                           |
+| `bbox`, `boundary`         | the geocoding fence, and which MassGIS feature to fetch                                                                  |
+| `fixtures`                 | which synthetic bodies `seed` replays                                                                                    |
+
+The statewide defaults do most of the work — the enabling statutes name most of
+these bodies, so `DEFAULT_BODY_RULES` classifies "Planning Board" and
+"Conservation Commission" everywhere — and a town's own rules are tried first, so
+an override actually overrides.
+
+### Adding a town
+
+The state adapters and the whole pipeline are reused; a new town is
+configuration plus three commands.
+
+1. Write `src/registry/<id>-ma.ts`: id, name, base URL, a padded bounding box, and
+   the MassGIS town name. `hull-ma.ts` is the smallest complete example.
+2. `npx tsx src/cli.ts discover --jurisdiction <id>` — reads the site for its real
+   module and category ids and prints them as registry entries to paste in.
+   **Never guess these.**
+3. Curate the boards worth following, and add `bodyAliases` / `bodyRules` for any
+   name its committees use that the statewide defaults would misfile.
+4. `npx tsx src/cli.ts verify --jurisdiction <id> --all` — fetch every registered
+   URL and see what parses. Mark what answered as `confidence: 'verified'` and
+   enable it; leave the rest disabled.
+5. `npx tsx src/cli.ts boundary --jurisdiction <id>` and commit the GeoJSON.
+6. `npx tsx src/cli.ts ingest --jurisdiction <id>`.
+
+Weymouth is what that produced, and it is worth reading as a counter-example to
+Milton: no `/rss.aspx` at all, no bids module, and an Agenda Center themed as
+collapsible panels rather than links — which is why `extractAgendaCategories`
+reads two layouts. None of those differences needed a change outside the adapter
+and the town's own file.
+
+### Migrations, and clearing one town
+
+The database is a cache. The document store is the authority, `events` is
+derivable from documents by re-fetching, and everything below `events` is
+derivable from `events` with no network at all. So the recovery for anything is
+to drop a layer and re-run the stage that fills it — which is what `clear` does:
+
+```bash
+npx tsx src/cli.ts clear --jurisdiction hull-ma --scope derived --dry-run
+```
+
+| `--scope` | Removes                                                                              | Way back                       |
+| --------- | ------------------------------------------------------------------------------------ | ------------------------------ |
+| `derived` | matters, timelines, map pins, model readings                                         | `link`, `geocode`, `interpret` |
+| `records` | the above plus `events` and what hangs off them                                      | `ingest`, `extract`, …         |
+| `town`    | the above plus its sources, fetch log, document index and its row in `jurisdictions` | the town is gone               |
+
+`--dry-run` counts what would go using the same SQL the delete uses. Nothing here
+touches the content-addressed document store. `--orphans` runs `town` scope for
+every jurisdiction that has rows but is no longer in the registry; `status`
+reports those, so they get cleaned up deliberately rather than accumulating.
+
+`records` and `town` also clear each source's stored ETag and `Last-Modified`.
+That is not tidiness: `ingest` sends those, the town answers `304 Not Modified`,
+and a town whose records you just deleted would refill with _nothing_ and look
+like a broken adapter. It is part of the operation rather than a line in the
+docs saying to remember `--force`.
+
+### After a `git pull`
+
+Usually nothing. The next command that opens the database migrates it in place,
+and the migration is idempotent, so there is no ordering to get right:
+
+```bash
+git pull && npm i
+npm run towns                            # what the registry now holds
+npm run ingest -- --jurisdiction all     # pick up towns the pull added
+npm run status -- --jurisdiction all
+```
+
+Upgrading a database written before this change does four things, all
+automatically: it adds the `jurisdictions` table and the jurisdiction-leading
+indexes (dropping the two they supersede), gives `subscriptions` its
+jurisdiction column and rebuilds the table around the new uniqueness
+constraint, and renames the two statewide source ids that were not namespaced by
+town. The rename moves each source's records with it — a source id is a foreign
+key with `ON DELETE CASCADE`, so dropping and recreating the row would have
+taken its records along.
+
+### Starting over
+
+In increasing order of violence. The first three keep every other town intact:
+
+| What you want                                                  | What to run                                                                                |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| The derived layer rebuilt (matter keys or stage rules changed) | `npm run clear -- --jurisdiction all --scope derived`, then `link`, `geocode`, `interpret` |
+| One town re-fetched from scratch                               | `npm run clear -- --jurisdiction hull-ma --scope records`, then `ingest`, `extract`        |
+| One town gone entirely                                         | `npm run clear -- --jurisdiction hull-ma --scope town`                                     |
+| The database gone, the archive kept                            | `rm -f data/towncivic.db*`, then `ingest`                                                  |
+| Everything gone, including the archive                         | `rm -rf data/`                                                                             |
+
+Two details worth knowing. The `*` in `data/towncivic.db*` is doing real work:
+WAL mode leaves `-wal` and `-shm` files beside the database, and deleting only
+the main file leaves them behind. And the last row is the only one that loses
+something a re-run cannot get back — the town's site publishes what it currently
+publishes, so a nine-year archive is only re-fetchable while the town still
+has it.
+
+### How a schema change is made
+
+`src/db/migrate.ts`, in increasing order of violence: `schema.sql` is
+re-executed on every open and is all `CREATE ... IF NOT EXISTS`, so a new table
+or index needs nothing else; `ADDED_COLUMNS` handles new columns, because
+`CREATE TABLE IF NOT EXISTS` will not add one to a table that exists;
+`MIGRATIONS` handles what SQLite cannot do in place, guarded by
+`PRAGMA user_version` and written to be idempotent anyway, so a database from
+before the file existed replays every step and lands where a fresh one does.
+
+The multi-town change needed all three. The one worth reading is the
+`subscriptions` rebuild: `UNIQUE(user_id, kind, value)` said a reader may follow
+one board called "Planning Board", full stop, and SQLite cannot alter a UNIQUE
+constraint in place. Existing rows are backfilled with the configured default
+town, never with the every-town wildcard — silently widening someone's
+subscriptions is the one outcome nobody asked for.
+
+One trap the schema file cannot catch on its own: `CREATE INDEX IF NOT EXISTS`
+will not _rebuild_ an index that already exists under that name, so redefining
+one silently leaves upgraded databases differing from fresh ones. Rename it and
+drop the old name in a migration, which is what `idx_matters_recent` →
+`idx_matters_town_recent` does.
 
 ## Deliberately not built yet
 
@@ -597,8 +758,8 @@ AG decides within 90`. The AG Municipal Law Unit source is registered and
   the town outline. MassGIS also publishes the statewide parcel layer, which is
   what a land-use record is actually about.
 - **A street basemap.** Deferred rather than rejected — see [Map](#map). The
-  cost is ~25 MB of cached tiles per town, which is the wrong thing to take on
-  before a second town exists.
+  cost is ~25 MB of cached tiles per town, and there are now several towns, so
+  the arithmetic has got worse rather than better.
 - **Courts.** Registered as a channel, no sources. It needs an aggressive
   inclusion filter — the town as a party, a local official sued in official
   capacity, a challenge to a local decision — so it stays _the town's legal
@@ -606,11 +767,19 @@ AG decides within 90`. The AG Municipal Law Unit source is registered and
 - **OCR.** Not needed for Milton today. `likelyScanned` flags the handful of
   image-only documents rather than silently returning nothing, so the day it
   matters it will be visible.
-- **A second town.** Per-jurisdiction classification still lives in the Milton
-  registry module and is imported directly by `src/pipeline/normalize.ts`. The
-  matter keys are in the same position. The map is no longer among them: a new
-  town needs a row in `BOUNDARY_SOURCES` and one `boundary` run, because MassGIS
-  publishes all 351 Massachusetts municipalities in a single layer.
+- **A cross-town view.** Every query can already drop the jurisdiction filter, so
+  "every open bid on the South Shore" is one query away. What is missing is the
+  UI question, not the data one: `body` and `channel` facets would silently merge
+  four towns' Planning Boards into one row, and a merged facet is worse than no
+  facet. The switcher is one town at a time until that is answered.
+- **Per-town reader preferences.** Subscriptions carry their town and the feed
+  respects it, but there is no "follow this in every town", no per-town digest,
+  and no way to reorder the switcher. The column that would carry a wildcard
+  exists (`jurisdiction = '*'`); nothing writes it.
+- **Towns outside Massachusetts.** `timeZone` and `state` are on the profile and
+  the geocoder reads both, but `boundary` only knows MassGIS and the body rules
+  are written for Massachusetts municipal government. A New Hampshire town would
+  need a second boundary provider and its own rule set.
 
 ## Continuous integration
 

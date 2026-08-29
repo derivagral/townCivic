@@ -7,6 +7,7 @@ import { parseMeetingNotice, splitAgenda, summarizeAgenda } from '../src/extract
 import { preferDocumentUrl } from '../src/pipeline/extract.ts';
 import { hasRealTime, parseClockTime, parsePostingStamp, zonedToUtc } from '../src/util/dates.ts';
 import { ROOT } from '../src/config.ts';
+import { miltonProfile } from '../src/registry/index.ts';
 
 const NOTICE = path.join(ROOT, 'fixtures', 'milton-ma', 'meeting-notice.pdf');
 const readNotice = () => new Uint8Array(fs.readFileSync(NOTICE));
@@ -56,7 +57,7 @@ describe('pdf extraction', () => {
 
 describe('meeting notice', () => {
   it('reads the facts a listing row cannot give you', async () => {
-    const notice = parseMeetingNotice(await extractPdf(readNotice()));
+    const notice = parseMeetingNotice(await extractPdf(readNotice()), miltonProfile);
 
     expect(notice.structured).toBe(true);
     expect(notice.board).toBe('Board of Appeals');
@@ -66,18 +67,18 @@ describe('meeting notice', () => {
   });
 
   it('resolves the meeting time in the town’s timezone', async () => {
-    const notice = parseMeetingNotice(await extractPdf(readNotice()));
+    const notice = parseMeetingNotice(await extractPdf(readNotice()), miltonProfile);
     // September 14, 2026, 7:30 PM EDT (UTC-4) is 23:30Z.
     expect(notice.meetingAt).toBe('2026-09-14T23:30:00.000Z');
   });
 
   it('resolves the clerk’s posting stamp, which starts the 48-hour clock', async () => {
-    const notice = parseMeetingNotice(await extractPdf(readNotice()));
+    const notice = parseMeetingNotice(await extractPdf(readNotice()), miltonProfile);
     expect(notice.postedAt).toBe('2026-09-04T18:15:00.000Z');
   });
 
   it('extracts the properties under discussion', async () => {
-    const notice = parseMeetingNotice(await extractPdf(readNotice()));
+    const notice = parseMeetingNotice(await extractPdf(readNotice()), miltonProfile);
     expect(notice.subjects).toContain('271 Pleasant Street');
     expect(notice.subjects).toContain('14 Adams Street');
   });
@@ -85,18 +86,21 @@ describe('meeting notice', () => {
   it('does not report the town hall as a subject', async () => {
     // Every notice carries the clerk's address in its template. Treating that
     // as a subject would tag the entire town with one address.
-    const notice = parseMeetingNotice(await extractPdf(readNotice()));
+    const notice = parseMeetingNotice(await extractPdf(readNotice()), miltonProfile);
     expect(notice.subjects.some((s) => /525 Canton/i.test(s))).toBe(false);
   });
 
   it('reports plain PDFs as unstructured rather than failing', () => {
-    const notice = parseMeetingNotice({
-      pages: 2,
-      text: 'Minutes of the meeting. Discussion of 8 Wharf Street.',
-      fields: {},
-      likelyScanned: false,
-      charsPerPage: 500,
-    });
+    const notice = parseMeetingNotice(
+      {
+        pages: 2,
+        text: 'Minutes of the meeting. Discussion of 8 Wharf Street.',
+        fields: {},
+        likelyScanned: false,
+        charsPerPage: 500,
+      },
+      miltonProfile,
+    );
     expect(notice.structured).toBe(false);
     expect(notice.subjects).toContain('8 Wharf Street');
   });

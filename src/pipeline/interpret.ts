@@ -4,6 +4,7 @@ import { rulesInterpreter } from '../interpret/rules.ts';
 import { createAnthropicInterpreter } from '../interpret/anthropic.ts';
 import { InterpreterUnavailableError } from '../interpret/provider.ts';
 import type { Interpreter } from '../interpret/provider.ts';
+import { getProfile } from '../registry/index.ts';
 
 /**
  * Fourth pass: read the prose the parsers cannot structure.
@@ -56,6 +57,7 @@ export interface InterpretReport {
 
 interface Candidate {
   id: string;
+  jurisdiction: string;
   title: string;
   body: string | null;
   event_type: string;
@@ -104,7 +106,7 @@ function selectCandidates(db: Db, options: InterpretOptions, interpreter: Interp
 
   return db
     .prepare(
-      `SELECT id, title, body, event_type, occurred_at, coalesce(doc_text, summary) AS source_text
+      `SELECT id, jurisdiction, title, body, event_type, occurred_at, coalesce(doc_text, summary) AS source_text
          FROM events
         WHERE ${conditions.join(' AND ')}
         ORDER BY coalesce(occurred_at, published_at, first_seen_at) DESC
@@ -153,6 +155,10 @@ export async function interpretDocuments(db: Db, options: InterpretOptions = {})
     try {
       const results = await interpreter.interpret({
         eventId: candidate.id,
+        // Which town this is comes off the record, not off the run: it is part
+        // of what the model is being asked to read, and a document read as the
+        // wrong town's is worse than one not read at all.
+        jurisdictionLabel: getProfile(candidate.jurisdiction).label,
         title: candidate.title,
         body: candidate.body,
         eventType: candidate.event_type,

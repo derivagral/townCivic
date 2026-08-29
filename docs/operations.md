@@ -17,6 +17,13 @@ They run in that order because each depends on what the one before it wrote.
 Only `ingest`, `extract` and `geocode` touch the network; `link` and `interpret`
 (with the default provider) are pure functions of the database.
 
+Every one of them takes `--jurisdiction <id>`, or `--jurisdiction all` for every
+registered town in one pass. `all` is what the scheduled refresh runs, so adding a
+town to the registry adds it to the schedule with no edit to the job. The
+per-host politeness delay is what keeps several towns in one run from becoming a
+burst at any one of them — they are different hosts, so the delay does not stack
+into a slow run either.
+
 `boundary` sits outside this cycle. It refetches the town outline from MassGIS
 and is a maintenance command like `discover` — run it by hand, read the diff,
 commit it. Nothing in the running system calls it, and the outline it writes is
@@ -26,9 +33,15 @@ what `geocode` fences against.
 the whole monitoring story:
 
 ```bash
-npm run status          # human-readable
+npm run status                          # the default town
+npm run status -- --jurisdiction all    # every town; the worst exit code wins
 npm run status -- --json | jq .problems
 ```
+
+A town that is registered with nothing enabled yet reports counts and no
+problems. That is deliberate: a town can sit in the registry for months waiting
+for someone to run `discover` against its site, and a red light that is always on
+is the same as no red light at all.
 
 ## The two pieces of state
 
@@ -41,6 +54,54 @@ Accounts are the exception: `users`, `sessions` and `subscriptions` live in the
 same SQLite file but are _not_ derived from anything. If you run accounts, the
 database stops being disposable — back it up, or accept that dropping it signs
 everybody out and loses their subscriptions.
+
+That is also why one database holds every town rather than one file per town.
+The records are disposable and the readers are not, and a reader is a person
+rather than a town: splitting the files would mean either splitting the accounts
+or keeping a separate account database anyway.
+
+### Clearing one town
+
+With several towns, "start over" can no longer mean deleting the file. `clear`
+removes one town at a layer:
+
+```bash
+npx tsx src/cli.ts clear --jurisdiction hull-ma --scope derived --dry-run
+npx tsx src/cli.ts clear --jurisdiction hull-ma --scope records
+npx tsx src/cli.ts clear --orphans        # towns with rows but no registry entry
+```
+
+`derived` drops matters, places and readings (rebuild with `link`, `geocode`,
+`interpret`); `records` also drops `events` (rebuild with `ingest`, `extract`);
+`town` also drops its sources, fetch log, document index and its row in
+`jurisdictions`. Nothing in any scope touches `data/documents/`, which is the
+authority. `--dry-run` counts what would go using the same SQL the delete uses.
+
+`records` and `town` also clear each source's stored ETag and `Last-Modified`,
+because otherwise the next `ingest` sends them, the town answers 304, and the
+town you just emptied refills with nothing.
+
+### After an upgrade
+
+```bash
+git pull && npm i
+npm run towns                            # what the registry now holds
+npm run ingest -- --jurisdiction all     # pick up towns the pull added
+npm run status -- --jurisdiction all
+```
+
+Nothing else. The next command that opens the database migrates it in place, and
+every migration is idempotent, so there is no ordering to get right and no step
+to skip if it has already run. `status` names anything the upgrade could not
+decide on its own — a town with rows that the registry no longer lists, or a
+source row that was dropped rather than renamed.
+
+Starting over is a matter of choosing a layer: `clear --scope derived` to
+rebuild timelines and the map, `--scope records` to re-fetch one town,
+`rm -f data/towncivic.db*` to rebuild everything from the document store (the
+`*` matters — WAL leaves `-wal` and `-shm` beside it), and `rm -rf data/` only
+when the archive itself is disposable, which it is not once the town has stopped
+publishing something it used to.
 
 ## Three shapes that work
 
@@ -69,11 +130,11 @@ terminates TLS.
 Type=oneshot
 WorkingDirectory=/srv/towncivic
 Environment=TOWNCIVIC_DATA_DIR=/var/lib/towncivic
-ExecStart=/usr/bin/npm run ingest
-ExecStart=/usr/bin/npm run extract -- --limit 200
-ExecStart=/usr/bin/npm run link
-ExecStart=/usr/bin/npm run interpret
-ExecStart=/usr/bin/npm run status
+ExecStart=/usr/bin/npm run ingest -- --jurisdiction all
+ExecStart=/usr/bin/npm run extract -- --jurisdiction all --limit 200
+ExecStart=/usr/bin/npm run link -- --jurisdiction all
+ExecStart=/usr/bin/npm run interpret -- --jurisdiction all
+ExecStart=/usr/bin/npm run status -- --jurisdiction all
 ```
 
 ```ini
@@ -110,8 +171,10 @@ The defaults exist for a reason and the schedule is part of them:
 - Conditional GETs, so an unchanged page costs the town a 304.
 - Twice a day. Meeting notices run on a 48-hour clock; polling hourly finds the
   same nothing twenty-three extra times.
-- `extract --limit` caps how many documents one run opens. A first run over a
-  nine-year archive should spread over several runs.
+- `extract --limit` caps how many documents one run opens, **per town** — so
+  `--jurisdiction all --limit 150` can open 150 for each of them. That is the
+  fair reading: one town's nine-year backlog should not starve another's
+  next-week agendas. Divide the limit if the total is what you care about.
 
 If you fork this for another town, keep them.
 
@@ -134,6 +197,7 @@ floor cost.
 | `answered but has produced no records` | The URL is right and the adapter is not, or the feed is empty  |
 | `nothing new in N days`                | Often just August. Check the town's site before assuming a bug |
 | `documentsPending` only growing        | `extract --limit` is set lower than the arrival rate           |
+| `orphans` non-empty                    | A town was dropped from the registry with its rows still there |
 
 The quiet failure is the one worth designing for: a crawler that keeps returning
 200 while the town silently stops publishing looks exactly like a quiet week.

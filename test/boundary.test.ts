@@ -11,7 +11,10 @@ import {
   readPolygons,
 } from '../src/geo/boundary.ts';
 import type { Boundary, Ring } from '../src/geo/boundary.ts';
-import { MILTON_BBOX, viewportFor, withinBox } from '../src/geo/project.ts';
+import { viewportFor, withinBox } from '../src/geo/project.ts';
+import { miltonProfile } from '../src/registry/index.ts';
+
+const MILTON_BBOX = miltonProfile.bbox;
 import { interiorPoint, queryUrl, roundPolygons } from '../src/commands/boundary.ts';
 import { geocodeMatters } from '../src/pipeline/geocode.ts';
 import { listPlacedMatters, listUnplacedMatters } from '../src/db/repo.ts';
@@ -193,7 +196,7 @@ describe('reading source geometry', () => {
 
 describe('the boundary refresh command', () => {
   it('asks MassGIS for one town in WGS84', () => {
-    const url = new URL(queryUrl({ jurisdiction: 'milton-ma', townName: 'MILTON' }));
+    const url = new URL(queryUrl({ provider: 'massgis', townName: 'MILTON' }));
     expect(url.searchParams.get('where')).toBe("TOWN20='MILTON'");
     expect(url.searchParams.get('outSR')).toBe('4326');
     expect(url.searchParams.get('f')).toBe('geojson');

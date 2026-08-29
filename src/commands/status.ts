@@ -1,5 +1,7 @@
 import type { Db } from '../db/index.ts';
 import { loadBoundary } from '../geo/boundary.ts';
+import { countInterpretations } from '../db/repo.ts';
+import { getProfile, hasJurisdiction, loadSources, orphanJurisdictions } from '../registry/index.ts';
 
 /**
  * What an operator needs to know at a glance, and what a monitor needs to alarm on.
@@ -29,6 +31,8 @@ export interface SourceStatus {
 
 export interface StatusReport {
   jurisdiction: string;
+  /** How the UI says the town's name; `jurisdiction` alone when unregistered. */
+  label: string;
   generatedAt: string;
   events: number;
   matters: number;
@@ -43,6 +47,14 @@ export interface StatusReport {
    * knowing before trusting the map.
    */
   boundary: { present: boolean; points: number; retrieved: string } | null;
+  /**
+   * Towns with rows in this database that the registry no longer knows about.
+   * A property of the database rather than of this town, reported here because
+   * `status` is what an operator and a monitor actually run.
+   */
+  orphans: { jurisdiction: string; events: number }[];
+  /** Source rows in the database that this town's registry entry no longer lists. */
+  orphanSources: string[];
   sources: SourceStatus[];
   /** Anything an operator should look at. Empty means healthy. */
   problems: string[];
@@ -107,12 +119,30 @@ export function status(db: Db, jurisdiction: string, now = new Date()): StatusRe
 
   const problems: string[] = [];
 
+  /**
+   * Whether this town is supposed to be producing anything yet.
+   *
+   * A town can sit in the registry for a long time with every source disabled,
+   * waiting for someone to run `discover` and `verify` against its site. That
+   * is a normal state, not a fault, and grading it against a live town's
+   * expectations would put a permanent red light on a scheduled run — which is
+   * the same as having no red light at all. So a dormant town reports its
+   * counts and nothing else.
+   *
+   * A jurisdiction the registry does not know is *not* dormant. It has no
+   * sources for a different reason, and that reason is worth saying out loud.
+   */
+  const dormant =
+    hasJurisdiction(jurisdiction) && !loadSources(jurisdiction).some((source) => source.enabled);
+
   // A database where nothing has ever been fetched is not seventeen broken
   // sources, it is an install that has not been run yet — and saying so once is
   // the difference between a useful alarm and a wall of noise nobody reads.
   const everRun = sources.some((source) => source.lastFetchAt);
 
-  if (!everRun) {
+  if (dormant) {
+    // Nothing to say about a town nobody has enabled yet.
+  } else if (!everRun) {
     problems.push('no source has ever been fetched — run `npm run ingest`');
   } else {
     for (const source of sources.filter((s) => s.enabled)) {
@@ -127,11 +157,50 @@ export function status(db: Db, jurisdiction: string, now = new Date()): StatusRe
     }
   }
 
+  if (!dormant && !sources.length) {
+    problems.push(
+      hasJurisdiction(jurisdiction)
+        ? `${jurisdiction}: registered with enabled sources, but none are in the database — ` +
+            `run \`npm run ingest -- --jurisdiction ${jurisdiction}\``
+        : `${jurisdiction}: not in the registry — nothing will ever be fetched for it`,
+    );
+  }
+
   const outline = loadBoundary(jurisdiction);
-  if (!outline) {
+  if (!outline && !dormant) {
     problems.push(
       `${jurisdiction}: no town outline committed — geocoding falls back to a bounding box that ` +
         'accepts neighbouring towns. Run `npm run boundary`.',
+    );
+  }
+
+  const orphans = orphanJurisdictions(db);
+  for (const orphan of orphans) {
+    problems.push(
+      `${orphan.jurisdiction}: ${orphan.events} record(s) for a town the registry no longer knows — ` +
+        `re-register it, or drop it with \`clear --jurisdiction ${orphan.jurisdiction} --scope town\``,
+    );
+  }
+
+  /**
+   * Source rows this town no longer registers.
+   *
+   * Reported rather than removed. A source id is a foreign key with
+   * `ON DELETE CASCADE`, so deleting the row would take every record it ever
+   * produced with it — which is right for a source that was dropped and wrong
+   * for one that was renamed. A rename belongs in `migrate.ts`; this is here so
+   * the difference is noticed rather than discovered.
+   */
+  const registeredIds = new Set(loadSources(jurisdiction).map((source) => source.id));
+  // Skipped for a jurisdiction the registry does not know at all: every one of
+  // its sources would be an orphan, and it already has a problem of its own.
+  const orphanSources = hasJurisdiction(jurisdiction)
+    ? sources.filter((source) => !registeredIds.has(source.sourceId))
+    : [];
+  for (const source of orphanSources) {
+    problems.push(
+      `${source.sourceId}: in the database but not in the registry, holding ${source.events} record(s) — ` +
+        'renamed sources belong in `migrate.ts`; dropping the row would drop its records',
     );
   }
 
@@ -149,11 +218,12 @@ export function status(db: Db, jurisdiction: string, now = new Date()): StatusRe
 
   return {
     jurisdiction,
+    label: getProfile(jurisdiction).label,
     generatedAt: now.toISOString(),
     events: scalar(db, 'SELECT count(*) AS n FROM events WHERE jurisdiction = ?', jurisdiction),
     matters: scalar(db, 'SELECT count(*) AS n FROM matters WHERE jurisdiction = ?', jurisdiction),
     placed: { resolved: placed, total: addressMatters },
-    interpretations: scalar(db, "SELECT count(*) AS n FROM interpretations WHERE text <> ''"),
+    interpretations: countInterpretations(db, jurisdiction),
     documentsExtracted: scalar(
       db,
       'SELECT count(*) AS n FROM events WHERE jurisdiction = ? AND extracted_at IS NOT NULL',
@@ -172,6 +242,8 @@ export function status(db: Db, jurisdiction: string, now = new Date()): StatusRe
           retrieved: outline.retrieved,
         }
       : null,
+    orphans,
+    orphanSources: orphanSources.map((source) => source.sourceId),
     sources,
     problems,
     ok: problems.length === 0,

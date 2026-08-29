@@ -13,6 +13,7 @@ import {
   getMatter,
   getPlace,
   latestEventTimestamp,
+  listJurisdictionRows,
   listMatters,
   listPlacedMatters,
   listSourceRows,
@@ -27,7 +28,9 @@ import type { EventQuery } from '../db/repo.ts';
 import { hasSampleData } from '../commands/seed.ts';
 import { CHANNEL_DESCRIPTIONS, CHANNEL_LABELS, isChannel } from '../taxonomy.ts';
 import { MATTER_KINDS } from '../matters/key.ts';
+import { getProfile, hasJurisdiction, listJurisdictions, loadSources } from '../registry/index.ts';
 import {
+  ALL_JURISDICTIONS,
   SESSION_COOKIE,
   addSubscription,
   authenticate,
@@ -59,8 +62,10 @@ import {
   renderMatters,
   renderProfile,
   renderSources,
+  renderTowns,
+  withTown,
 } from './views.ts';
-import type { Filters, NoticeView } from './views.ts';
+import type { Filters, NoticeView, TownView } from './views.ts';
 import { renderMapBody } from './map.ts';
 import { loadBoundary } from '../geo/boundary.ts';
 import { feedTitle, renderAtom, renderJsonFeed } from './feeds.ts';
@@ -73,22 +78,18 @@ const FEED_SIZE = 50;
  */
 const FACET_LIMIT = 16;
 
-const JURISDICTION_LABELS: Record<string, string> = {
-  'milton-ma': 'Milton, Massachusetts',
-};
-
-function labelFor(jurisdiction: string): string {
-  return JURISDICTION_LABELS[jurisdiction] ?? jurisdiction;
-}
-
 /** Read filters off the query string, ignoring anything that is not a known value. */
-function readFilters(url: URL): Filters {
+function readFilters(url: URL, town: TownView): Filters {
   const get = (key: string) => url.searchParams.get(key)?.trim() || undefined;
   const channel = get('channel');
   const whenRaw = get('when');
   const page = Number(get('page') ?? 1);
 
   return {
+    // Carried on every link so a filtered page is shareable as one URL — and
+    // omitted entirely on a single-town install, which keeps those URLs as they
+    // were before any of this existed.
+    ...(town.options.length > 1 ? { town: town.id } : {}),
     ...(channel && isChannel(channel) ? { channel } : {}),
     ...(get('source') ? { source: get('source') } : {}),
     ...(get('body') ? { body: get('body') } : {}),
@@ -113,7 +114,10 @@ function toQuery(filters: Filters, jurisdiction: string): EventQuery {
 }
 
 export interface AppOptions {
+  /** The town served when a request does not name one. */
   jurisdiction?: string;
+  /** Every town this instance serves. Defaults to the whole registry. */
+  jurisdictions?: string[];
   /** Absolute URL this instance is reachable at; used for feed self-links. */
   baseUrl?: string;
   /**
@@ -126,13 +130,57 @@ export interface AppOptions {
 
 export function createApp(db: Db, options: AppOptions = {}) {
   const app = new Hono();
-  const jurisdiction = options.jurisdiction ?? config.defaultJurisdiction;
   const baseUrl = options.baseUrl ?? config.baseUrl;
-  const label = labelFor(jurisdiction);
   const secureCookies = options.secureCookies ?? config.secureCookies;
-  // Read once at startup: it is a committed file that only changes when the
-  // town's borders do, and re-reading it per request would be silly.
-  const townBoundary = loadBoundary(jurisdiction);
+
+  /**
+   * The towns this instance serves, and the one a bare URL means.
+   *
+   * Fixed at startup rather than read per request: which towns exist is a
+   * property of the build, and a switcher whose contents could change between
+   * two requests would be a strange thing to hand a reader.
+   */
+  const served = (options.jurisdictions ?? listJurisdictions()).filter(hasJurisdiction);
+  const fallback = options.jurisdiction ?? config.defaultJurisdiction;
+  const defaultJurisdiction = served.includes(fallback) ? fallback : (served[0] ?? fallback);
+  const townOptions = served.map((id) => ({ id, label: getProfile(id).label }));
+
+  // Outlines are committed files that change when a town's borders do, so they
+  // are read once each and kept — per request would be silly, and per town
+  // rather than one global means a four-town install does not read four files
+  // to serve one page.
+  const boundaries = new Map<string, ReturnType<typeof loadBoundary>>();
+  const boundaryFor = (id: string) => {
+    if (!boundaries.has(id)) boundaries.set(id, loadBoundary(id));
+    return boundaries.get(id) ?? null;
+  };
+
+  /**
+   * Which town a request is about.
+   *
+   * `?town=` and nothing else: no cookie, no session state, no `Accept`
+   * negotiation. A URL is the whole answer to "what am I looking at", which is
+   * what makes a link someone pastes into an email mean the same thing for the
+   * person who opens it.
+   */
+  const townFor = (c: Context, override?: string): TownView => {
+    const requested = override ?? new URL(c.req.url).searchParams.get('town')?.trim();
+    const id = requested && served.includes(requested) ? requested : defaultJurisdiction;
+    return { id, label: getProfile(id).label, options: townOptions, path: new URL(c.req.url).pathname };
+  };
+
+  /**
+   * For a page addressed by record id, the town is whatever the row says it is
+   * — including a town the registry has since dropped. An event page should
+   * show the record it was asked for and name its town honestly, not silently
+   * relabel it as the default one.
+   */
+  const townOfRow = (c: Context, jurisdiction: string): TownView => ({
+    id: jurisdiction,
+    label: getProfile(jurisdiction).label,
+    options: townOptions,
+    path: new URL(c.req.url).pathname,
+  });
 
   /**
    * Keep the selected value visible even when it falls outside the top slice,
@@ -164,13 +212,14 @@ export function createApp(db: Db, options: AppOptions = {}) {
   const nameFor = (user: UserRow) => user.display_name || user.email.split('@')[0] || user.email;
 
   app.get('/styles.css', (c) => c.body(STYLES, 200, { 'content-type': 'text/css; charset=utf-8' }));
-  app.get('/healthz', (c) => c.json({ ok: true, jurisdiction }));
+  app.get('/healthz', (c) => c.json({ ok: true, jurisdiction: defaultJurisdiction, jurisdictions: served }));
 
   app.get('/', (c) => {
     const url = new URL(c.req.url);
-    const filters = readFilters(url);
+    const town = townFor(c);
+    const filters = readFilters(url, town);
     const current = currentUser(c);
-    const base = toQuery(filters, jurisdiction);
+    const base = toQuery(filters, town.id);
 
     // "All" shows what is coming up, then what already happened. Explicitly
     // choosing a mode collapses to just that half.
@@ -202,11 +251,12 @@ export function createApp(db: Db, options: AppOptions = {}) {
           bodies: trim(facetCounts(db, 'body', base), filters.body),
           levels: trim(facetCounts(db, 'level', base), filters.level),
         },
-        sampleData: hasSampleData(db),
-        jurisdictionLabel: label,
+        sampleData: hasSampleData(db, town.id),
+        town,
         pageSize: PAGE_SIZE,
-        feedUrl: `/feeds/${filters.channel ?? 'all'}.atom`,
-        hasDerived: countInterpretations(db) > 0,
+        feedUrl: withTown(`/feeds/${filters.channel ?? 'all'}.atom`, town),
+        hasDerived: countInterpretations(db, town.id) > 0,
+        townDormant: !loadSources(town.id).some((source) => source.enabled),
         account: current ? nameFor(current.user) : null,
       }),
     );
@@ -229,8 +279,8 @@ export function createApp(db: Db, options: AppOptions = {}) {
     return c.html(
       renderEvent({
         row,
-        sampleData: hasSampleData(db),
-        jurisdictionLabel: label,
+        sampleData: hasSampleData(db, row.jurisdiction),
+        town: townOfRow(c, row.jurisdiction),
         notice,
         matters: mattersForEvent(db, row.id),
         interpretations: interpretationsForEvent(db, row.id).map((item) => ({
@@ -248,6 +298,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
 
   app.get('/matters', (c) => {
     const url = new URL(c.req.url);
+    const town = townFor(c);
     const kindParam = url.searchParams.get('kind')?.trim();
     const kind = kindParam && (MATTER_KINDS as readonly string[]).includes(kindParam) ? kindParam : undefined;
     const q = url.searchParams.get('q')?.trim() || undefined;
@@ -256,7 +307,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
     const includeSingletons = url.searchParams.get('all') === '1';
 
     const query = {
-      jurisdiction,
+      jurisdiction: town.id,
       ...(kind ? { kinds: [kind] } : {}),
       ...(q ? { q } : {}),
       ...(includeSingletons ? {} : { minEvents: 2 }),
@@ -270,9 +321,9 @@ export function createApp(db: Db, options: AppOptions = {}) {
         ...(kind ? { kind } : {}),
         ...(q ? { q } : {}),
         includeSingletons,
-        linked: countMatters(db, { jurisdiction }) > 0,
-        sampleData: hasSampleData(db),
-        jurisdictionLabel: label,
+        linked: countMatters(db, { jurisdiction: town.id }) > 0,
+        sampleData: hasSampleData(db, town.id),
+        town,
         account: currentUser(c) ? nameFor(currentUser(c)!.user) : null,
       }),
     );
@@ -290,21 +341,22 @@ export function createApp(db: Db, options: AppOptions = {}) {
         ...(current
           ? {
               signedIn: true,
-              watched: isWatching(db, current.user.id, 'matter', matter.id),
+              watched: isWatching(db, current.user.id, 'matter', matter.id, matter.jurisdiction),
               csrfToken: current.session.csrfToken,
               account: nameFor(current.user),
             }
           : { signedIn: false, account: null }),
-        sampleData: hasSampleData(db),
-        jurisdictionLabel: label,
+        sampleData: hasSampleData(db, matter.jurisdiction),
+        town: townOfRow(c, matter.jurisdiction),
       }),
     );
   });
 
   app.get('/map', (c) => {
+    const town = townFor(c);
     const highlight = new URL(c.req.url).searchParams.get('matter')?.trim();
-    const placed = listPlacedMatters(db, jurisdiction);
-    const unplaced = listUnplacedMatters(db, jurisdiction);
+    const placed = listPlacedMatters(db, town.id);
+    const unplaced = listUnplacedMatters(db, town.id);
 
     const body = renderMapBody({
       points: placed.map((row) => ({
@@ -320,16 +372,17 @@ export function createApp(db: Db, options: AppOptions = {}) {
       unplaced: unplaced.map((row) => ({ matterId: row.id, label: row.label, reason: row.failure })),
       totalAddresses: placed.length + unplaced.length,
       geocoded: placed.length > 0,
-      boundary: townBoundary,
+      boundary: boundaryFor(town.id),
+      box: getProfile(town.id).bbox,
       ...(highlight ? { highlight } : {}),
     });
 
     return c.html(
       layout({
-        title: 'Map — townCivic',
-        jurisdictionLabel: label,
+        title: `Map — ${town.label} — townCivic`,
+        town,
         filters: EMPTY_FILTERS,
-        sampleData: hasSampleData(db),
+        sampleData: hasSampleData(db, town.id),
         body,
         account: currentUser(c) ? nameFor(currentUser(c)!.user) : null,
       }),
@@ -352,15 +405,17 @@ export function createApp(db: Db, options: AppOptions = {}) {
       renderAuth({
         mode: 'login',
         next,
-        sampleData: hasSampleData(db),
-        jurisdictionLabel: label,
+        sampleData: hasSampleData(db, defaultJurisdiction),
+        town: townFor(c),
       }),
     );
   });
 
   app.get('/signup', (c) => {
     if (currentUser(c)) return c.redirect('/my', 302);
-    return c.html(renderAuth({ mode: 'signup', sampleData: hasSampleData(db), jurisdictionLabel: label }));
+    return c.html(
+      renderAuth({ mode: 'signup', sampleData: hasSampleData(db, defaultJurisdiction), town: townFor(c) }),
+    );
   });
 
   const startSession = (c: Context, userId: string, next: string | undefined) => {
@@ -384,8 +439,8 @@ export function createApp(db: Db, options: AppOptions = {}) {
           error: 'That email and password did not match.',
           email,
           next,
-          sampleData: hasSampleData(db),
-          jurisdictionLabel: label,
+          sampleData: hasSampleData(db, defaultJurisdiction),
+          town: townFor(c),
         }),
         401,
       );
@@ -408,8 +463,8 @@ export function createApp(db: Db, options: AppOptions = {}) {
           mode: 'signup',
           ...(result.error ? { error: result.error } : {}),
           email,
-          sampleData: hasSampleData(db),
-          jurisdictionLabel: label,
+          sampleData: hasSampleData(db, defaultJurisdiction),
+          town: townFor(c),
         }),
         400,
       );
@@ -430,6 +485,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
   app.get('/my', (c) => {
     const current = currentUser(c);
     if (!current) return c.redirect('/login?next=%2Fmy', 302);
+    const town = townFor(c);
 
     const subscriptions = listSubscriptions(db, current.user.id);
     return c.html(
@@ -441,14 +497,20 @@ export function createApp(db: Db, options: AppOptions = {}) {
           value: s.value,
           label: s.label,
           alerts: s.alerts,
+          jurisdiction: s.jurisdiction,
+          townLabel: s.jurisdiction === ALL_JURISDICTIONS ? 'every town' : getProfile(s.jurisdiction).label,
         })),
-        recent: personalFeed(db, subscriptions, { jurisdiction, limit: 20 }),
-        bodies: facetCounts(db, 'body', { jurisdiction }).slice(0, 40),
+        // The reader's feed spans every town they follow — an account is a
+        // person, not a town — while the "follow something" list below is
+        // scoped to the town they are looking at, because that is where the
+        // board names on it come from.
+        recent: personalFeed(db, subscriptions, { limit: 20 }),
+        bodies: facetCounts(db, 'body', { jurisdiction: town.id }).slice(0, 40),
         feedUrl: `${baseUrl}/feeds/my/${current.user.feed_token}.atom`,
         csrfToken: current.session.csrfToken,
         ...(new URL(c.req.url).searchParams.get('saved') ? { notice: 'Saved.' } : {}),
         sampleData: hasSampleData(db),
-        jurisdictionLabel: label,
+        town,
         account: nameFor(current.user),
       }),
     );
@@ -473,10 +535,17 @@ export function createApp(db: Db, options: AppOptions = {}) {
     guarded(c, (user, form) => {
       const matter = getMatter(db, String(form['matter'] ?? ''));
       if (!matter) return;
+      // The matter's own town, not the one in the URL: a matter belongs to
+      // exactly one town and the row is the authority on which.
       if (String(form['action'] ?? 'watch') === 'unwatch') {
-        removeSubscription(db, user.id, 'matter', matter.id);
+        removeSubscription(db, user.id, 'matter', matter.id, matter.jurisdiction);
       } else {
-        addSubscription(db, user.id, { kind: 'matter', value: matter.id, label: matter.label });
+        addSubscription(db, user.id, {
+          kind: 'matter',
+          value: matter.id,
+          label: matter.label,
+          jurisdiction: matter.jurisdiction,
+        });
       }
     }),
   );
@@ -487,13 +556,26 @@ export function createApp(db: Db, options: AppOptions = {}) {
       const value = String(form['value'] ?? '').trim();
       if (!value || !isSubscriptionKind(kind)) return;
       const label = kind === 'channel' && isChannel(value) ? (CHANNEL_LABELS[value] ?? value) : value;
-      addSubscription(db, user.id, { kind, value, label });
+      const requested = String(form['town'] ?? '');
+      addSubscription(db, user.id, {
+        kind,
+        value,
+        label,
+        jurisdiction: served.includes(requested) ? requested : defaultJurisdiction,
+      });
     }),
   );
 
   app.post('/my/unsubscribe', (c) =>
     guarded(c, (user, form) => {
-      removeSubscription(db, user.id, String(form['kind'] ?? ''), String(form['value'] ?? ''));
+      const town = String(form['town'] ?? '');
+      removeSubscription(
+        db,
+        user.id,
+        String(form['kind'] ?? ''),
+        String(form['value'] ?? ''),
+        town || undefined,
+      );
     }),
   );
 
@@ -510,7 +592,8 @@ export function createApp(db: Db, options: AppOptions = {}) {
     if (!user) return c.notFound();
 
     const subscriptions = listSubscriptions(db, user.id);
-    const rows = personalFeed(db, subscriptions, { jurisdiction, limit: FEED_SIZE });
+    // No jurisdiction filter: each subscription already carries its own town.
+    const rows = personalFeed(db, subscriptions, { limit: FEED_SIZE });
 
     return c.body(
       renderAtom(rows, {
@@ -530,13 +613,49 @@ export function createApp(db: Db, options: AppOptions = {}) {
     );
   });
 
-  app.get('/sources', (c) =>
-    c.html(renderSources(listSourceRows(db, jurisdiction), hasSampleData(db), label)),
-  );
+  app.get('/sources', (c) => {
+    const town = townFor(c);
+    return c.html(renderSources(listSourceRows(db, town.id), hasSampleData(db, town.id), town));
+  });
 
-  app.get('/feeds', (c) => c.html(renderFeedIndex(hasSampleData(db), label, baseUrl)));
+  app.get('/feeds', (c) => {
+    const town = townFor(c);
+    return c.html(renderFeedIndex(hasSampleData(db, town.id), town, baseUrl));
+  });
+
+  /**
+   * Every town this install carries.
+   *
+   * Reached from the switcher, and the honest answer to "what else is in here":
+   * it says which towns are live, which are registered but unconfirmed, and
+   * which have records for a town the registry has since dropped.
+   */
+  app.get('/towns', (c) => {
+    const town = townFor(c);
+    const rows = listJurisdictionRows(db);
+    return c.html(
+      renderTowns({
+        town,
+        towns: rows.map((row) => ({
+          id: row.id,
+          label: row.label,
+          events: row.events,
+          matters: row.matters,
+          sources: row.sources,
+          enabledSources: row.enabled_sources,
+          lastFetchAt: row.last_fetch_at,
+          registered: hasJurisdiction(row.id),
+          boundary: Boolean(boundaryFor(row.id)),
+          notes: row.notes,
+        })),
+        sampleData: hasSampleData(db, town.id),
+        account: currentUser(c) ? nameFor(currentUser(c)!.user) : null,
+      }),
+    );
+  });
 
   app.get('/feeds/:name{.+\\.(atom|json)}', (c) => {
+    const town = townFor(c);
     const name = c.req.param('name');
     const dot = name.lastIndexOf('.');
     const channel = name.slice(0, dot);
@@ -557,10 +676,13 @@ export function createApp(db: Db, options: AppOptions = {}) {
     const matterId = url.searchParams.get('matter')?.trim();
     const matter = matterId ? getMatter(db, matterId) : undefined;
 
-    const query = { ...toQuery(filters, jurisdiction), ...(matter ? { matters: [matter.id] } : {}) };
+    // A matter feed follows the matter's own town; everything else follows the
+    // town the URL asked for.
+    const scope = matter ? matter.jurisdiction : town.id;
+    const query = { ...toQuery(filters, scope), ...(matter ? { matters: [matter.id] } : {}) };
     const rows = queryEvents(db, { ...query, limit: FEED_SIZE });
     const options = {
-      title: matter ? `${matter.label} — townCivic` : feedTitle(channel, label),
+      title: matter ? `${matter.label} — townCivic` : feedTitle(channel, town.label),
       subtitle: matter
         ? `Every record townCivic has linked to ${matter.label}.`
         : channel === 'all'
@@ -569,7 +691,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
       selfUrl: `${baseUrl}/feeds/${name}${url.search}`,
       htmlUrl: matter
         ? `${baseUrl}/matter/${matter.id}`
-        : `${baseUrl}/${channel === 'all' ? '' : `?channel=${channel}`}`,
+        : `${baseUrl}${withTown('/', town, channel === 'all' ? {} : { channel })}`,
       baseUrl,
       updated: latestEventTimestamp(db, query),
     };

@@ -39,6 +39,7 @@ describe('the rules interpreter', () => {
 
   it('produces prose, because prose is what gets indexed', async () => {
     const [reading] = await rulesInterpreter.interpret({
+      jurisdictionLabel: 'Milton, Massachusetts',
       eventId: 'e1',
       title: 'Minutes',
       body: 'Planning Board',
@@ -54,6 +55,7 @@ describe('the rules interpreter', () => {
   it('finds nothing in a document that records nothing', async () => {
     expect(
       await rulesInterpreter.interpret({
+        jurisdictionLabel: 'Milton, Massachusetts',
         eventId: 'e1',
         title: 'Minutes',
         body: null,
@@ -70,6 +72,7 @@ describe('the anthropic interpreter', () => {
     const interpreter = createAnthropicInterpreter({ apiKey: undefined });
     await expect(
       interpreter.interpret({
+        jurisdictionLabel: 'Milton, Massachusetts',
         eventId: 'e1',
         title: 'Minutes',
         body: null,
@@ -84,6 +87,7 @@ describe('the anthropic interpreter', () => {
     const interpreter = createAnthropicInterpreter({ createMessage: async () => 'NONE' });
     expect(
       await interpreter.interpret({
+        jurisdictionLabel: 'Milton, Massachusetts',
         eventId: 'e1',
         title: 'Minutes',
         body: null,
@@ -99,6 +103,7 @@ describe('the anthropic interpreter', () => {
       createMessage: async () => 'The Board voted 4-1 to approve.',
     });
     const [reading] = await interpreter.interpret({
+      jurisdictionLabel: 'Milton, Massachusetts',
       eventId: 'e1',
       title: 'Minutes',
       body: null,

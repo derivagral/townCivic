@@ -8,7 +8,9 @@ import type { PdfExtraction } from '../extract/pdf.ts';
 import { parseMeetingNotice, summarizeAgenda } from '../extract/meeting-notice.ts';
 import type { MeetingNotice } from '../extract/meeting-notice.ts';
 import { extractSubjects, stripHtml, truncate } from '../util/text.ts';
-import { canonicalBody, isVenueAddress } from '../registry/milton-ma.ts';
+import { getProfile } from '../registry/index.ts';
+import { canonicalBody, isVenueAddress } from '../registry/profile.ts';
+import type { JurisdictionProfile } from '../registry/profile.ts';
 
 /**
  * Second pass: open the document each record points at and read what is inside.
@@ -17,8 +19,12 @@ import { canonicalBody, isVenueAddress } from '../registry/milton-ma.ts';
  * is a separate stage on purpose — documents are large and slow relative to
  * listings, and re-extracting is independent of re-fetching a listing.
  *
- * No model is involved. Milton's modern notices are AcroForm templates, so the
- * agenda arrives as a named field; older ones fall back to the text layer.
+ * No model is involved. Modern notices are AcroForm templates, so the agenda
+ * arrives as a named field; older ones fall back to the text layer.
+ *
+ * The town is read off each record rather than off the run, so `extract` with
+ * no `--jurisdiction` walks the oldest unread documents in every town in one
+ * pass and still applies each town's own venue and body rules.
  */
 
 export interface ExtractReport {
@@ -51,6 +57,7 @@ export interface ExtractOptions {
 
 interface Candidate {
   id: string;
+  jurisdiction: string;
   title: string;
   document_url: string;
   body: string | null;
@@ -99,7 +106,7 @@ function selectCandidates(db: Db, options: ExtractOptions): Candidate[] {
   // from 2018, and a run interrupted halfway should have done the useful part.
   return db
     .prepare(
-      `SELECT id, title, document_url, body, summary, subjects, tags
+      `SELECT id, jurisdiction, title, document_url, body, summary, subjects, tags
          FROM events
         WHERE ${conditions.join(' AND ')}
         ORDER BY coalesce(occurred_at, published_at, first_seen_at) DESC
@@ -134,6 +141,7 @@ export async function extractDocuments(db: Db, options: ExtractOptions = {}): Pr
   const reports: ExtractReport[] = [];
 
   for (const candidate of candidates) {
+    const profile = getProfile(candidate.jurisdiction);
     const url = preferDocumentUrl(candidate.document_url);
     const report: ExtractReport = {
       eventId: candidate.id,
@@ -162,7 +170,7 @@ export async function extractDocuments(db: Db, options: ExtractOptions = {}): Pr
       if (!looksLikePdf(bytes)) {
         // Not a PDF — usually the HTML view. Keep its text so search still works.
         const text = stripHtml(Buffer.from(bytes).toString('utf8'));
-        applyExtraction(db, candidate, {
+        applyExtraction(db, candidate, profile, {
           url,
           text,
           contentType,
@@ -182,9 +190,9 @@ export async function extractDocuments(db: Db, options: ExtractOptions = {}): Pr
       }
 
       const extraction: PdfExtraction = await extractPdf(bytes);
-      const notice = parseMeetingNotice(extraction);
+      const notice = parseMeetingNotice(extraction, profile);
 
-      applyExtraction(db, candidate, {
+      applyExtraction(db, candidate, profile, {
         url,
         text: [Object.values(extraction.fields).join('\n'), extraction.text].filter(Boolean).join('\n\n'),
         contentType,
@@ -249,7 +257,7 @@ interface Applied {
  * the document knows — what the meeting is about, where it is, exactly when the
  * clerk posted it, and which properties it concerns.
  */
-function applyExtraction(db: Db, candidate: Candidate, applied: Applied): void {
+function applyExtraction(db: Db, candidate: Candidate, profile: JurisdictionProfile, applied: Applied): void {
   const now = new Date().toISOString();
   const extension = applied.pages > 0 ? 'pdf' : 'html';
   const stored = storeBytes(applied.bytes, extension);
@@ -289,7 +297,7 @@ function applyExtraction(db: Db, candidate: Candidate, applied: Applied): void {
       ...parseJsonArray(candidate.subjects),
       ...(notice?.subjects ?? extractSubjects(applied.text)),
     ]),
-  ].filter((subject) => !isVenueAddress(subject));
+  ].filter((subject) => !isVenueAddress(profile, subject));
 
   const agendaSummary = notice?.agendaItems.length ? summarizeAgenda(notice.agendaItems) : '';
   const summary = agendaSummary ? truncate(agendaSummary, 400) : candidate.summary;
@@ -314,7 +322,7 @@ function applyExtraction(db: Db, candidate: Candidate, applied: Applied): void {
     summary,
     JSON.stringify(subjects),
     JSON.stringify([...tags].sort()),
-    notice?.board ? canonicalBody(notice.board) : null,
+    notice?.board ? canonicalBody(profile, notice.board) : null,
     // The notice carries the real start time; the listing only had the date.
     notice?.meetingAt ?? null,
     notice?.postedAt ?? null,

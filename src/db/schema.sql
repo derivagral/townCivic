@@ -1,13 +1,48 @@
 -- townCivic storage.
 --
--- Three layers, deliberately separated:
---   sources    the registry as materialized rows (so the UI can join against it)
---   fetches    one row per fetch attempt — the operational log
---   documents  content-addressed raw bodies — the authority, never overwritten
---   events     the normalized feed unit — derivable from documents, safe to rebuild
+-- Layers, deliberately separated:
+--   jurisdictions  the towns, as materialized registry rows
+--   sources        the registry as materialized rows (so the UI can join against it)
+--   fetches        one row per fetch attempt — the operational log
+--   documents      content-addressed raw bodies — the authority, never overwritten
+--   events         the normalized feed unit — derivable from documents, safe to rebuild
+--
+-- Every table that holds a record carries `jurisdiction` as a plain column, and
+-- every query that reads records filters on it. That is the whole multi-town
+-- design: one database, one schema, one row per town in `jurisdictions`, and no
+-- table whose name or shape depends on which town it holds. A town is data.
+--
+-- The alternative — a database per town — was rejected because the expensive
+-- parts are shared. `users`, `sessions` and `subscriptions` are per-person, not
+-- per-town; a reader following a property in Milton and a school committee in
+-- Hull is one account either way. Cross-town questions ("every open bid on the
+-- South Shore") stay one query rather than a fan-out. And a town is added or
+-- dropped by writing rows, which is what `clear` does.
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
+
+-- The towns, materialized from `src/registry/`.
+--
+-- The registry in code is the authority; this table exists so the UI can render
+-- a town switcher, and `status` can count records per town, from one query
+-- instead of importing the registry. A row here outliving its registry entry is
+-- expected — see `orphanJurisdictions()`.
+CREATE TABLE IF NOT EXISTS jurisdictions (
+  id           TEXT PRIMARY KEY,          -- 'milton-ma'
+  name         TEXT NOT NULL,             -- 'Milton'
+  label        TEXT NOT NULL,             -- 'Milton, Massachusetts'
+  state        TEXT NOT NULL,
+  time_zone    TEXT NOT NULL,
+  platform     TEXT NOT NULL,             -- civicplus | other
+  base_url     TEXT NOT NULL,
+  -- The geocoding fence used until the real outline is fetched, as JSON.
+  bbox         TEXT NOT NULL DEFAULT '{}',
+  -- Where the outline comes from, as JSON. Null when the town has no source yet.
+  boundary     TEXT,
+  notes        TEXT,
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 CREATE TABLE IF NOT EXISTS sources (
   id             TEXT PRIMARY KEY,
@@ -35,6 +70,8 @@ CREATE TABLE IF NOT EXISTS sources (
   last_error     TEXT,
   updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_sources_town ON sources(jurisdiction, tier, label);
 
 CREATE TABLE IF NOT EXISTS fetches (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,10 +143,16 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_sort     ON events(coalesce(occurred_at, published_at, first_seen_at) DESC);
-CREATE INDEX IF NOT EXISTS idx_events_channel  ON events(channel);
 CREATE INDEX IF NOT EXISTS idx_events_source   ON events(source_id);
-CREATE INDEX IF NOT EXISTS idx_events_body     ON events(body);
 CREATE INDEX IF NOT EXISTS idx_events_pubdate  ON events(published_at DESC);
+
+-- Jurisdiction leads every index below because it leads every query: with more
+-- than one town in the table, an index on `channel` alone makes SQLite read the
+-- other towns' rows to throw them away. These replace the single-column
+-- `channel` and `body` indexes, which the composites cover.
+CREATE INDEX IF NOT EXISTS idx_events_town_sort ON events(jurisdiction, coalesce(occurred_at, published_at, first_seen_at) DESC);
+CREATE INDEX IF NOT EXISTS idx_events_town_channel ON events(jurisdiction, channel);
+CREATE INDEX IF NOT EXISTS idx_events_town_body ON events(jurisdiction, body);
 
 -- Free-text search over the parts a person would actually search.
 -- `doc_text` is what makes searching an agenda's contents work: "39 Frothingham"
@@ -162,7 +205,11 @@ CREATE TABLE IF NOT EXISTS matters (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_matters_key ON matters(jurisdiction, kind, key);
-CREATE INDEX IF NOT EXISTS idx_matters_recent ON matters(last_at DESC);
+-- Renamed rather than redefined: `CREATE INDEX IF NOT EXISTS` will not rebuild
+-- an index that already exists under the same name, so an upgraded database
+-- would have kept the old single-column one and quietly differed from a fresh
+-- one. The old name is dropped in `migrate.ts`.
+CREATE INDEX IF NOT EXISTS idx_matters_town_recent ON matters(jurisdiction, last_at DESC);
 
 CREATE TABLE IF NOT EXISTS matter_events (
   matter_id  TEXT NOT NULL REFERENCES matters(id) ON DELETE CASCADE,
@@ -219,17 +266,26 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 --   body     a public body name
 --   channel  a feed channel
 --   search   a full-text query
+--
+-- `jurisdiction` is the town the subscription was made in, or `*` for every
+-- town. It is not decoration: `value` is only unique *within* a town. "Planning
+-- Board" and "land-use" mean a different set of records in Milton than in Hull,
+-- and without this column a reader following Milton's Planning Board would
+-- silently start receiving Hull's the moment Hull was ingested. Matter ids are
+-- globally unique and would have been safe either way; bodies, channels and
+-- searches are the three kinds that would have quietly merged.
 CREATE TABLE IF NOT EXISTS subscriptions (
-  id         TEXT PRIMARY KEY,
-  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  kind       TEXT NOT NULL,
-  value      TEXT NOT NULL,
-  label      TEXT NOT NULL,
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  jurisdiction TEXT NOT NULL DEFAULT '*',
+  kind         TEXT NOT NULL,
+  value        TEXT NOT NULL,
+  label        TEXT NOT NULL,
   -- none | digest | immediate. Only `none` is honoured today — nothing sends
   -- mail yet — so the column records intent rather than behaviour.
-  alerts     TEXT NOT NULL DEFAULT 'none',
-  created_at TEXT NOT NULL,
-  UNIQUE(user_id, kind, value)
+  alerts       TEXT NOT NULL DEFAULT 'none',
+  created_at   TEXT NOT NULL,
+  UNIQUE(user_id, jurisdiction, kind, value)
 );
 
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);

@@ -4,7 +4,11 @@ import type { Db } from '../src/db/index.ts';
 import { listPlacedMatters, listUnplacedMatters } from '../src/db/repo.ts';
 import { geocodeMatters } from '../src/pipeline/geocode.ts';
 import { censusUrl, parseCensusResponse } from '../src/geo/census.ts';
-import { MILTON_BBOX, fitBox, project, scaleBar, viewportFor, withinBox } from '../src/geo/project.ts';
+import { fitBox, project, scaleBar, viewportFor, withinBox } from '../src/geo/project.ts';
+import { miltonProfile } from '../src/registry/index.ts';
+
+/** The town's declared fence, which now lives on its profile rather than in geo/. */
+const MILTON_BBOX = miltonProfile.bbox;
 import { renderMapSvg } from '../src/web/map.ts';
 
 describe('projection', () => {

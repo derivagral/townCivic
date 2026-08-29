@@ -13,6 +13,14 @@ the web UI shows a standing banner while any sample event is in the database.
 To work with real records, run `towncivic verify` and then `towncivic ingest`
 against the live site.
 
+## Which town a fixture belongs to
+
+Each town's fixtures are declared on its own profile (`fixtures` in
+`src/registry/<id>.ts`), keyed by source id, and live in a directory named after
+the jurisdiction — `fixtures/milton-ma/`. A town with no fixtures simply seeds
+nothing, which is the honest state for a town whose site has not been read yet:
+inventing a fixture for it would be fiction twice over.
+
 ## `meeting-notice.pdf`
 
 A minimal AcroForm PDF with the same field names as the Town Clerk's real

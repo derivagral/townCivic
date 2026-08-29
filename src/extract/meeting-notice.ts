@@ -1,10 +1,11 @@
 import type { PdfExtraction } from './pdf.ts';
 import { parseLocalDateTime, parsePostingStamp } from '../util/dates.ts';
 import { clean, extractSubjects } from '../util/text.ts';
-import { canonicalBody, isVenueAddress } from '../registry/milton-ma.ts';
+import { canonicalBody, isVenueAddress } from '../registry/profile.ts';
+import type { JurisdictionProfile } from '../registry/profile.ts';
 
 /**
- * Read a Milton public meeting notice.
+ * Read a public meeting notice.
  *
  * The town clerk files these on a fillable template, so a modern notice is
  * genuinely structured: `BOARDCOMMITTEE`, `DATE`, `TIME`, `BUILDING`, `ROOM`,
@@ -14,6 +15,12 @@ import { canonicalBody, isVenueAddress } from '../registry/milton-ma.ts';
  * Older notices and all minutes are plain PDFs. For those the same facts are
  * recovered from the template's printed labels where possible, and the body
  * text is kept either way so search still reaches the content.
+ *
+ * The field names come from the Commonwealth's own Open Meeting Law posting
+ * template, so they are the same in every town that uses it — which is why this
+ * parser is not town-specific. What *is* town-specific is which addresses are
+ * municipal buildings and what a board is really called, and both of those
+ * arrive on the profile rather than being imported from one town's module.
  */
 
 export interface MeetingNotice {
@@ -50,6 +57,11 @@ const FIELD_KEYS = {
   authority: /^posting.?authority$/i,
   link: /^(zoom|meeting).?link$/i,
 } as const;
+
+/** A town name goes into a pattern, so anything with punctuation in it is escaped. */
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 function pick(fields: Record<string, string>, pattern: RegExp): string | null {
   for (const [key, value] of Object.entries(fields)) {
@@ -125,7 +137,7 @@ function agendaText(fields: Record<string, string>): string {
     .join('\n');
 }
 
-export function parseMeetingNotice(extraction: PdfExtraction): MeetingNotice {
+export function parseMeetingNotice(extraction: PdfExtraction, profile: JurisdictionProfile): MeetingNotice {
   const { fields, text } = extraction;
   const structured = Object.keys(fields).length > 0;
 
@@ -144,16 +156,22 @@ export function parseMeetingNotice(extraction: PdfExtraction): MeetingNotice {
   // it for addresses produces the town hall, not the property under discussion.
   const location = [building, room].filter(Boolean).join(', ');
   const subjects = extractSubjects(agenda || text).filter(
-    (subject) => !isVenueAddress(subject) && !location.includes(subject),
+    (subject) => !isVenueAddress(profile, subject) && !location.includes(subject),
   );
 
+  // "Milton Planning Board" on a Milton notice is the Planning Board. Stripping
+  // the town's own name is what keeps it from becoming a body of its own — and
+  // it has to be *this* town's name, or Hull's notices grow a Milton prefix
+  // rule that never fires.
+  const townPrefix = new RegExp(`^${escapeRegExp(profile.name)}\\s+`, 'i');
+
   return {
-    board: board ? canonicalBody(board.replace(/^milton\s+/i, '')) : null,
-    meetingAt: dateText ? parseLocalDateTime(dateText, timeText ?? '') : null,
+    board: board ? canonicalBody(profile, board.replace(townPrefix, '')) : null,
+    meetingAt: dateText ? parseLocalDateTime(dateText, timeText ?? '', profile.timeZone) : null,
     timeText,
     location: location || null,
     agendaItems,
-    postedAt: postTime ? parsePostingStamp(postTime) : null,
+    postedAt: postTime ? parsePostingStamp(postTime, profile.timeZone) : null,
     postingAuthority: pick(fields, FIELD_KEYS.authority),
     remoteLink: pick(fields, FIELD_KEYS.link),
     subjects,
