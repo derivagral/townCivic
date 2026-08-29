@@ -2,6 +2,7 @@ import type { Db } from '../db/index.ts';
 import { bestLabel, bidRef, extractBidNumbers, matterId, matterRef } from '../matters/key.ts';
 import type { MatterKind, MatterRef } from '../matters/key.ts';
 import { readStage, rollupStatus, sentencesMentioning } from '../matters/stages.ts';
+import { placeFromCache } from './geocode.ts';
 import type { Stage } from '../matters/stages.ts';
 
 /**
@@ -39,6 +40,8 @@ export interface LinkSummary {
   matters: number;
   /** Matters carrying more than one record — the ones that are actually timelines. */
   timelines: number;
+  /** Address matters given a point from the geocode cache, with no network. */
+  placed: number;
   reports: LinkReport[];
 }
 
@@ -243,19 +246,27 @@ export function linkMatters(db: Db, options: LinkOptions = {}): LinkSummary {
       options.onProgress?.(report);
     }
 
+    // Put the map back. Deleting the matters above cascades `places` away, so
+    // without this every `link` run emptied the map and the next `geocode` went
+    // back to the Census for a town it had already resolved. The cache is keyed
+    // by the town and the normalized address, not by the matter, so the answers
+    // outlive the rebuild.
+    const placed = placeFromCache(db, options.jurisdiction);
+
     db.exec('COMMIT');
+
+    reports.sort((a, b) => b.events - a.events || a.label.localeCompare(b.label));
+
+    return {
+      eventsConsidered: events.length,
+      links,
+      matters: accumulated.size,
+      timelines: reports.filter((r) => r.events > 1).length,
+      placed,
+      reports,
+    };
   } catch (error) {
     db.exec('ROLLBACK');
     throw error;
   }
-
-  reports.sort((a, b) => b.events - a.events || a.label.localeCompare(b.label));
-
-  return {
-    eventsConsidered: events.length,
-    links,
-    matters: accumulated.size,
-    timelines: reports.filter((r) => r.events > 1).length,
-    reports,
-  };
 }

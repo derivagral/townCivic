@@ -474,6 +474,35 @@ The outline gives most of the legibility for 18 KB and no runtime dependency.
 line. MassGIS also publishes the statewide parcel layer, which is what a
 land-use record is actually about; that is the next honest step.
 
+### The geocode cache
+
+`geocode` asks a public geocoder — the US Census — about a street address, which
+is slow, external, rate-limited by politeness, and stable: a street address does
+not move. So the answer is stored against **the question** rather than against
+whoever asked it:
+
+```
+geocodes(jurisdiction, key, provider) → lat, lon, matched, failure, retrieved_at
+```
+
+`key` is the normalized address, the same value as `matters.key`, and
+`jurisdiction` is part of the key because 10 Main Street in Hull is a different
+house from 10 Main Street in Milton. Misses are cached too, so an address the
+geocoder cannot parse is asked about once rather than on every run.
+
+This is not an optimization; it fixes a real bug. `link` is a full rebuild — it
+deletes a town's matters and re-inserts them — and `places.matter_id` cascades,
+so **every `link` run used to throw away every point in that town**. The
+scheduled refresh runs `link` and then `geocode --limit 50` twice a day, which
+meant a town with more than fifty addresses never finished being placed, and the
+Census was asked the same questions twice a day forever. Now `link` refills
+`places` from the cache with no network, and `geocode` only ever asks about
+addresses nobody has asked about yet.
+
+`places` is consequently a projection rather than a store: matters × geocodes.
+Dropping it costs nothing. Dropping `geocodes` costs a re-run against someone
+else's server, which is why only `clear --scope town` does it.
+
 ## Derived readings
 
 Agendas are structured data, so `extract` gets everything out of them. Minutes
@@ -663,7 +692,7 @@ npx tsx src/cli.ts clear --jurisdiction hull-ma --scope derived --dry-run
 
 | `--scope` | Removes                                                                              | Way back                       |
 | --------- | ------------------------------------------------------------------------------------ | ------------------------------ |
-| `derived` | matters, timelines, map pins, model readings                                         | `link`, `geocode`, `interpret` |
+| `derived` | matters, timelines, map pins, model readings (the geocode cache is kept)             | `link`, `geocode`, `interpret` |
 | `records` | the above plus `events` and what hangs off them                                      | `ingest`, `extract`, …         |
 | `town`    | the above plus its sources, fetch log, document index and its row in `jurisdictions` | the town is gone               |
 
@@ -677,6 +706,10 @@ That is not tidiness: `ingest` sends those, the town answers `304 Not Modified`,
 and a town whose records you just deleted would refill with _nothing_ and look
 like a broken adapter. It is part of the operation rather than a line in the
 docs saying to remember `--force`.
+
+`derived` and `records` deliberately keep the **geocode cache**, which is why
+rebuilding either of them costs no network at all — see
+[The geocode cache](#the-geocode-cache).
 
 ### After a `git pull`
 

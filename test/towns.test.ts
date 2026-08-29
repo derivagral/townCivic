@@ -18,7 +18,9 @@ import {
 import { canonicalBody, classifyBody, isVenueAddress } from '../src/registry/profile.ts';
 import { miltonProfile, weymouthProfile, hullProfile, scituateProfile } from '../src/registry/index.ts';
 import { clearJurisdiction, clearOrphans } from '../src/commands/clear.ts';
-import { countEvents, facetCounts, personalFeed, queryEvents } from '../src/db/repo.ts';
+import { countEvents, facetCounts, getPlace, personalFeed, queryEvents } from '../src/db/repo.ts';
+import { geocodeMatters, placeFromCache } from '../src/pipeline/geocode.ts';
+import { linkMatters } from '../src/pipeline/link.ts';
 import { addSubscription, listSubscriptions } from '../src/web/accounts.ts';
 import { extractAgendaCategories, categorySlug } from '../src/adapters/civicplus-agenda-center.ts';
 import { href, withTown } from '../src/web/views.ts';
@@ -550,6 +552,97 @@ describe('clearing one town', () => {
     expect(reports.map((r) => r.jurisdiction)).toEqual(['someplace-zz']);
     expect(countEvents(db, { jurisdiction: 'someplace-zz' })).toBe(0);
     expect(countEvents(db, { jurisdiction: 'weymouth-ma' })).toBe(1);
+  });
+});
+
+/* --------------------------------------------------------- the geocode cache */
+
+describe('the geocode cache', () => {
+  // Every point in `places` cost a request to a public geocoder, and `link` is
+  // a full rebuild that deletes a town's matters — which cascaded `places` away
+  // on every run. The scheduled refresh runs `link` and then `geocode --limit
+  // 50` twice a day, so a town with more than fifty addresses never finished
+  // being placed and the Census was asked the same questions forever.
+  const cache = (jurisdiction: string, key: string, lat = 42.25, lon = -71.06) =>
+    db
+      .prepare(
+        `INSERT INTO geocodes (jurisdiction, key, query, provider, lat, lon, matched, failure, retrieved_at)
+         VALUES (?,?,?,'census',?,?,'MATCHED',NULL,'2026-01-01T00:00:00.000Z')`,
+      )
+      .run(jurisdiction, key, key, lat, lon);
+
+  it('survives the rebuild that link performs', () => {
+    event('milton-ma');
+    const id = matter('milton-ma', '39 Frothingham Street');
+    cache('milton-ma', '39 frothingham street');
+    expect(placeFromCache(db, 'milton-ma')).toBe(1);
+    expect(getPlace(db, id)).toBeTruthy();
+
+    // The rebuild deletes the matter and its place, then puts the place back
+    // from the cache — without asking anyone anything.
+    const summary = linkMatters(db, { jurisdiction: 'milton-ma' });
+    expect(summary.placed).toBe(0); // no address subjects on this synthetic event
+
+    // Re-create the matter as `link` would have, and the point returns.
+    const again = matter('milton-ma', '39 Frothingham Street');
+    expect(placeFromCache(db, 'milton-ma')).toBe(1);
+    expect(getPlace(db, again)).toMatchObject({ lat: 42.25, lon: -71.06 });
+  });
+
+  it('keys on the town, so the same street in two towns is two questions', () => {
+    const milton = matter('milton-ma', '10 Main Street');
+    const hull = matter('hull-ma', '10 Main Street');
+    cache('milton-ma', '10 main street', 42.25, -71.06);
+
+    placeFromCache(db);
+    expect(getPlace(db, milton)).toBeTruthy();
+    // Hull's 10 Main Street is a different house and has not been asked about.
+    expect(getPlace(db, hull)).toBeUndefined();
+  });
+
+  it('stops geocode asking again about an address it has an answer for', () => {
+    matter('milton-ma', '39 Frothingham Street');
+    cache('milton-ma', '39 frothingham street');
+
+    // A fetch implementation that fails the test if it is ever called.
+    const refuse: typeof fetch = () => {
+      throw new Error('the geocoder was asked about a cached address');
+    };
+    expect(geocodeMatters(db, { jurisdiction: 'milton-ma', fetchImpl: refuse })).resolves.toEqual([]);
+  });
+
+  it('caches a miss, so an unparseable address is asked about once', () => {
+    db.prepare(
+      `INSERT INTO geocodes (jurisdiction, key, query, provider, lat, lon, matched, failure, retrieved_at)
+       VALUES ('milton-ma','nowhere at all','Nowhere At All','none',NULL,NULL,NULL,'no match','2026-01-01')`,
+    ).run();
+    const id = matter('milton-ma', 'Nowhere At All');
+
+    placeFromCache(db, 'milton-ma');
+    const row = db.prepare('SELECT failure, lat FROM places WHERE matter_id = ?').get(id) as {
+      failure: string;
+      lat: number | null;
+    };
+    expect(row.failure).toBe('no match');
+    expect(row.lat).toBeNull();
+  });
+
+  it('is kept by a derived clear and dropped with the town', () => {
+    event('weymouth-ma');
+    matter('weymouth-ma', '75 Middle Street');
+    cache('weymouth-ma', '75 middle street');
+    syncSources(db, 'weymouth-ma');
+
+    const geocodes = () => (db.prepare('SELECT count(*) AS n FROM geocodes').get() as { n: number }).n;
+
+    clearJurisdiction(db, { jurisdiction: 'weymouth-ma', scope: 'derived' });
+    expect(geocodes(), 'a rebuild should not cost the geocoder anything').toBe(1);
+
+    clearJurisdiction(db, { jurisdiction: 'weymouth-ma', scope: 'records' });
+    expect(geocodes()).toBe(1);
+
+    clearJurisdiction(db, { jurisdiction: 'weymouth-ma', scope: 'town' });
+    expect(geocodes(), 'the town is gone, and so are its addresses').toBe(0);
   });
 });
 
