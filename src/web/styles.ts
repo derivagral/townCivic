@@ -278,6 +278,9 @@ form.inline button, .detail .actions button {
   border: 1px solid var(--line); border-radius: 8px; background: var(--accent-soft); color: var(--ink);
 }
 .formerror { margin-top: 14px; color: #a1483f; font-size: 13.5px; }
+/* Something that went right but is not a sign-in — "check your email". Not red:
+   it would read as a failure, and the account was created. */
+.formnotice { margin-top: 14px; color: var(--accent); font-size: 13.5px; }
 .subscription { display: flex; align-items: center; gap: 10px; justify-content: space-between;
   border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; font-size: 14px; }
 .subscription form { margin: 0; }

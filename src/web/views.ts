@@ -742,6 +742,13 @@ export function renderMatter(model: MatterViewModel): string {
 export interface AuthViewModel {
   mode: 'login' | 'signup';
   error?: string | undefined;
+  /**
+   * Something that went right but is not a sign-in — "check your email", from a
+   * backend that confirms addresses before it will issue a session. Distinct
+   * from `error` because rendering it in red would tell a reader their account
+   * failed to be created when it was.
+   */
+  notice?: string | undefined;
   email?: string | undefined;
   next?: string | undefined;
   sampleData: boolean;
@@ -757,6 +764,7 @@ export function renderAuth(model: AuthViewModel): string {
   <p class="count">An account exists for one reason: to keep a list of what you want to be told about —
      a property, a board, a search — so the feed can be yours rather than the whole town's.</p>
   ${model.error ? `<p class="formerror">${escapeHtml(model.error)}</p>` : ''}
+  ${model.notice ? `<p class="formnotice">${escapeHtml(model.notice)}</p>` : ''}
   <form method="post" action="${action}">
     ${model.next ? `<input type="hidden" name="next" value="${escapeHtml(model.next)}">` : ''}
     <label for="email">Email</label>

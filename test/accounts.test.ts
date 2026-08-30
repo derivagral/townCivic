@@ -3,12 +3,12 @@ import { openDb } from '../src/db/index.ts';
 import type { Db } from '../src/db/index.ts';
 import { personalFeed } from '../src/db/repo.ts';
 import { linkMatters } from '../src/pipeline/link.ts';
+import { SESSION_COOKIE, clearedCookie, readCookie, sessionCookie } from '../src/accounts/cookies.ts';
+import { validateSignup } from '../src/accounts/store.ts';
 import {
-  SESSION_COOKIE,
   addSubscription,
   authenticate,
   checkCsrf,
-  clearedCookie,
   createSession,
   createUser,
   destroySession,
@@ -16,13 +16,11 @@ import {
   isWatching,
   listSubscriptions,
   pruneSessions,
-  readCookie,
   readSession,
   removeSubscription,
   rotateFeedToken,
-  sessionCookie,
-  validateSignup,
-} from '../src/web/accounts.ts';
+  startedSession,
+} from '../src/accounts/sqlite.ts';
 
 let db: Db;
 
@@ -76,7 +74,7 @@ describe('sessions', () => {
   it('issues an opaque cookie that scripts cannot read', () => {
     const { user } = signup();
     const session = createSession(db, user!.id);
-    const cookie = sessionCookie(session, false);
+    const cookie = sessionCookie(startedSession(session), false);
 
     expect(cookie).toContain('HttpOnly');
     expect(cookie).toContain('SameSite=Lax');
@@ -88,7 +86,7 @@ describe('sessions', () => {
 
   it('marks the cookie Secure when asked, for anything served over HTTPS', () => {
     const { user } = signup();
-    expect(sessionCookie(createSession(db, user!.id), true)).toContain('Secure');
+    expect(sessionCookie(startedSession(createSession(db, user!.id)), true)).toContain('Secure');
     expect(clearedCookie(true)).toContain('Secure');
   });
 

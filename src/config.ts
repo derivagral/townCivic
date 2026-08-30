@@ -33,4 +33,30 @@ export const config = {
    * localhost works; turn it on for anything served over HTTPS.
    */
   secureCookies: process.env.TOWNCIVIC_SECURE_COOKIES === '1',
+
+  /**
+   * Where readers live: `sqlite` (the tables in `data/towncivic.db`) or
+   * `supabase` (GoTrue and Postgres at a hosted endpoint).
+   *
+   * `sqlite` by default, and deliberately: the quick start is "npm install, npm
+   * run serve" with no account to create, and a default that needed a hosted
+   * project would end that. See `src/accounts/store.ts` for what each backend
+   * can and cannot do, and `supabase/README.md` for the setup.
+   */
+  accountsBackend: process.env.TOWNCIVIC_ACCOUNTS ?? 'sqlite',
+  /** `https://<project>.supabase.co`. Read only by the supabase backend. */
+  supabaseUrl: process.env.SUPABASE_URL,
+  /**
+   * The publishable anon key — the one that is safe in a browser, and the only
+   * one the web tier ever needs. Row-level security is what keeps one reader's
+   * list out of another's, so the service role key (which bypasses it) is never
+   * read here.
+   */
+  supabaseAnonKey: process.env.SUPABASE_ANON_KEY,
+  /**
+   * HMAC key for CSRF tokens under the supabase backend, which has no sessions
+   * table to keep a per-session random value in. Required there, unused by the
+   * local backend.
+   */
+  sessionSecret: process.env.TOWNCIVIC_SESSION_SECRET,
 } as const;

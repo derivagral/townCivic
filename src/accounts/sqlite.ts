@@ -1,24 +1,36 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, scryptSync } from 'node:crypto';
 import type { Db } from '../db/index.ts';
+import { sameSecret } from './cookies.ts';
+import {
+  ALL_JURISDICTIONS,
+  validateSignup,
+  type AccountCheck,
+  type AccountStore,
+  type Identity,
+  type Reader,
+  type SignUpInput,
+  type SignUpResult,
+  type StartedSession,
+  type Subscription,
+  type SubscriptionInput,
+} from './store.ts';
 
 /**
- * Accounts, at proof-of-concept scale.
+ * Accounts in the local database, at proof-of-concept scale.
  *
- * The question this exists to answer is "what do *I* want to see" — a reader
- * following one property, one board, or one search, rather than the whole
- * town's output. That needs somewhere to keep a list per person, which needs
- * the smallest honest login.
+ * This is the code that has always been here, moved behind the port and
+ * otherwise unchanged. It stays the default because townCivic's quick start is
+ * "npm install, npm run seed, npm run serve" with no account to create and
+ * nothing to configure, and a hosted backend would quietly end that.
  *
  * "Smallest honest" means the security primitives are the real ones — scrypt
  * with a per-user salt, constant-time comparison, an opaque session cookie with
  * HttpOnly and SameSite, a per-session CSRF token on every state change — and
  * everything above them is missing: no email verification, no password reset,
- * no rate limiting, no lockout, no second factor. Those are the difference
- * between this and something that faces the internet, and they are listed in
- * the README rather than left to be discovered.
+ * no rate limiting, no lockout, no second factor. That list is what
+ * `capabilities` reports and what the Supabase backend exists to supply.
  */
 
-export const SESSION_COOKIE = 'towncivic_session';
 const SESSION_DAYS = 30;
 
 /** Deliberately slow. These are the parameters Node documents as a sane default. */
@@ -47,32 +59,11 @@ export interface SubscriptionRow {
   created_at: string;
 }
 
-/** A subscription that applies to every town, rather than to one. */
-export const ALL_JURISDICTIONS = '*';
-
-export const SUBSCRIPTION_KINDS = ['matter', 'body', 'channel', 'search'] as const;
-export type SubscriptionKind = (typeof SUBSCRIPTION_KINDS)[number];
-
-export function isSubscriptionKind(value: string): value is SubscriptionKind {
-  return (SUBSCRIPTION_KINDS as readonly string[]).includes(value);
-}
-
 const token = (bytes = 24) => randomBytes(bytes).toString('base64url');
 const nowIso = () => new Date().toISOString();
 
 function hashPassword(password: string, salt: string): string {
   return scryptSync(password, salt, SCRYPT_KEYLEN).toString('hex');
-}
-
-/**
- * Constant-time comparison.
- *
- * `timingSafeEqual` throws on a length mismatch, which would itself leak the
- * length, so both sides are hashed to a fixed width first.
- */
-function sameSecret(a: string, b: string): boolean {
-  const digest = (value: string) => createHash('sha256').update(value).digest();
-  return timingSafeEqual(digest(a), digest(b));
 }
 
 /* -------------------------------------------------------------------- users */
@@ -83,17 +74,7 @@ export interface SignupResult {
   error?: string;
 }
 
-/** Rejects only what would break: the rest is the reader's business. */
-export function validateSignup(email: string, password: string): string | null {
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) return 'That does not look like an email address.';
-  if (password.length < 10) return 'Use at least 10 characters.';
-  return null;
-}
-
-export function createUser(
-  db: Db,
-  input: { email: string; password: string; displayName?: string },
-): SignupResult {
+export function createUser(db: Db, input: SignUpInput): SignupResult {
   const problem = validateSignup(input.email, input.password);
   if (problem) return { ok: false, error: problem };
 
@@ -209,48 +190,6 @@ export function pruneSessions(db: Db): number {
 }
 
 /**
- * The `Set-Cookie` value for a session.
- *
- * `Secure` is conditional because the documented way to run this is
- * `npm run serve` on localhost, where a Secure cookie is simply never sent and
- * login would appear to silently fail. Anything reachable over HTTPS should set
- * `TOWNCIVIC_SECURE_COOKIES=1`.
- */
-export function sessionCookie(session: Session, secure: boolean): string {
-  const maxAge = Math.max(0, Math.floor((Date.parse(session.expiresAt) - Date.now()) / 1000));
-  return [
-    `${SESSION_COOKIE}=${session.id}`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    `Max-Age=${maxAge}`,
-    ...(secure ? ['Secure'] : []),
-  ].join('; ');
-}
-
-export function clearedCookie(secure: boolean): string {
-  return [
-    `${SESSION_COOKIE}=`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    'Max-Age=0',
-    ...(secure ? ['Secure'] : []),
-  ].join('; ');
-}
-
-/** Pull one cookie out of a `Cookie` header without pulling in a parser. */
-export function readCookie(header: string | undefined, name: string): string | undefined {
-  if (!header) return undefined;
-  for (const part of header.split(';')) {
-    const index = part.indexOf('=');
-    if (index === -1) continue;
-    if (part.slice(0, index).trim() === name) return part.slice(index + 1).trim();
-  }
-  return undefined;
-}
-
-/**
  * SameSite=Lax already blocks cross-site form posts in current browsers, so
  * this token is the second layer rather than the only one — and the one that
  * still holds if the site is ever served somewhere SameSite does not apply.
@@ -276,18 +215,7 @@ export function listSubscriptions(db: Db, userId: string): SubscriptionRow[] {
     .all(userId) as unknown as SubscriptionRow[];
 }
 
-export function addSubscription(
-  db: Db,
-  userId: string,
-  input: {
-    kind: SubscriptionKind;
-    value: string;
-    label: string;
-    /** The town it was followed in. Defaults to every town. */
-    jurisdiction?: string;
-    alerts?: string;
-  },
-): void {
+export function addSubscription(db: Db, userId: string, input: SubscriptionInput): void {
   db.prepare(
     `INSERT INTO subscriptions (id, user_id, jurisdiction, kind, value, label, alerts, created_at)
      VALUES (?,?,?,?,?,?,?,?)
@@ -311,7 +239,7 @@ export function removeSubscription(
   userId: string,
   kind: string,
   value: string,
-  jurisdiction?: string,
+  jurisdiction?: string | undefined,
 ): void {
   db.prepare(
     `DELETE FROM subscriptions
@@ -324,7 +252,7 @@ export function isWatching(
   userId: string,
   kind: string,
   value: string,
-  jurisdiction?: string,
+  jurisdiction?: string | undefined,
 ): boolean {
   const row = db
     .prepare(
@@ -333,4 +261,134 @@ export function isWatching(
     )
     .get(...([userId, kind, value, ...(jurisdiction ? [jurisdiction] : [])] as never[]));
   return Boolean(row);
+}
+
+/* -------------------------------------------------------------------- store */
+
+const toReader = (row: UserRow): Reader => ({
+  id: row.id,
+  email: row.email,
+  displayName: row.display_name,
+  feedToken: row.feed_token,
+});
+
+const toSubscription = (row: SubscriptionRow): Subscription => ({
+  kind: row.kind,
+  value: row.value,
+  label: row.label,
+  jurisdiction: row.jurisdiction,
+  alerts: row.alerts,
+});
+
+/**
+ * What goes in the cookie: the session id and nothing else.
+ *
+ * The id is opaque and random, so the cookie never carries the reader's id or
+ * their address — everything about who they are stays on this side of the wire.
+ */
+export const startedSession = (session: Session): StartedSession => ({
+  value: session.id,
+  maxAgeSeconds: Math.max(0, Math.floor((Date.parse(session.expiresAt) - Date.now()) / 1000)),
+});
+
+/** The local backend, behind the port. */
+export function createSqliteAccounts(db: Db): AccountStore {
+  /** Every method that acts for a reader gets the session id back in `credential`. */
+  const sessionOf = (identity: Identity): Session | null => readSession(db, identity.credential);
+
+  return {
+    kind: 'sqlite',
+
+    capabilities: {
+      emailConfirmation: false,
+      passwordReset: false,
+      rateLimiting: false,
+      // The whole reason the other backend exists.
+      survivesDatabaseReset: false,
+    },
+
+    describe() {
+      return 'local — readers live in data/towncivic.db, which stops being disposable';
+    },
+
+    async signUp(input) {
+      const result = createUser(db, input);
+      if (!result.ok || !result.user)
+        return { ok: false, error: result.error ?? 'Could not create that account.' };
+      return { ok: true, session: startedSession(createSession(db, result.user.id)) };
+    },
+
+    async signIn(email, password) {
+      const user = authenticate(db, email, password);
+      return user ? startedSession(createSession(db, user.id)) : null;
+    },
+
+    async signOut(identity) {
+      destroySession(db, identity.credential);
+    },
+
+    async resolve(cookieValue) {
+      const session = readSession(db, cookieValue);
+      if (!session) return null;
+      const user = getUser(db, session.userId);
+      if (!user) return null;
+      return { reader: toReader(user), csrfToken: session.csrfToken, credential: session.id };
+    },
+
+    verifyCsrf(identity, supplied) {
+      if (!identity) return false;
+      return checkCsrf(sessionOf(identity), supplied);
+    },
+
+    async listSubscriptions(identity) {
+      return listSubscriptions(db, identity.reader.id).map(toSubscription);
+    },
+
+    async addSubscription(identity, input) {
+      addSubscription(db, identity.reader.id, input);
+    },
+
+    async removeSubscription(identity, kind, value, jurisdiction) {
+      removeSubscription(db, identity.reader.id, kind, value, jurisdiction);
+    },
+
+    async isWatching(identity, kind, value, jurisdiction) {
+      return isWatching(db, identity.reader.id, kind, value, jurisdiction);
+    },
+
+    async feedFor(feedToken) {
+      const user = getUserByFeedToken(db, feedToken);
+      if (!user) return null;
+      return {
+        name: user.display_name || user.email.split('@')[0] || user.email,
+        subscriptions: listSubscriptions(db, user.id).map(toSubscription),
+      };
+    },
+
+    async rotateFeedToken(identity) {
+      return rotateFeedToken(db, identity.reader.id);
+    },
+
+    async check(): Promise<AccountCheck> {
+      const readers = (db.prepare('SELECT count(*) AS n FROM users').get() as { n: number }).n;
+      const live = (
+        db.prepare('SELECT count(*) AS n FROM sessions WHERE expires_at > ?').get(nowIso()) as { n: number }
+      ).n;
+      return {
+        ok: true,
+        findings: [
+          { label: 'backend', ok: true, detail: 'sqlite (the default; nothing to configure)' },
+          { label: 'readers', ok: true, detail: `${readers} account(s), ${live} live session(s)` },
+          {
+            label: 'durability',
+            ok: readers === 0,
+            detail:
+              readers === 0
+                ? 'no accounts yet, so the database is still disposable'
+                : 'deleting data/towncivic.db signs everybody out and loses their subscriptions',
+          },
+        ],
+      };
+    },
+  };
 }

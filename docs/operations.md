@@ -51,14 +51,37 @@ is the same as no red light at all.
 | `data/towncivic.db` | Everything else. Derived, and rebuildable from the documents by re-running. |
 
 Accounts are the exception: `users`, `sessions` and `subscriptions` live in the
-same SQLite file but are _not_ derived from anything. If you run accounts, the
-database stops being disposable — back it up, or accept that dropping it signs
-everybody out and loses their subscriptions.
+same SQLite file but are _not_ derived from anything. If you run accounts on the
+default backend, the database stops being disposable — back it up, or accept
+that dropping it signs everybody out and loses their subscriptions.
 
 That is also why one database holds every town rather than one file per town.
 The records are disposable and the readers are not, and a reader is a person
 rather than a town: splitting the files would mean either splitting the accounts
 or keeping a separate account database anyway.
+
+### Moving the exception out
+
+`TOWNCIVIC_ACCOUNTS=supabase` puts readers in a hosted Postgres and leaves every
+record where it is. Then there are still two pieces of state, but the second one
+is not on this machine:
+
+|                     |                                                                            |
+| ------------------- | -------------------------------------------------------------------------- |
+| `data/documents/`   | The authority. Still yours, still a volume.                                |
+| `data/towncivic.db` | Derived, and now **disposable again** — delete it and re-run the pipeline. |
+| Supabase            | Readers and subscriptions. The only thing that must be backed up.          |
+
+Setup is in [supabase/README.md](../supabase/README.md); `npm run accounts`
+reports what is configured and probes it. Two operational notes:
+
+- A signed-in request costs one round trip to resolve the session cookie.
+  Signed-out pages cost nothing, and when the hosted project is unreachable they
+  keep serving — the site degrades to signed-out rather than to a 500. That is
+  the right failure for something that is nearly all public records.
+- Supabase pauses free projects after a week of inactivity, and a paused project
+  means nobody can sign in. The records are unaffected, which makes it a quiet
+  failure — `npm run accounts` is what turns it into a loud one.
 
 ### Clearing one town
 
@@ -107,7 +130,7 @@ rebuild timelines and the map, `--scope records` to re-fetch one town,
 when the archive itself is disposable, which it is not once the town has stopped
 publishing something it used to.
 
-## Three shapes that work
+## Four shapes that work
 
 ### 1. Scheduled job, no server — what this repo does
 
@@ -166,6 +189,32 @@ container, so a long extraction cannot take the site down with it.
 
 Whatever runs it, **`data/` must be a volume.** An ephemeral filesystem means
 re-downloading the town's entire archive on every deploy, which is rude.
+
+### 4. Ephemeral web tier, hosted readers
+
+The shape the accounts port exists for. The pipeline runs where the document
+store is — (1) or (2) above — and publishes `data/towncivic.db` as a build
+artifact. The web tier is a container that carries that file read-only, holds no
+volume of its own, and keeps readers in Supabase.
+
+```bash
+TOWNCIVIC_ACCOUNTS=supabase
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_ANON_KEY=…
+TOWNCIVIC_SESSION_SECRET=…        # stable across restarts; a new one expires every open form
+TOWNCIVIC_SECURE_COOKIES=1
+TOWNCIVIC_BASE_URL=https://…
+```
+
+Gate the deploy on `npm run accounts`, which exits non-zero if the project is
+unreachable or the migrations have not been applied. Then the web tier can be
+redeployed, scaled to several instances, or thrown away and rebuilt without
+anybody being signed out, because nothing a reader owns is on its disk.
+
+What this does not buy: the pipeline still needs somewhere with a real volume,
+because `data/documents/` is the authority and no amount of hosting changes
+that. This shape moves the _web_ tier onto ephemeral infrastructure, not the
+archive.
 
 ## Being a good citizen
 

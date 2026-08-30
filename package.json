@@ -25,6 +25,7 @@
     "towns": "tsx src/cli.ts towns",
     "clear": "tsx src/cli.ts clear",
     "serve": "tsx src/cli.ts serve",
+    "accounts": "tsx src/cli.ts accounts",
     "clear-samples": "tsx src/cli.ts clear-samples",
     "dev": "tsx watch src/cli.ts serve",
     "test": "vitest run",

@@ -21,7 +21,7 @@ import { clearJurisdiction, clearOrphans } from '../src/commands/clear.ts';
 import { countEvents, facetCounts, getPlace, personalFeed, queryEvents } from '../src/db/repo.ts';
 import { geocodeMatters, placeFromCache } from '../src/pipeline/geocode.ts';
 import { linkMatters } from '../src/pipeline/link.ts';
-import { addSubscription, listSubscriptions } from '../src/web/accounts.ts';
+import { addSubscription, listSubscriptions } from '../src/accounts/sqlite.ts';
 import { extractAgendaCategories, categorySlug } from '../src/adapters/civicplus-agenda-center.ts';
 import { href, withTown } from '../src/web/views.ts';
 import type { TownView } from '../src/web/views.ts';
