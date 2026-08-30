@@ -114,3 +114,8 @@ jobs:
       # checkout. It is also the command a real deploy gates on.
       - name: Check accounts
         run: npm run accounts
+
+      # Same reasoning: the default document store needs no configuration, so
+      # this must pass on a clean checkout.
+      - name: Check documents
+        run: npm run documents

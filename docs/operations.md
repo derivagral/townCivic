@@ -60,7 +60,45 @@ The records are disposable and the readers are not, and a reader is a person
 rather than a town: splitting the files would mean either splitting the accounts
 or keeping a separate account database anyway.
 
-### Moving the exception out
+### Moving the archive out
+
+`TOWNCIVIC_DOCUMENTS=s3` puts `data/documents/` in any S3-compatible object
+store — Cloudflare R2, Tigris, Backblaze B2, MinIO, AWS. Configuration is an
+endpoint and a key pair, deliberately rather than a provider integration: the
+reason to use object storage instead of a platform's bundled add-on is that the
+bucket should outlive the decision about where the app runs.
+
+```bash
+export TOWNCIVIC_DOCUMENTS=s3
+export S3_BUCKET=towncivic
+export S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com   # omit for AWS
+export S3_REGION=auto                                            # a real region on AWS
+export S3_ACCESS_KEY_ID=…
+export S3_SECRET_ACCESS_KEY=…
+
+npm run documents                 # probe it: a real write, read and delete
+npm run documents -- --backfill   # copy an existing local archive in
+```
+
+`--backfill` reads its manifest from the database rather than by walking a
+directory, because `documents.path` and `attachments.path` already name every
+object and their `id` is the content hash. Keys are the same in both backends,
+so this is a copy rather than a migration: it is restartable, an object already
+there is skipped, and a row whose file is missing from disk is counted and
+reported rather than passed over.
+
+This is what frees the pipeline from a persistent disk. With the archive in
+object storage, `.github/workflows/refresh.yml` running in Actions is durable on
+its own instead of depending on a cache that can be evicted — and combined with
+readers in Supabase, nothing that matters lives on any machine you have to keep.
+
+Sizing, from four towns of Massachusetts municipal records: about 550 MB, of
+which 510 MB is roughly 1,850 attachment PDFs averaging 276 KB, and 40 MB is
+listing pages. R2's free tier is 10 GB. Requests are negligible in both
+directions — the pipeline writes at most a few hundred objects a day and nothing
+reads the archive at all.
+
+### Moving the readers out
 
 `TOWNCIVIC_ACCOUNTS=supabase` puts readers in a hosted Postgres and leaves every
 record where it is. Then there are still two pieces of state, but the second one
@@ -68,9 +106,13 @@ is not on this machine:
 
 |                     |                                                                            |
 | ------------------- | -------------------------------------------------------------------------- |
-| `data/documents/`   | The authority. Still yours, still a volume.                                |
+| `data/documents/`   | The authority. A volume, until `TOWNCIVIC_DOCUMENTS=s3` moves it too.      |
 | `data/towncivic.db` | Derived, and now **disposable again** — delete it and re-run the pipeline. |
 | Supabase            | Readers and subscriptions. The only thing that must be backed up.          |
+
+With both backends switched, nothing that matters is on any machine you have to
+keep: the archive is in a bucket, the readers are in Postgres, and the database
+between them is a cache the pipeline rebuilds.
 
 Setup is in [supabase/README.md](../supabase/README.md); `npm run accounts`
 reports what is configured and probes it. Two operational notes:
@@ -211,10 +253,15 @@ unreachable or the migrations have not been applied. Then the web tier can be
 redeployed, scaled to several instances, or thrown away and rebuilt without
 anybody being signed out, because nothing a reader owns is on its disk.
 
-What this does not buy: the pipeline still needs somewhere with a real volume,
-because `data/documents/` is the authority and no amount of hosting changes
-that. This shape moves the _web_ tier onto ephemeral infrastructure, not the
-archive.
+With `TOWNCIVIC_DOCUMENTS=s3` as well, the pipeline stops needing a volume too,
+and the scheduled refresh in GitHub Actions becomes the whole back end: it
+fetches, extracts, writes the archive to a bucket, and publishes the database as
+the artifact the web tier ships with. At that point there is no machine in this
+picture that anyone has to keep running.
+
+What it still does not buy is somewhere to _put_ the archive for free forever —
+object storage is cheap and durable rather than magic, and losing the bucket
+loses the one thing here that cannot be re-derived.
 
 ### Not a shape: GitHub Pages
 

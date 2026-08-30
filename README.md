@@ -141,6 +141,7 @@ npx tsx src/cli.ts <command>
 | `discover`           | Probe the CivicPlus site for boards and feeds not yet registered             |
 | `serve`              | Web UI plus Atom and JSON feeds                                              |
 | `accounts`           | Report which accounts backend is configured, and probe it                    |
+| `documents`          | Report where the archive lives, probe it, and `--backfill` it into a bucket  |
 | `seed`               | Load synthetic fixtures                                                      |
 | `towns`              | List every registered town and what the database holds for each              |
 | `sources` / `events` | Print the registry / recent records                                          |
@@ -920,6 +921,14 @@ in the wrong database would be the worst of both. The `NEXT_PUBLIC_` spellings
 of those two are read as well, since that is what the dashboard hands you.
 `TOWNCIVIC_SESSION_SECRET` is optional and is not a session store; see
 [supabase/README.md](supabase/README.md). `npm run accounts` checks all of it.
+
+`TOWNCIVIC_DOCUMENTS` chooses where the raw archive lives: `local` (default) or
+`s3`. The S3 backend reads `S3_BUCKET`, `S3_ENDPOINT`, `S3_REGION`,
+`S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY`, and works against any
+S3-compatible store rather than one provider — R2, Tigris, B2, MinIO, AWS.
+`npm run documents` probes it with a real write and read; `--backfill` copies an
+existing local archive in. See
+[docs/operations.md](docs/operations.md#moving-the-archive-out).
 
 `TOWNCIVIC_BASE_URL` is the origin the server is reachable at, used for absolute
 links in feeds. The default is right for localhost; set it once there is a public
