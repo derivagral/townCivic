@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Db } from '../db/index.ts';
 import { config } from '../config.ts';
+import { getDocuments } from '../documents/index.ts';
+import { keyFor } from '../documents/store.ts';
 import { extractPdf, looksLikePdf } from '../extract/pdf.ts';
 import type { PdfExtraction } from '../extract/pdf.ts';
 import { parseMeetingNotice, summarizeAgenda } from '../extract/meeting-notice.ts';
@@ -115,17 +117,6 @@ function selectCandidates(db: Db, options: ExtractOptions): Candidate[] {
     .all(...(params as never[]), options.limit ?? 200) as unknown as Candidate[];
 }
 
-function storeBytes(bytes: Uint8Array, extension: string): { id: string; relative: string } {
-  const id = createHash('sha256').update(bytes).digest('hex');
-  const relative = path.join('attachments', id.slice(0, 2), `${id}.${extension}`);
-  const absolute = path.join(config.docStoreDir, relative);
-  if (!fs.existsSync(absolute)) {
-    fs.mkdirSync(path.dirname(absolute), { recursive: true });
-    fs.writeFileSync(absolute, bytes);
-  }
-  return { id, relative };
-}
-
 function parseJsonArray(raw: string): string[] {
   try {
     const parsed = JSON.parse(raw);
@@ -170,7 +161,7 @@ export async function extractDocuments(db: Db, options: ExtractOptions = {}): Pr
       if (!looksLikePdf(bytes)) {
         // Not a PDF — usually the HTML view. Keep its text so search still works.
         const text = stripHtml(Buffer.from(bytes).toString('utf8'));
-        applyExtraction(db, candidate, profile, {
+        await applyExtraction(db, candidate, profile, {
           url,
           text,
           contentType,
@@ -192,7 +183,7 @@ export async function extractDocuments(db: Db, options: ExtractOptions = {}): Pr
       const extraction: PdfExtraction = await extractPdf(bytes);
       const notice = parseMeetingNotice(extraction, profile);
 
-      applyExtraction(db, candidate, profile, {
+      await applyExtraction(db, candidate, profile, {
         url,
         text: [Object.values(extraction.fields).join('\n'), extraction.text].filter(Boolean).join('\n\n'),
         contentType,
@@ -257,10 +248,21 @@ interface Applied {
  * the document knows — what the meeting is about, where it is, exactly when the
  * clerk posted it, and which properties it concerns.
  */
-function applyExtraction(db: Db, candidate: Candidate, profile: JurisdictionProfile, applied: Applied): void {
+async function applyExtraction(
+  db: Db,
+  candidate: Candidate,
+  profile: JurisdictionProfile,
+  applied: Applied,
+): Promise<void> {
   const now = new Date().toISOString();
   const extension = applied.pages > 0 ? 'pdf' : 'html';
-  const stored = storeBytes(applied.bytes, extension);
+  // `attachments/` keeps the documents a reader could open separate from the
+  // listing pages they were found on, in whichever backend holds them.
+  const stored = await getDocuments().put(
+    keyFor(createHash('sha256').update(applied.bytes).digest('hex'), extension, 'attachments/'),
+    applied.bytes,
+    applied.contentType,
+  );
 
   db.prepare(
     `INSERT INTO attachments (id, event_id, url, content_type, bytes, path, pages,
@@ -277,7 +279,7 @@ function applyExtraction(db: Db, candidate: Candidate, profile: JurisdictionProf
     applied.url,
     applied.contentType,
     applied.bytes.length,
-    stored.relative,
+    stored.key,
     applied.pages,
     applied.charsPerPage,
     applied.likelyScanned ? 1 : 0,

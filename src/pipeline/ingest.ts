@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import type { Db } from '../db/index.ts';
 import type { SourceDef } from '../types.ts';
 import { parseWithSource } from '../adapters/index.ts';
 import { normalize } from './normalize.ts';
 import { fetchSource } from '../fetch/http.ts';
-import { storeDocument } from '../fetch/store.ts';
+import { getDocuments } from '../documents/index.ts';
+import { extensionFor, keyFor } from '../documents/store.ts';
 import {
   getConditionalHeaders,
   recordFetch,
@@ -12,6 +14,8 @@ import {
   upsertEvent,
 } from '../db/repo.ts';
 import { syncSources } from '../registry/index.ts';
+
+const sha256Bytes = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 
 export interface IngestReport {
   sourceId: string;
@@ -104,7 +108,16 @@ export async function ingest(db: Db, options: IngestOptions = {}): Promise<Inges
     let documentId: string | null = null;
 
     if (result.ok && !result.notModified) {
-      const stored = storeDocument(result.body, result.contentType);
+      // The key is the content hash, so this is the same key in either
+      // backend — which is what makes `documents --backfill` a copy rather
+      // than a migration.
+      const body = new TextEncoder().encode(result.body);
+      const id = sha256Bytes(body);
+      const stored = await getDocuments().put(
+        keyFor(id, extensionFor(result.contentType)),
+        body,
+        result.contentType,
+      );
       documentId = stored.id;
       upsertDocument(db, {
         id: stored.id,
@@ -112,7 +125,7 @@ export async function ingest(db: Db, options: IngestOptions = {}): Promise<Inges
         url: result.url,
         contentType: result.contentType,
         bytes: stored.bytes,
-        path: stored.path,
+        path: stored.key,
       });
 
       try {

@@ -26,6 +26,7 @@
     "clear": "tsx src/cli.ts clear",
     "serve": "tsx src/cli.ts serve",
     "accounts": "tsx src/cli.ts accounts",
+    "documents": "tsx src/cli.ts documents",
     "clear-samples": "tsx src/cli.ts clear-samples",
     "dev": "tsx watch src/cli.ts serve",
     "test": "vitest run",

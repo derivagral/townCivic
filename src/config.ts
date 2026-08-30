@@ -81,4 +81,33 @@ export const config = {
    * other's forms. Unused by the local backend.
    */
   sessionSecret: process.env.TOWNCIVIC_SESSION_SECRET,
+
+  /**
+   * Where the raw document archive lives: `local` (a directory under
+   * `dataDir`) or `s3` (any S3-compatible object store).
+   *
+   * `local` by default, and for the same reason as everything else here: the
+   * quick start must work with no account and no credentials. The archive is
+   * the one thing in townCivic that cannot be regenerated, so an S3 backend is
+   * about durability rather than scale — see `docs/operations.md`.
+   */
+  documentsBackend: process.env.TOWNCIVIC_DOCUMENTS ?? 'local',
+  s3Bucket: process.env.S3_BUCKET,
+  /**
+   * The S3 API endpoint, without a bucket: `https://<account>.r2.cloudflarestorage.com`,
+   * `https://fly.storage.tigris.dev`, a MinIO host. Set it and addressing is
+   * path-style, which every S3-compatible store accepts; leave it unset for AWS
+   * proper, where the bucket goes in the hostname.
+   *
+   * Deliberately a plain endpoint rather than a provider name. The reason to use
+   * object storage instead of a platform's bundled add-on is that the bucket
+   * should outlive the decision about where the app runs.
+   */
+  s3Endpoint: process.env.S3_ENDPOINT,
+  /** `auto` for R2 and most compatible stores; a real region for AWS. */
+  s3Region: process.env.S3_REGION,
+  s3AccessKeyId: process.env.S3_ACCESS_KEY_ID,
+  s3SecretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
+  /** Only for temporary credentials; most setups leave this unset. */
+  s3SessionToken: process.env.S3_SESSION_TOKEN,
 } as const;
