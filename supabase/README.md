@@ -46,11 +46,32 @@ and probes the project rather than assuming.
 ### 1. A project, and its two public values
 
 Create a project at [supabase.com](https://supabase.com). From **Project
-Settings → API**, take the **Project URL** and the **anon** (publishable) key.
+Settings → API Keys**, take the **Project URL** and the **publishable** key.
 
-You will also see a **service role** key. townCivic never reads it, and you
-should not put it in the web tier's environment: it bypasses row-level security,
-which would make every policy in `migrations/` decorative.
+**Which key is which.** Supabase is part-way through renaming these, and the
+dashboard may show either generation:
+
+| Public — use this                 | Secret — never use this                 |
+| --------------------------------- | --------------------------------------- |
+| `sb_publishable_…`                | `sb_secret_…`                           |
+| legacy `anon` key (a JWT, `eyJ…`) | legacy `service_role` key (also `eyJ…`) |
+
+The publishable key **is** the anon key's replacement — same `anon` role, same
+place, safe in public. So `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` is what goes in
+`SUPABASE_ANON_KEY`, and either generation works. townCivic never reads a secret
+or service-role key at runtime: those bypass row-level security, which would
+make every policy in `migrations/` decorative.
+
+The one place the two generations differ is on the wire. A legacy `anon` key is
+a JWT and is conventionally sent in `Authorization: Bearer` as well as `apikey`;
+a publishable key is not a JWT and Supabase rejects it in an `Authorization`
+header. `src/accounts/supabase.ts` sends `apikey` always and only puts something
+in `Authorization` when it belongs there — the reader's own JWT, or a legacy key
+on its usual path. You do not have to care which you have.
+
+If you already have these set as `NEXT_PUBLIC_SUPABASE_URL` and
+`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` — which is what the dashboard hands you —
+townCivic reads those names too. No need to retype them.
 
 ### 2. Apply the migration
 
@@ -72,20 +93,52 @@ for the feed it names.
 
 ### 3. Point townCivic at it
 
+The two required values, and nothing else:
+
 ```bash
 export TOWNCIVIC_ACCOUNTS=supabase
 export SUPABASE_URL=https://<project-ref>.supabase.co
-export SUPABASE_ANON_KEY=<the anon key>
-export TOWNCIVIC_SESSION_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")
-export TOWNCIVIC_SECURE_COOKIES=1   # anything served over HTTPS
-export TOWNCIVIC_BASE_URL=https://…
+export SUPABASE_ANON_KEY=<the publishable or anon key>
 ```
 
-`TOWNCIVIC_SESSION_SECRET` is not optional here. There is no sessions table to
-keep a per-session CSRF token in, so the token is an HMAC under this key —
-see the comment on `csrfFor` in `../src/accounts/supabase.ts` for what that
-trades away. Keep it stable across restarts (a new one invalidates every
-in-flight form) and out of the repository.
+That is enough to run. The rest are for when it stops being a local experiment:
+
+```bash
+# Stops open forms expiring on every restart. See below.
+export TOWNCIVIC_SESSION_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")
+# Both of these are about being reachable over HTTPS, not about Supabase.
+export TOWNCIVIC_SECURE_COOKIES=1
+export TOWNCIVIC_BASE_URL=https://the-host-running-npm-run-serve
+```
+
+#### `TOWNCIVIC_SESSION_SECRET` is not a session store
+
+Worth being clear about, because the name invites the wrong reading. Sessions
+live in Supabase; the cookie carries the tokens. This key does one thing: the
+CSRF token on each form is an HMAC of the reader's id under it, because there is
+no sessions table left to keep a per-session random value in.
+
+So the blast radius of losing it is small and specific. **Nobody is signed out.**
+Every reader stays signed in, every subscription is untouched. The only casualty
+is a form already rendered in somebody's browser, which comes back "this form
+has expired, reload the page".
+
+Which is why it is optional: leave it unset and one is generated per process,
+with a warning saying exactly that. Set it when you want forms to survive a
+restart, or when there is more than one instance behind a load balancer — with
+each instance holding a different key, they reject each other's forms.
+
+#### `TOWNCIVIC_BASE_URL` is where the server answers
+
+Only used for absolute links: the `self` link in each Atom feed, and the
+personal-feed URL shown on `/my`. It has to be the origin the running server is
+actually reachable at, because those URLs are meant to be pasted into a feed
+reader.
+
+Locally, the default is already right — `http://localhost:8787`, or whatever
+`--port` you passed — so leave it unset. Set it only once the server has a public
+hostname, and set `TOWNCIVIC_SECURE_COOKIES=1` at the same time, since a session
+cookie without `Secure` has no business crossing the public internet.
 
 ### 4. Check it before a reader does
 

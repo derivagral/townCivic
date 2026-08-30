@@ -44,19 +44,41 @@ export const config = {
    * can and cannot do, and `supabase/README.md` for the setup.
    */
   accountsBackend: process.env.TOWNCIVIC_ACCOUNTS ?? 'sqlite',
-  /** `https://<project>.supabase.co`. Read only by the supabase backend. */
-  supabaseUrl: process.env.SUPABASE_URL,
   /**
-   * The publishable anon key — the one that is safe in a browser, and the only
-   * one the web tier ever needs. Row-level security is what keeps one reader's
-   * list out of another's, so the service role key (which bypasses it) is never
-   * read here.
+   * `https://<project-ref>.supabase.co`. Read only by the supabase backend.
+   *
+   * The `NEXT_PUBLIC_` spellings are accepted because they are what Supabase's
+   * own dashboard hands you to paste into an `.env`, so they are what people
+   * already have set. townCivic is not Next.js and does not otherwise know what
+   * that prefix means; it is here to save retyping a value that is already
+   * right.
    */
-  supabaseAnonKey: process.env.SUPABASE_ANON_KEY,
+  supabaseUrl: process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL,
+  /**
+   * The public project key — safe in a browser, and the only one the web tier
+   * ever needs. Row-level security is what keeps one reader's list out of
+   * another's, so the service role (or `sb_secret_…`) key, which bypasses it, is
+   * never read here.
+   *
+   * Either generation works: the legacy `anon` key (a JWT, `eyJ…`) or the
+   * publishable key that replaces it (`sb_publishable_…`). They are the same
+   * role; see `isLegacyJwtKey` in `accounts/supabase.ts` for the one place the
+   * difference shows.
+   */
+  supabaseAnonKey:
+    process.env.SUPABASE_ANON_KEY ??
+    process.env.SUPABASE_PUBLISHABLE_KEY ??
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
   /**
    * HMAC key for CSRF tokens under the supabase backend, which has no sessions
-   * table to keep a per-session random value in. Required there, unused by the
-   * local backend.
+   * table to keep a per-session random value in.
+   *
+   * Optional: one is generated per process when this is unset. It is not a
+   * session store — sessions live in Supabase — so a new key signs nobody out,
+   * it only expires forms already open in a browser. Set it to stop that
+   * happening on every restart, and to let several instances accept each
+   * other's forms. Unused by the local backend.
    */
   sessionSecret: process.env.TOWNCIVIC_SESSION_SECRET,
 } as const;

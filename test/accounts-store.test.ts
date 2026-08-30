@@ -294,14 +294,61 @@ describe('the supabase backend', () => {
     return { backend, store };
   };
 
-  it('refuses to start without the configuration it needs', () => {
+  it('refuses to start without the project it points at', () => {
     expect(() => createSupabaseAccounts({ url: '', anonKey: '', sessionSecret: 's' })).toThrow(
       /SUPABASE_URL/,
     );
-    // The CSRF key is not optional: there is no sessions table to hold one.
-    expect(() =>
-      createSupabaseAccounts({ url: 'https://x.test', anonKey: 'k', sessionSecret: undefined }),
-    ).toThrow(/TOWNCIVIC_SESSION_SECRET/);
+    expect(() => createSupabaseAccounts({ url: 'https://x.test', anonKey: '' })).toThrow(/PUBLISHABLE/);
+  });
+
+  it('generates a CSRF key rather than refusing to start without one', () => {
+    // Losing this key signs nobody out — sessions live in Supabase — so a
+    // missing one costs an expired form, not a configuration error.
+    const store = createSupabaseAccounts({
+      url: 'https://x.test',
+      anonKey: 'anon-key',
+      sessionSecret: undefined,
+      fetchImpl: fakeSupabase().fetch,
+    });
+    expect(store.kind).toBe('supabase');
+  });
+
+  it('sends a publishable key only as apikey, never as a bearer', async () => {
+    // A publishable key is not a JWT, and Supabase rejects one in an
+    // `Authorization` header. Signed out, there is nothing to put there at all.
+    const key = 'sb_publishable_abc123';
+    const backend = fakeSupabase({ projectKey: key });
+    const store = createSupabaseAccounts({
+      url: 'https://project.supabase.test',
+      anonKey: key,
+      sessionSecret: 'test-session-secret',
+      fetchImpl: backend.fetch,
+    });
+
+    const { identity } = await reader(store);
+    await store.feedFor(identity.reader.feedToken);
+
+    expect(backend.seenKeys()).toEqual([key]);
+    expect(backend.seenAuthorization()).toContain(null);
+    for (const header of backend.seenAuthorization()) {
+      expect(header ?? '').not.toContain(key);
+    }
+    // And the reader's own token still goes where it belongs.
+    expect(backend.seenAuthorization()).toContain(`Bearer ${identity.credential}`);
+  });
+
+  it('still sends a legacy anon key as a bearer, the way it always has', async () => {
+    const key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.legacy.anon';
+    const backend = fakeSupabase({ projectKey: key });
+    const store = createSupabaseAccounts({
+      url: 'https://project.supabase.test',
+      anonKey: key,
+      sessionSecret: 'test-session-secret',
+      fetchImpl: backend.fetch,
+    });
+
+    await reader(store);
+    expect(backend.seenAuthorization()).toContain(`Bearer ${key}`);
   });
 
   it('refreshes an expired access token and hands back a new cookie', async () => {

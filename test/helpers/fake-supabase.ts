@@ -22,7 +22,7 @@ import { randomBytes } from 'node:crypto';
  * fake that says yes to everything tests nothing.
  */
 
-const ANON_KEY = 'anon-key';
+const DEFAULT_PROJECT_KEY = 'anon-key';
 const ACCESS_TOKEN_SECONDS = 3600;
 
 interface User {
@@ -57,6 +57,12 @@ interface Session {
 export interface FakeSupabaseOptions {
   /** The project requires a confirmed address, so sign-up issues no session. */
   confirmEmail?: boolean;
+  /**
+   * The project's public key. A legacy `anon` key (`eyJ…`) or a publishable one
+   * (`sb_publishable_…`) — which of the two decides whether the client is
+   * expected to put it in an `Authorization` header at all.
+   */
+  projectKey?: string;
 }
 
 export interface FakeSupabase {
@@ -69,6 +75,8 @@ export interface FakeSupabase {
   fail(status: number): void;
   /** Every distinct `apikey` header the client has sent. */
   seenKeys(): string[];
+  /** Every distinct `Authorization` header the client has sent, `null` for none. */
+  seenAuthorization(): (string | null)[];
 }
 
 /**
@@ -96,7 +104,9 @@ export function fakeSupabase(options: FakeSupabaseOptions = {}): FakeSupabase {
   const sessions = new Map<string, Session>(); // access token -> session
   const refreshIndex = new Map<string, string>(); // refresh token -> access token
 
+  const projectKey = options.projectKey ?? DEFAULT_PROJECT_KEY;
   const apiKeys = new Set<string>();
+  const authorizations = new Set<string | null>();
   let failStatus: number | null = null;
   let schema = true;
 
@@ -124,11 +134,21 @@ export function fakeSupabase(options: FakeSupabaseOptions = {}): FakeSupabase {
     };
   }
 
-  /** Null for the anonymous role, a user id for a valid bearer, undefined for a bad one. */
+  /**
+   * Null for the anonymous role, a user id for a valid bearer, undefined for a
+   * bad one.
+   *
+   * The `apikey` header is what names the project and its default role, so a
+   * request carrying only that is `anon` — which is how an unauthenticated call
+   * with a publishable key arrives, since a publishable key is not a JWT and
+   * does not go in `Authorization` at all. A legacy `anon` key sent as a bearer
+   * is the older spelling of the same thing.
+   */
   function roleOf(request: Request): string | null | undefined {
-    const header = request.headers.get('authorization') ?? '';
+    const header = request.headers.get('authorization');
+    if (!header) return null;
     const bearer = header.replace(/^Bearer\s+/i, '');
-    if (bearer === ANON_KEY) return null;
+    if (bearer === projectKey) return null;
     const session = sessions.get(bearer);
     if (!session) return undefined;
     if (session.expiresAt <= now()) return undefined;
@@ -347,6 +367,7 @@ export function fakeSupabase(options: FakeSupabaseOptions = {}): FakeSupabase {
       const request = new Request(input as Request, init);
       const key = request.headers.get('apikey');
       if (key) apiKeys.add(key);
+      authorizations.add(request.headers.get('authorization'));
 
       if (failStatus === 0) throw new TypeError('fetch failed');
       if (failStatus !== null) return json({ message: `upstream said ${failStatus}` }, failStatus);
@@ -365,6 +386,9 @@ export function fakeSupabase(options: FakeSupabaseOptions = {}): FakeSupabase {
     },
     seenKeys() {
       return [...apiKeys].sort();
+    },
+    seenAuthorization() {
+      return [...authorizations];
     },
   };
 }

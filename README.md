@@ -912,11 +912,20 @@ sent and signing in would appear to fail silently. Turn it on for anything
 served over HTTPS.
 
 `TOWNCIVIC_ACCOUNTS` chooses where readers live: `sqlite` (default) or
-`supabase`. The hosted backend also reads `SUPABASE_URL`, `SUPABASE_ANON_KEY`
-and `TOWNCIVIC_SESSION_SECRET`, and refuses to start without all three rather
-than falling back — a fat-fingered variable that quietly served a working site
-with readers in the wrong database would be the worst of both. `npm run accounts`
-checks it. See [supabase/README.md](supabase/README.md).
+`supabase`. The hosted backend needs `SUPABASE_URL` and `SUPABASE_ANON_KEY` —
+Supabase's newer `sb_publishable_…` key goes in the latter, it is the same role
+under a new name — and refuses to start without them rather than falling back,
+because a fat-fingered variable that quietly served a working site with readers
+in the wrong database would be the worst of both. The `NEXT_PUBLIC_` spellings
+of those two are read as well, since that is what the dashboard hands you.
+`TOWNCIVIC_SESSION_SECRET` is optional and is not a session store; see
+[supabase/README.md](supabase/README.md). `npm run accounts` checks all of it.
+
+`TOWNCIVIC_BASE_URL` is the origin the server is reachable at, used for absolute
+links in feeds. The default is right for localhost; set it once there is a public
+hostname, together with `TOWNCIVIC_SECURE_COOKIES=1`. Note that this is a Node
+server rather than a static site, so it does not run on GitHub Pages — see
+[docs/operations.md](docs/operations.md#not-a-shape-github-pages).
 
 The crawler identifies itself honestly, waits between requests to the same host,
 and sends conditional requests. `HTTPS_PROXY` / `HTTP_PROXY` are honoured — Node's

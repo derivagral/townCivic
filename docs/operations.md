@@ -216,6 +216,33 @@ because `data/documents/` is the authority and no amount of hosting changes
 that. This shape moves the _web_ tier onto ephemeral infrastructure, not the
 archive.
 
+### Not a shape: GitHub Pages
+
+Worth stating plainly, because moving accounts out makes it look closer than it
+is. **townCivic cannot run on GitHub Pages.** Pages serves static files; `serve`
+is a Node process — Hono routes, `POST /login`, server-set cookies, and
+`node:sqlite` reading a real file. There is no configuration that bridges that,
+and hosting accounts elsewhere does not help, because it is the server that is
+missing rather than the database.
+
+Two things that _would_ work, and are different from each other:
+
+- **Somewhere that runs Node.** A small VM, Fly, Render, Railway — shape (2) or
+  (4) above. `node:sqlite` needs Node ≥ 22.5 and a filesystem, which also rules
+  out the edge runtimes (Workers, Deno Deploy) even though Hono itself runs on
+  them. Set `TOWNCIVIC_BASE_URL` to that hostname.
+- **A static build that is not this one.** Records rendered to flat HTML at
+  build time, with the browser talking to Supabase directly using the publishable
+  key and RLS. That is the canonical static-site-plus-hosted-backend shape and it
+  is entirely coherent — but it is a second front end, not a deploy target for
+  this one: no server-rendered pages, no server-side session cookie, and the
+  filter and search paths would have to be rebuilt against PostgREST instead of
+  FTS5.
+
+Publishing a subfolder to Pages alongside a real server elsewhere is fine — but
+`TOWNCIVIC_BASE_URL` must point at the server, not at the Pages site, or every
+feed's `self` link and every personal-feed URL resolves to a 404.
+
 ## Being a good citizen
 
 The defaults exist for a reason and the schedule is part of them:

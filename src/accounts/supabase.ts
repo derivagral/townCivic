@@ -139,8 +139,9 @@ function eq(column: string, value: string): string {
 
 export interface SupabaseAccountsOptions {
   url?: string | undefined;
+  /** The `anon` or publishable key — the public one. Never the service role key. */
   anonKey?: string | undefined;
-  /** HMAC key for CSRF tokens. Required: there is no session table to hold one. */
+  /** HMAC key for CSRF tokens. Generated per process when absent. */
   sessionSecret?: string | undefined;
   /** Injected by tests. Production uses the global, proxy-aware `fetch`. */
   fetchImpl?: typeof fetch;
@@ -154,23 +155,56 @@ interface Response_<T> {
   error: string | null;
 }
 
+/**
+ * Whether a project key is a legacy `anon` key rather than a new publishable one.
+ *
+ * The two are the same role and go in the same place, but they differ in one way
+ * that matters here. A legacy `anon` key is a JWT, and every Supabase example
+ * ever written sends it in `Authorization: Bearer` as well as `apikey`. A
+ * publishable key (`sb_publishable_…`) is not a JWT, and Supabase's migration
+ * guidance is explicit that it does not belong in an `Authorization` header at
+ * all — the point of the redesign being that a misplaced key now fails loudly
+ * instead of working silently.
+ *
+ * So: `apikey` always, and the `Authorization` header only when there is
+ * something that actually belongs there — the reader's own JWT, or a legacy key
+ * on the path it has always taken.
+ */
+const isLegacyJwtKey = (key: string): boolean => key.startsWith('eyJ');
+
 export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): AccountStore {
   const baseUrl = (options.url ?? config.supabaseUrl ?? '').replace(/\/+$/, '');
-  const anonKey = options.anonKey ?? config.supabaseAnonKey;
-  const sessionSecret = options.sessionSecret ?? config.sessionSecret;
+  const projectKey = options.anonKey ?? config.supabaseAnonKey;
   const doFetch = options.fetchImpl ?? fetch;
 
-  if (!baseUrl || !anonKey) {
+  if (!baseUrl || !projectKey) {
     throw new AccountsUnavailableError(
-      'The supabase accounts backend needs SUPABASE_URL and SUPABASE_ANON_KEY. ' +
-        'Unset TOWNCIVIC_ACCOUNTS to fall back to the local backend.',
+      'The supabase accounts backend needs SUPABASE_URL and SUPABASE_ANON_KEY (or ' +
+        'SUPABASE_PUBLISHABLE_KEY). Unset TOWNCIVIC_ACCOUNTS to fall back to the local backend.',
     );
   }
-  if (!sessionSecret) {
-    throw new AccountsUnavailableError(
-      'The supabase accounts backend needs TOWNCIVIC_SESSION_SECRET — there is no session table to ' +
-        'hold a CSRF token, so it is derived from this key. Generate one with ' +
-        "`node -e \"console.log(require('crypto').randomBytes(32).toString('base64url'))\"`.",
+
+  /**
+   * The key CSRF tokens are derived from.
+   *
+   * Generated per process when nothing supplies one, rather than refused. It is
+   * not a session store and losing it does not sign anybody out — sessions live
+   * in Supabase, in the cookie. All a new key costs is that forms already
+   * rendered in somebody's browser come back "this form has expired, reload the
+   * page", which is a fine trade for one less thing to configure.
+   *
+   * Set `TOWNCIVIC_SESSION_SECRET` when that matters: across restarts, and
+   * across instances if there is ever more than one behind a load balancer,
+   * where an unset key means each instance rejects the others' forms.
+   */
+  const generated = !options.sessionSecret && !config.sessionSecret;
+  const sessionSecret =
+    options.sessionSecret ?? config.sessionSecret ?? randomBytes(32).toString('base64url');
+  if (generated) {
+    console.warn(
+      'TOWNCIVIC_SESSION_SECRET is not set; using a new one for this process. ' +
+        'Readers stay signed in across a restart, but any form left open in a browser ' +
+        'will need reloading. Set it to keep them working.',
     );
   }
 
@@ -178,12 +212,14 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
     path: string,
     init: { method?: string; token?: string; body?: unknown; headers?: Record<string, string> } = {},
   ): Promise<Response_<T>> {
+    // The reader's own token when signed in. Postgres reads `auth.uid()` out of
+    // it, and that is what every policy in supabase/migrations/ is written
+    // against; signed out, there is nothing to say and the header is omitted.
+    const bearer = init.token ?? (isLegacyJwtKey(projectKey!) ? projectKey : undefined);
+
     const headers: Record<string, string> = {
-      apikey: anonKey!,
-      // The anon key when signed out, the reader's own token when signed in.
-      // Postgres reads `auth.uid()` out of the latter; that is what every
-      // policy in supabase/migrations/ is written against.
-      authorization: `Bearer ${init.token ?? anonKey}`,
+      apikey: projectKey!,
+      ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
       accept: 'application/json',
       ...(init.body === undefined ? {} : { 'content-type': 'application/json' }),
       ...init.headers,
@@ -257,7 +293,7 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
    * cookie is the first.
    */
   const csrfFor = (readerId: string): string =>
-    createHmac('sha256', sessionSecret!).update(`csrf:${readerId}`).digest('base64url');
+    createHmac('sha256', sessionSecret).update(`csrf:${readerId}`).digest('base64url');
 
   /** Exchange a refresh token for a new pair. */
   async function refresh(envelope: Envelope): Promise<Envelope | null> {
@@ -557,8 +593,12 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
 
       findings.push({
         label: 'csrf key',
+        // Not a failure either way: a generated key works, it just does not
+        // survive a restart or reach a second instance.
         ok: true,
-        detail: 'TOWNCIVIC_SESSION_SECRET is set',
+        detail: generated
+          ? 'TOWNCIVIC_SESSION_SECRET is unset — generated per process, so open forms expire on restart'
+          : 'TOWNCIVIC_SESSION_SECRET is set',
       });
 
       return { ok: findings.every((finding) => finding.ok), findings };
