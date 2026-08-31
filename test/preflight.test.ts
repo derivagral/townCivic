@@ -106,22 +106,28 @@ describe('the preflight workflow', () => {
     expect(yaml).toMatch(/^\s*workflow_dispatch:/m);
   });
 
-  it('passes through every variable the checks actually read', () => {
-    // A missing key here does not fail the job — it silently probes the local
-    // defaults and reports a cheerful green, which is the worst outcome
-    // available for a command whose entire purpose is to catch that.
-    for (const key of [
-      'S3_BUCKET',
-      'S3_ENDPOINT',
-      'S3_REGION',
-      'S3_ACCESS_KEY_ID',
-      'S3_SECRET_ACCESS_KEY',
-      'SUPABASE_URL',
-      'SUPABASE_ANON_KEY',
-      'TOWNCIVIC_BASE_URL',
-      'TOWNCIVIC_SECURE_COOKIES',
-    ]) {
-      expect(yaml, `preflight.yml does not pass ${key}`).toMatch(new RegExp(`^\\s*${key}:`, 'm'));
+  it('passes through every key the sync script sends', () => {
+    // Derived from the script rather than restated, because restating it is
+    // exactly how this broke: the script pushed TOWNCIVIC_SESSION_SECRET and
+    // the workflow never read it, so a value that was correctly configured
+    // still reported as unset. A missing key does not fail the job — it
+    // silently probes the local defaults and reports a cheerful green, which is
+    // the worst outcome available for a command whose whole purpose is to catch
+    // that.
+    const script = fs.readFileSync(path.join(ROOT, 'scripts', 'sync-github-config.sh'), 'utf8');
+    const listed = (name: string) =>
+      (new RegExp(`${name}=\\(([^)]*)\\)`).exec(script)?.[1] ?? '')
+        .split('\n')
+        .map((line) => line.replace(/#.*/, '').trim())
+        .filter(Boolean);
+
+    const keys = [...listed('VARIABLES'), ...listed('SECRETS')];
+    expect(keys.length).toBeGreaterThan(6);
+
+    for (const key of keys) {
+      expect(yaml, `preflight.yml does not pass ${key}, which the sync script sets`).toMatch(
+        new RegExp(`^\\s*${key}:`, 'm'),
+      );
     }
   });
 

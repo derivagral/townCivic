@@ -133,7 +133,18 @@ jobs:
         if: always()
         run: npm run status -- --jurisdiction all
 
-      - name: Publish the database
+      # To the bucket, at a key the deploy can name. The artifact below stays
+      # for humans — it expires, and fetching it needs a GitHub token — but this
+      # is what `deploy.yml` actually pulls.
+      #
+      # Only on success: a refresh that failed part-way leaves a database nobody
+      # should ship, and overwriting the last good one with it would take the
+      # rollback away too.
+      - name: Publish the database to the object store
+        if: success() && vars.S3_BUCKET != ''
+        run: npm run --silent snapshot
+
+      - name: Publish the database as an artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:

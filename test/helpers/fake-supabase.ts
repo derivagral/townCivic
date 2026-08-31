@@ -71,6 +71,8 @@ export interface FakeSupabase {
   revokeEverything(): void;
   /** Pretend the migrations were never run. */
   dropSchema(): void;
+  /** Serve `readers` to anonymous callers, the way a project with RLS off would. */
+  disableRls(): void;
   /** Answer every request with this status; 0 means the connection fails. */
   fail(status: number): void;
   /** Every distinct `apikey` header the client has sent. */
@@ -109,6 +111,7 @@ export function fakeSupabase(options: FakeSupabaseOptions = {}): FakeSupabase {
   const authorizations = new Set<string | null>();
   let failStatus: number | null = null;
   let schema = true;
+  let rlsDisabled = false;
 
   // The same clock the client reads, so a test that moves time forward expires
   // the token on both sides. A skew of its own here would let the fake believe
@@ -289,9 +292,17 @@ export function fakeSupabase(options: FakeSupabaseOptions = {}): FakeSupabase {
       if (!schema) return missingTable('readers');
       const role = roleOf(request);
       if (role === undefined) return json({ message: 'JWT expired', code: 'PGRST301' }, 401);
-      // The anon role sees no rows: that is the policy, and it is what
-      // `accounts check` relies on to distinguish "RLS is on" from "no table".
-      if (role === null) return json([]);
+      // `anon` holds no grant on `readers` — see supabase/migrations/ — so
+      // Postgres refuses at the table-grant check, before RLS is consulted.
+      // That is a 42501, not an empty array, and telling the two apart is the
+      // whole job of the schema probe.
+      if (role === null) {
+        if (rlsDisabled)
+          return json([
+            { user_id: 'leaked', email: 'leaked@example.com', display_name: null, feed_token: 'leaked' },
+          ]);
+        return json({ code: '42501', message: 'permission denied for table readers' }, 401);
+      }
 
       if (request.method === 'PATCH') {
         const row = readerFor(role);
@@ -380,6 +391,9 @@ export function fakeSupabase(options: FakeSupabaseOptions = {}): FakeSupabase {
     },
     dropSchema() {
       schema = false;
+    },
+    disableRls() {
+      rlsDisabled = true;
     },
     fail(status) {
       failStatus = status;

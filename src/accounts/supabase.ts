@@ -559,21 +559,42 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
           : (settings.error ?? 'unreachable'),
       });
 
-      // As `anon`, with the migration applied and RLS on, this is a 200 and an
-      // empty array: the table exists and no policy lets an anonymous caller
-      // see a row. A 404 means the migration has not been run.
+      // Ask, as `anon`, for a row nobody anonymous should ever see. There are
+      // four possible answers and only two of them are good:
+      //
+      //   permission denied  the table is there and `anon` has no grant on it,
+      //                      which is what supabase/migrations/ sets up. Postgres
+      //                      checks the table grant *before* it consults RLS, so
+      //                      this is the strongest of the passes.
+      //   200, no rows       also fine: the grant exists but a policy filtered
+      //                      everything out.
+      //   200, with rows     row-level security is off, or a policy is wrong.
+      //                      The one answer that must be loud.
+      //   404                the migration has not been run.
+      //
+      // The first version of this check treated anything non-2xx as a failure,
+      // which called a correctly locked-down project broken — and, worse, called
+      // a project with RLS *disabled* healthy.
       const readers = await request<ReaderRow[]>(`${REST}/readers?select=user_id&limit=1`);
+      const denied =
+        readers.status === 401 || readers.status === 403 || /permission denied/i.test(readers.error ?? '');
+      const rows = Array.isArray(readers.body) ? readers.body.length : 0;
+
       findings.push({
         label: 'schema',
-        ok: readers.ok,
-        detail: readers.ok
-          ? 'public.readers exists and is readable by nobody anonymously — RLS is on'
-          : // Only a 404 means "the table is not there". Saying "run the
-            // migrations" at a project that is simply unreachable sends an
-            // operator to fix the one thing that is not wrong.
-            readers.status === 404
-            ? `${readers.error} — run the migrations in supabase/migrations/`
-            : (readers.error ?? 'unreachable'),
+        ok: denied || (readers.ok && rows === 0),
+        detail: denied
+          ? 'public.readers exists and anon has no grant on it — locked down as intended'
+          : readers.ok && rows === 0
+            ? 'public.readers exists and returns nothing anonymously — RLS is filtering'
+            : readers.ok
+              ? 'public.readers returned rows to an anonymous caller — row-level security is OFF'
+              : readers.status === 404
+                ? `${readers.error} — run the migrations in supabase/migrations/`
+                : // Not a 404, so do not send anyone to re-run migrations that
+                  // are probably fine; this is more likely the project being
+                  // unreachable.
+                  (readers.error ?? 'unreachable'),
       });
 
       // A token nobody holds. The function should answer, and answer nothing.

@@ -1,0 +1,113 @@
+name: Deploy
+
+# Ship the web tier, with the current database baked into the image.
+#
+# Runs after every successful Refresh, because the database *is* part of the
+# image: new records only reach readers when a new image does. Also dispatchable,
+# for shipping a code change between refreshes.
+#
+# The order matters and is the reason this is its own job rather than a step at
+# the end of Refresh. Preflight first — if the bucket or the Supabase project is
+# not answering, a deploy would produce a machine that starts, serves every
+# public record perfectly, and cannot sign anybody in. Failing here costs
+# nothing; finding out afterwards costs an outage nobody can see.
+#
+# `FLY_API_TOKEN` is a deploy credential, which is a meaningfully larger grant
+# than the R2 key beside it. It is here and not in `refresh.yml` so that the job
+# which reaches out to town websites twice a day cannot also redeploy the site.
+#
+# Nothing here runs on `pull_request`.
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ['Refresh']
+    types: [completed]
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: bake the database and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # A refresh that failed leaves a database nobody should ship. Manual
+    # dispatch skips this, which is what makes it useful for a code-only deploy.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    env:
+      TOWNCIVIC_DOCUMENTS: ${{ vars.S3_BUCKET && 's3' || 'local' }}
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+      S3_ENDPOINT: ${{ vars.S3_ENDPOINT }}
+      S3_REGION: ${{ vars.S3_REGION || 'auto' }}
+      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+
+      TOWNCIVIC_ACCOUNTS: ${{ vars.SUPABASE_URL && 'supabase' || 'sqlite' }}
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      TOWNCIVIC_BASE_URL: ${{ vars.TOWNCIVIC_BASE_URL }}
+      TOWNCIVIC_SECURE_COOKIES: ${{ vars.TOWNCIVIC_SECURE_COOKIES }}
+      TOWNCIVIC_SESSION_SECRET: ${{ secrets.TOWNCIVIC_SESSION_SECRET }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # Everything the deployed machine will depend on, asked before the deploy
+      # rather than after. This is the whole reason `preflight` exists.
+      - name: Preflight
+        run: npm run preflight
+
+      # Puts `data/towncivic.db` in the build context. Verifies the published
+      # checksum before installing it, so a truncated transfer fails here rather
+      # than shipping a corrupt database.
+      - name: Fetch the published database
+        run: npm run --silent snapshot -- --pull
+
+      - name: Report what is being baked
+        run: |
+          ls -lh data/towncivic.db
+          npm run --silent status -- --jurisdiction all || true
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # Fly's rolling strategy replaces machines one at a time and waits for the
+      # health check, so a database that will not open never reaches readers —
+      # the rollout stops and the old machines keep serving.
+      - name: Deploy
+        run: flyctl deploy --remote-only --wait-timeout 300
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      # Ask the deployed machine what it thinks it is running. `/healthz` names
+      # the accounts backend, which is the one thing a deploy can get wrong
+      # invisibly — the site looks identical either way.
+      - name: Verify the deployment
+        run: |
+          set -e
+          URL="${TOWNCIVIC_BASE_URL:-https://towncivic.fly.dev}"
+          for i in $(seq 1 20); do
+            curl -fsS "$URL/healthz" >/tmp/health.json 2>/dev/null && break
+            sleep 3
+          done
+          cat /tmp/health.json
+          echo
+          grep -q '"accounts":"supabase"' /tmp/health.json \
+            || { echo "deployed machine is not using the hosted accounts backend"; exit 1; }
+          curl -fsS "$URL/" >/dev/null && echo "index OK"
+          curl -fsS "$URL/feeds/all.atom" >/dev/null && echo "feed OK"

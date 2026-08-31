@@ -138,13 +138,19 @@ export function createS3Documents(options: S3DocumentOptions = {}): DocumentStor
       return `s3 — ${describeTarget}, so the pipeline needs no persistent disk`;
     },
 
-    async put(key, body, contentType) {
+    async put(key, body, contentType, options) {
       const id = createHash('sha256').update(body).digest('hex');
 
       // Content-addressed, so an object that is already there is byte-identical
       // and re-uploading it would only cost a request. One HEAD is cheaper than
       // one PUT of a 300 KB PDF, and most runs re-see documents they have.
-      if (await this.has(key)) return { id, key, bytes: body.byteLength, isNew: false };
+      //
+      // Skipped for `overwrite`, which is the published database: it lives at a
+      // fixed key whose content changes, so the shortcut would pin it forever
+      // at the first version anybody uploaded.
+      if (!options?.overwrite && (await this.has(key))) {
+        return { id, key, bytes: body.byteLength, isNew: false };
+      }
 
       const response = await send('PUT', key, body, {
         'content-type': contentType ?? contentTypeFor(key),

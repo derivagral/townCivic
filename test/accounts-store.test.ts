@@ -434,3 +434,55 @@ describe('the supabase backend', () => {
     expect(backend.seenKeys()).toEqual(['anon-key']);
   });
 });
+
+/* ------------------------------------------------------ what the probe means */
+
+describe('the schema probe reads Postgres correctly', () => {
+  const build = () => {
+    const backend = fakeSupabase();
+    const store = createSupabaseAccounts({
+      url: 'https://project.supabase.test',
+      anonKey: 'anon-key',
+      sessionSecret: 'test-session-secret',
+      fetchImpl: backend.fetch,
+    });
+    return { backend, store };
+  };
+
+  it('treats "permission denied" as the pass it is', async () => {
+    // `anon` holds no grant on `readers`, so Postgres refuses at the table-grant
+    // check — before RLS is even consulted. That is the strongest possible
+    // answer, and the first version of this check called it a failure and told
+    // a correctly configured operator to re-run their migrations.
+    const { store } = build();
+    const report = await store.check();
+    const schema = report.findings.find((f) => f.label === 'schema');
+
+    expect(schema?.ok).toBe(true);
+    expect(schema?.detail).toMatch(/locked down as intended/);
+    expect(report.ok).toBe(true);
+  });
+
+  it('is loud when row-level security is off', async () => {
+    // The answer that must never read as healthy: rows handed to an anonymous
+    // caller. The old check reported this as ok, which is exactly backwards —
+    // it is the one outcome the probe exists to catch.
+    const { backend, store } = build();
+    backend.disableRls();
+
+    const report = await store.check();
+    const schema = report.findings.find((f) => f.label === 'schema');
+    expect(schema?.ok).toBe(false);
+    expect(schema?.detail).toMatch(/row-level security is OFF/i);
+    expect(report.ok).toBe(false);
+  });
+
+  it('still sends you to the migrations when the table is missing', async () => {
+    const { backend, store } = build();
+    backend.dropSchema();
+
+    const schema = (await store.check()).findings.find((f) => f.label === 'schema');
+    expect(schema?.ok).toBe(false);
+    expect(schema?.detail).toMatch(/migrations/);
+  });
+});

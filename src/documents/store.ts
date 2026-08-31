@@ -49,9 +49,21 @@ export interface DocumentStore {
    * Store bytes under a content-addressed key.
    *
    * Idempotent by construction: the key is derived from the content, so writing
-   * the same document twice is a no-op that reports `isNew: false`.
+   * the same document twice is a no-op that reports `isNew: false`. Skipping is
+   * safe *because* of the addressing — the object already there is byte-identical
+   * by definition.
+   *
+   * `overwrite` is for the one key that breaks that rule. The published database
+   * lives at a fixed name so a deploy can ask for it without being told which
+   * version to want, which means its content changes under a constant key and
+   * the skip would freeze it at whatever was published first.
    */
-  put(key: string, body: Uint8Array, contentType: string | null): Promise<StoredObject>;
+  put(
+    key: string,
+    body: Uint8Array,
+    contentType: string | null,
+    options?: { overwrite?: boolean },
+  ): Promise<StoredObject>;
   /** Whether this key is already stored. */
   has(key: string): Promise<boolean>;
   /**

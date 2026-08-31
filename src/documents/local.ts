@@ -26,10 +26,10 @@ export function createLocalDocuments(dir = config.docStoreDir): DocumentStore {
       return `local — ${dir}, which has to be a volume that survives a deploy`;
     },
 
-    async put(key, body, _contentType) {
+    async put(key, body, _contentType, options) {
       const file = absolute(key);
       const existed = fs.existsSync(file);
-      if (!existed) {
+      if (!existed || options?.overwrite) {
         fs.mkdirSync(path.dirname(file), { recursive: true });
         fs.writeFileSync(file, body);
       }

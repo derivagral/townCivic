@@ -402,6 +402,57 @@ What it still does not buy is somewhere to _put_ the archive for free forever �
 object storage is cheap and durable rather than magic, and losing the bucket
 loses the one thing here that cannot be re-derived.
 
+### Fly, concretely
+
+`Dockerfile`, `fly.toml` and `.github/workflows/deploy.yml` are the whole of it.
+
+```bash
+fly apps create towncivic          # once
+./scripts/setup-fly.sh             # dry run; --apply to send the credentials
+npm run snapshot                   # publish the database the deploy will bake
+gh workflow run Deploy
+```
+
+**The database is baked into the image**, and that is the decision the files
+encode. At 24 MB for four towns it is a trivial layer, the file is read-only at
+serve time, and baking makes starting unconditional: a machine that boots while
+the bucket is unreachable still serves, a few hours stale. Downloading at boot
+would buy fresher data per restart and pay for it by putting a network call on
+the path to serving anything at all.
+
+It also makes the image the unit. A rollback returns matching code _and_ data,
+and a database that will not open fails its health check mid-rollout while the
+old machines keep serving.
+
+The cost is that new data needs a deploy, which is why `deploy.yml` runs after
+every successful Refresh. Revisit around a few hundred megabytes: past that the
+image is slow to push and `snapshot --pull` at boot becomes the better trade —
+keeping a baked copy as the floor, so booting still cannot fail.
+
+`snapshot` is what carries the file between them. The pipeline pushes it to a
+fixed key in the same bucket; the deploy pulls it and verifies the checksum
+before installing. A stable key rather than a content-addressed one, because the
+deploy has to be able to name it without being told which version to want.
+
+Three things the deploy does in order, and the order is the point:
+
+1. **Preflight.** If the bucket or the Supabase project is not answering, a
+   deploy would produce a machine that starts, passes its health check, serves
+   every public record, and cannot sign anybody in. Failing here costs nothing.
+2. **Pull and bake.** A missing database fails the build rather than shipping an
+   image that comes up healthy and holds nothing.
+3. **Verify.** `/healthz` names the accounts backend, so a machine that came up
+   against the wrong configuration is caught by the deploy rather than by a
+   reader.
+
+`FLY_API_TOKEN` is a deploy credential, a meaningfully larger grant than the R2
+key beside it, and it lives only in this workflow — the job that reaches out to
+town websites twice a day cannot also redeploy the site.
+
+There is no volume, which is the payoff for everything before it: the archive is
+in a bucket, the readers are in Supabase, and the database is in the image, so a
+machine holds nothing anybody would miss.
+
 ### Not a shape: GitHub Pages
 
 Worth stating plainly, because moving accounts out makes it look closer than it

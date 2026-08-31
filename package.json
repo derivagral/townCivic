@@ -28,6 +28,7 @@
     "accounts": "tsx src/cli.ts accounts",
     "documents": "tsx src/cli.ts documents",
     "preflight": "tsx src/cli.ts preflight",
+    "snapshot": "tsx src/cli.ts snapshot",
     "clear-samples": "tsx src/cli.ts clear-samples",
     "dev": "tsx watch src/cli.ts serve",
     "test": "vitest run",
