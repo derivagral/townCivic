@@ -68,6 +68,7 @@ jobs:
       # signing in silently does nothing.
       TOWNCIVIC_BASE_URL: ${{ vars.TOWNCIVIC_BASE_URL }}
       TOWNCIVIC_SECURE_COOKIES: ${{ vars.TOWNCIVIC_SECURE_COOKIES }}
+      TOWNCIVIC_SESSION_SECRET: ${{ secrets.TOWNCIVIC_SESSION_SECRET }}
 
     steps:
       - uses: actions/checkout@v5
@@ -86,29 +87,10 @@ jobs:
 
       # Runs even on failure, so the summary explains a red run without anyone
       # opening the log. `--json` is the same report the human format prints.
+      # `--silent` matters: without it npm prints its own two-line banner to
+      # stdout ahead of the JSON, and whatever reads the file chokes on a `>`.
       - name: Summarize
         if: always()
         run: |
-          npm run preflight -- --json > /tmp/preflight.json || true
-          {
-            echo "### Preflight"
-            echo
-            echo '| Subsystem | Backend | Ready |'
-            echo '| --- | --- | --- |'
-            node -e '
-              const r = require("/tmp/preflight.json");
-              const row = (name, backend, ok) =>
-                console.log(`| ${name} | \`${backend}\` | ${ok ? "yes" : "**no**"} |`);
-              row("documents", r.documents.backend, r.documents.ok);
-              row("accounts", r.accounts.backend, r.accounts.ok);
-              row("settings", "local", r.settings.ok);
-              console.log("");
-              for (const [section, part] of Object.entries(r)) {
-                if (!part || !part.findings) continue;
-                for (const f of part.findings) {
-                  if (f.ok) continue;
-                  console.log(`- **${section} / ${f.label}** — ${f.detail}`);
-                }
-              }
-            '
-          } >> "$GITHUB_STEP_SUMMARY"
+          npm run --silent preflight -- --json > /tmp/preflight.json 2>/tmp/preflight.err || true
+          node scripts/preflight-summary.mjs /tmp/preflight.json >> "$GITHUB_STEP_SUMMARY"

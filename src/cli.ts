@@ -28,6 +28,7 @@ import { CLEAR_SCOPES, clearJurisdiction, clearOrphans, isClearScope } from './c
 import { checkAccounts, formatAccounts } from './commands/accounts.ts';
 import { backfillDocuments, checkDocuments, formatDocuments } from './commands/documents.ts';
 import { formatPreflight, preflight } from './commands/preflight.ts';
+import { formatSnapshot, pullSnapshot, pushSnapshot } from './commands/snapshot.ts';
 import { createAccounts } from './accounts/index.ts';
 import { createApp } from './web/server.ts';
 import { countEvents, listJurisdictionRows, queryEvents } from './db/repo.ts';
@@ -51,6 +52,7 @@ Commands
   accounts             Report which accounts backend is configured, and probe it
   documents            Report where the document archive lives, probe it, and copy it
   preflight            Probe every external dependency at once; exit 1 if any is not ready
+  snapshot             Publish the built database to the object store, or --pull it back
   towns                List every registered town and what the database holds for it
   sources              Print the source registry
   events               Print recent records as JSON
@@ -72,6 +74,7 @@ Options
   --scope <what>       For \`clear\`: ${CLEAR_SCOPES.join(' | ')} (default: derived)
   --orphans            For \`clear\`: every town in the database the registry has dropped
   --backfill           For \`documents\`: copy the local archive into the configured store
+  --pull               For \`snapshot\`: download the published database instead of publishing
 
 Towns
   ${listJurisdictions().join(', ')}
@@ -101,6 +104,7 @@ const { values, positionals } = parseArgs({
     scope: { type: 'string' },
     orphans: { type: 'boolean', default: false },
     backfill: { type: 'boolean', default: false },
+    pull: { type: 'boolean', default: false },
     help: { type: 'boolean', default: false },
   },
 });
@@ -704,6 +708,19 @@ async function main(): Promise<number> {
       // Non-zero on a problem, so a deploy can gate on this rather than finding
       // out when somebody tries to sign in.
       return report.ok ? 0 : 1;
+    }
+
+    case 'snapshot': {
+      // Deliberately does not open the database: `--pull` replaces the file
+      // underneath, and holding a handle to what you are about to overwrite is
+      // how you get a half-migrated database on the other side.
+      const report = values.pull ? await pullSnapshot() : await pushSnapshot();
+      if (values.json) {
+        console.log(JSON.stringify(report, null, 2));
+        return 0;
+      }
+      console.log(formatSnapshot(report, dim));
+      return 0;
     }
 
     case 'preflight': {

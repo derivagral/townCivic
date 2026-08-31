@@ -1,0 +1,40 @@
+# What never needs to reach the builder.
+#
+# The line that matters is `data/documents`. That directory is the raw archive —
+# 553 MB across four towns and growing — and without this file every `fly deploy`
+# would upload all of it to a remote builder to produce an image that never
+# reads a byte of it. The archive lives in a bucket precisely so that it does
+# not travel with the code.
+#
+# `data/towncivic.db` is deliberately *not* excluded: that one is the point.
+
+node_modules
+.git
+.github
+
+# Development-only. `seed` is the only thing that reads fixtures, and a
+# deployment that needs synthetic sample data has a bigger problem.
+test
+fixtures
+docs
+supabase
+scripts
+
+# The raw archive. Everything else under data/ is small; this is not.
+data/documents
+
+# SQLite's sidecar files describe transactions against a database that is about
+# to be replaced by a baked copy. Shipping them would be shipping a lie.
+data/*-wal
+data/*-shm
+data/*.db-wal
+data/*.db-shm
+
+# Never. `fly secrets` is how configuration reaches the machine.
+.env
+.env.*
+!.env.example
+
+*.log
+.DS_Store
+coverage
