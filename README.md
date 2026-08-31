@@ -901,6 +901,11 @@ every agenda, bid and notice in them is made up. See `fixtures/README.md`.
 
 ### Configuration
 
+**[`.env.example`](.env.example) lists every variable in one place**, with the
+R2 and Supabase values annotated. townCivic does not load `.env` itself — export
+them, or use whatever your host provides — so that config arrives one way
+everywhere.
+
 All optional, all environment variables: `TOWNCIVIC_DATA_DIR`, `TOWNCIVIC_DB`,
 `PORT`, `TOWNCIVIC_BASE_URL`, `TOWNCIVIC_USER_AGENT`, `TOWNCIVIC_TIMEOUT_MS`,
 `TOWNCIVIC_HOST_DELAY_MS`, `TOWNCIVIC_MAX_RETRIES`, `TOWNCIVIC_JURISDICTION`,

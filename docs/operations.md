@@ -98,6 +98,98 @@ listing pages. R2's free tier is 10 GB. Requests are negligible in both
 directions — the pipeline writes at most a few hundred objects a day and nothing
 reads the archive at all.
 
+#### Setting up a bucket, end to end
+
+Cloudflare R2, because it is the one with a 10 GB free tier and no egress
+charge. Any S3-compatible store works the same way; only the endpoint changes.
+
+**1. A bucket, and the endpoint.** Create a bucket in the R2 dashboard. Take the
+**account ID** from the R2 overview page — the S3 endpoint is
+`https://<account-id>.r2.cloudflarestorage.com`, and the region is the literal
+string `auto`.
+
+**2. A key pair — not a Cloudflare API token.** In R2, **Manage API tokens →
+Create API token**, scoped to _Object Read & Write_ on that one bucket. What
+comes back is an **Access Key ID** and a **Secret Access Key**, and the secret is
+shown once.
+
+This is the step with a trap in it. Cloudflare also issues _API tokens_, which
+are bearer tokens for Cloudflare's own REST API and look like the obvious thing
+to reach for. The S3 protocol cannot use one: it signs each request with a key
+pair, so `CF_API_TOKEN` has nowhere to go. townCivic never sends a bearer token
+to a bucket.
+
+**3. Point at it and prove it.**
+
+```bash
+export TOWNCIVIC_DOCUMENTS=s3
+export S3_BUCKET=towncivic
+export S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+export S3_REGION=auto
+export S3_ACCESS_KEY_ID=…
+export S3_SECRET_ACCESS_KEY=…
+
+npm run documents
+```
+
+That writes, reads back and deletes a probe object, which is the only check that
+proves the credentials, the signature, the region and the bucket policy are all
+right _at once_. It exits non-zero if any of them is not.
+
+**4. Move the archive you already have.**
+
+```bash
+npm run documents -- --backfill
+```
+
+Run this **from wherever the archive actually is** — your laptop, most likely.
+Nothing else has a copy: a fresh Actions runner has an empty `data/`, so the
+scheduled job cannot do this for you. About 550 MB and a few thousand requests,
+comfortably inside R2's free tier, and safe to interrupt and re-run.
+
+`.env.example` lists every variable in one place.
+
+#### On a schedule, in GitHub Actions
+
+`.github/workflows/refresh.yml` reads the bucket configuration from the
+repository's own settings, so once these are set the twice-daily run stores
+straight to R2 with no further edits.
+
+Under **Settings → Secrets and variables → Actions**:
+
+| Where     | Name                   | Value                                           |
+| --------- | ---------------------- | ----------------------------------------------- |
+| Variables | `S3_BUCKET`            | `towncivic`                                     |
+| Variables | `S3_ENDPOINT`          | `https://<account-id>.r2.cloudflarestorage.com` |
+| Variables | `S3_REGION`            | `auto`                                          |
+| Secrets   | `S3_ACCESS_KEY_ID`     | the R2 access key id                            |
+| Secrets   | `S3_SECRET_ACCESS_KEY` | the R2 secret                                   |
+
+Variables rather than secrets for the first three on purpose: they are not
+credentials, and a masked bucket name turns a configuration mistake into an
+unreadable log. The key pair is the only part worth hiding.
+
+`TOWNCIVIC_DOCUMENTS` is derived rather than set — the workflow selects `s3`
+when `S3_BUCKET` is present and `local` otherwise, so a fork with none of this
+configured still runs, and a half-finished setup fails loudly at the probe
+instead of silently writing the archive to a disk that is about to vanish.
+
+Two things deliberately not here:
+
+- **No Supabase.** The pipeline never reads a user. Readers are a serve-time
+  dependency, so nothing about accounts belongs in this job.
+- **Nothing in `ci.yml`.** That workflow runs on `pull_request`; this one runs
+  only on a schedule and on manual dispatch, which is what keeps the credentials
+  out of reach of anything triggered by a branch or a fork.
+
+Run it by hand once — **Actions → Refresh → Run workflow** — and read the
+"Check the document store" step. It fails before the first request to any town,
+so a wrong key costs nobody else anything.
+
+After that the Actions cache is a performance optimization rather than the place
+the archive lives. Losing it means the towns get asked for everything again,
+which is slow and impolite; it no longer means anything is gone.
+
 ### Moving the readers out
 
 `TOWNCIVIC_ACCOUNTS=supabase` puts readers in a hosted Postgres and leaves every
