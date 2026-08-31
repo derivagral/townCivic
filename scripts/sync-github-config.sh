@@ -136,6 +136,8 @@ echo
 if [ "$APPLY" -eq 1 ]; then
   echo "Done. $planned value(s) written."
   echo "Now run it: gh workflow run Preflight   (or Actions → Preflight → Run workflow)"
+  echo "  If that says the workflow does not exist, preflight.yml is not on the"
+  echo "  default branch yet — workflow_dispatch is registered from there only."
 else
   echo "Dry run; nothing written. $planned value(s) would be set."
   echo "Re-run with --apply to write them."

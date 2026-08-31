@@ -160,6 +160,14 @@ npm run preflight                        # both dependencies, one exit code
 gh workflow run Preflight                # prove it from up there
 ```
 
+`gh workflow run Preflight` answers `could not find any workflows named
+Preflight` until `preflight.yml` is on the **default branch**. That is GitHub,
+not a typo: `workflow_dispatch` workflows are registered from the default branch
+only, so a workflow that exists solely on a feature branch cannot be dispatched —
+not even by naming the branch. Merge first, then dispatch. Secrets and variables
+are repository-level and can be set at any time, so the sync script works before
+the merge.
+
 `preflight` asks the question an operator actually has, which is "can I deploy",
 rather than "is the bucket reachable". It runs the archive check and the accounts
 check, adds the two serve-time settings that are only wrong _in combination_ —
