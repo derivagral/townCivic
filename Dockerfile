@@ -25,13 +25,20 @@ FROM node:22-slim AS base
 WORKDIR /app
 ENV NODE_ENV=production
 
-# `npm ci` without `--omit=dev` on purpose: this project runs TypeScript directly
-# through `tsx`, which is a devDependency, so pruning it would leave an image
-# that cannot start. There is no build step to prune *to* — the source is what
-# runs, which is also what makes a stack trace in production point at a real
-# line of this repository.
+# `--include=dev` on purpose: this project runs TypeScript directly through
+# `tsx`, which is a devDependency, so pruning it leaves an image that cannot
+# start. There is no build step to prune *to* — the source is what runs, which
+# is also what makes a stack trace in production point at a real line of this
+# repository.
+#
+# The flag has to be explicit because `ENV NODE_ENV=production` above means
+# `npm ci` omits devDependencies on its own, with no flag and no warning. This
+# file said "without `--omit=dev` on purpose" for exactly that reason and was
+# wrong: npm was pruning tsx anyway, `npx` was silently downloading it from the
+# registry at container start, and the machines were running a version the
+# lockfile does not pin.
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+RUN npm ci --include=dev --no-audit --no-fund
 
 COPY src ./src
 COPY tsconfig.json ./
@@ -55,6 +62,13 @@ COPY data/towncivic.db ./data/towncivic.db
 ENV PORT=8080
 EXPOSE 8080
 
-# Not `npm start`: npm sits between the signal and the process, so a SIGTERM
-# from Fly reaches the wrapper and the server never hears about the shutdown.
-CMD ["npx", "tsx", "src/cli.ts", "serve"]
+# Neither `npm start` nor `npx`, and for the same reason twice over.
+#
+# Both put a process between Fly's SIGTERM and the server, which then never
+# hears about the shutdown. And `npx` will reach for the network: handed a
+# package the image does not have, it fetches it from the registry rather than
+# failing, which is how tsx came to be downloaded on every boot. `node` with
+# the installed loader can only use what `npm ci` put there — so a missing
+# dependency is an immediate crash on a machine that has not taken traffic yet,
+# instead of a slow start that depends on npm being reachable.
+CMD ["node", "--import", "tsx", "src/cli.ts", "serve"]
