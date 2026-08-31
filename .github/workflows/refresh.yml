@@ -10,11 +10,25 @@ name: Refresh
 # delay in `fetch/http.ts` is what keeps several towns in one run from becoming
 # a burst at any one of them.
 #
-# The database is a cache, not a source of truth: the raw document store is the
-# authority, and everything else can be rebuilt from it. So this restores the
-# previous run's database, updates it, and publishes it as an artifact. Nothing
-# is committed back to the repository — a binary that changes twice a day does
-# not belong in git history.
+# Where the state goes, now that there are two kinds of it:
+#
+#   the archive     `TOWNCIVIC_DOCUMENTS=s3` puts every raw document in a
+#                   bucket. This is the part that cannot be regenerated — once
+#                   a town takes a document down, the bucket holds the only
+#                   copy — and it is the reason this job no longer depends on
+#                   the Actions cache surviving.
+#   the database    still the Actions cache, and still only a cache. Losing it
+#                   costs a re-fetch rather than an archive: `ingest` loses its
+#                   stored ETags and `extract` loses the record of what it has
+#                   already opened, so the towns get asked for everything
+#                   again. Slow and impolite, not destructive. Worth keeping,
+#                   not worth depending on.
+#
+# Nothing is committed back to the repository — a binary that changes twice a
+# day does not belong in git history.
+#
+# Accounts are deliberately absent. The pipeline never reads a user, so no
+# Supabase configuration belongs in this job; that is a serve-time dependency.
 
 on:
   schedule:
@@ -41,6 +55,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
+    # Only the object store. `refresh.yml` runs on a schedule and on manual
+    # dispatch, never on `pull_request`, so these are not reachable from a fork
+    # — which is what keeps them out of `ci.yml`, where every contributor's
+    # branch runs.
+    #
+    # Unset them and the job still works: `TOWNCIVIC_DOCUMENTS` falls back to
+    # `local`, and the archive lives and dies with the Actions cache.
+    env:
+      TOWNCIVIC_DOCUMENTS: ${{ vars.S3_BUCKET && 's3' || 'local' }}
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+      S3_ENDPOINT: ${{ vars.S3_ENDPOINT }}
+      S3_REGION: ${{ vars.S3_REGION || 'auto' }}
+      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+
     steps:
       - uses: actions/checkout@v5
 
@@ -50,6 +79,13 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # Fail before the first request rather than after. If the bucket is
+      # misconfigured, every `put` in `ingest` throws — but only after the
+      # towns have already been asked for pages we then cannot store. The
+      # probe is one write, read and delete against a key nothing else uses.
+      - name: Check the document store
+        run: npm run documents
 
       # Restoring the previous database is what makes this incremental:
       # conditional GETs cost the town nothing for pages that have not changed,

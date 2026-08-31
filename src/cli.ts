@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import './util/quiet.ts';
+import './util/env.ts';
 import { parseArgs } from 'node:util';
 import { serve } from '@hono/node-server';
 import { config } from './config.ts';
@@ -25,6 +26,8 @@ import { fetchBoundary } from './commands/boundary.ts';
 import { seed, clearSampleData, hasSampleData } from './commands/seed.ts';
 import { CLEAR_SCOPES, clearJurisdiction, clearOrphans, isClearScope } from './commands/clear.ts';
 import { checkAccounts, formatAccounts } from './commands/accounts.ts';
+import { backfillDocuments, checkDocuments, formatDocuments } from './commands/documents.ts';
+import { formatPreflight, preflight } from './commands/preflight.ts';
 import { createAccounts } from './accounts/index.ts';
 import { createApp } from './web/server.ts';
 import { countEvents, listJurisdictionRows, queryEvents } from './db/repo.ts';
@@ -46,6 +49,8 @@ Commands
   discover             Probe the CivicPlus site for boards and feeds not yet registered
   serve                Run the web UI and the Atom / JSON feeds
   accounts             Report which accounts backend is configured, and probe it
+  documents            Report where the document archive lives, probe it, and copy it
+  preflight            Probe every external dependency at once; exit 1 if any is not ready
   towns                List every registered town and what the database holds for it
   sources              Print the source registry
   events               Print recent records as JSON
@@ -66,6 +71,7 @@ Options
   --provider <name>    Interpreter for \`interpret\`: ${PROVIDERS.join(' | ')} (default: rules)
   --scope <what>       For \`clear\`: ${CLEAR_SCOPES.join(' | ')} (default: derived)
   --orphans            For \`clear\`: every town in the database the registry has dropped
+  --backfill           For \`documents\`: copy the local archive into the configured store
 
 Towns
   ${listJurisdictions().join(', ')}
@@ -94,6 +100,7 @@ const { values, positionals } = parseArgs({
     provider: { type: 'string' },
     scope: { type: 'string' },
     orphans: { type: 'boolean', default: false },
+    backfill: { type: 'boolean', default: false },
     help: { type: 'boolean', default: false },
   },
 });
@@ -697,6 +704,85 @@ async function main(): Promise<number> {
       // Non-zero on a problem, so a deploy can gate on this rather than finding
       // out when somebody tries to sign in.
       return report.ok ? 0 : 1;
+    }
+
+    case 'preflight': {
+      const report = await preflight(getDb());
+      if (values.json) {
+        console.log(JSON.stringify(report, null, 2));
+        return report.ok ? 0 : 1;
+      }
+      console.log(formatPreflight(report, dim));
+      console.log(
+        report.ok
+          ? '\n[32mReady.[0m Every configured dependency answered.'
+          : '\n[31mNot ready.[0m Fix the failures above; each one is configuration rather than code.',
+      );
+      return report.ok ? 0 : 1;
+    }
+
+    case 'documents': {
+      const report = await checkDocuments();
+      if (values.json && !values.backfill) {
+        console.log(JSON.stringify(report, null, 2));
+        return report.ok ? 0 : 1;
+      }
+      console.log(formatDocuments(report, dim));
+
+      if (!values.backfill) {
+        // Only suggest a backfill into a store that just proved it can hold
+        // something. Telling somebody to copy 500 MB into an endpoint that did
+        // not answer is the least useful next step available.
+        console.log(
+          dim(
+            report.backend === 'local'
+              ? '\nSet TOWNCIVIC_DOCUMENTS=s3 to move the archive off this disk — see docs/operations.md.'
+              : report.ok
+                ? '\nRun with --backfill to copy an existing local archive into it.'
+                : '\nA failure above is configuration, not code. docs/operations.md has the setup.',
+          ),
+        );
+        return report.ok ? 0 : 1;
+      }
+
+      // Refuse to copy into a store that has not proved it can hold anything.
+      // The archive is the one thing here that cannot be regenerated, and a
+      // backfill that silently wrote nowhere would be the worst way to learn it.
+      if (!report.ok) {
+        console.error('\n[31mNot backfilling: the destination did not pass its own check.[0m');
+        return 1;
+      }
+
+      const db = getDb();
+      console.log(dim(`\nCopying the local archive into ${report.backend}…`));
+      const moved = await backfillDocuments(db, {
+        ...(values.limit ? { limit: Number(values.limit) } : {}),
+        dryRun: values['dry-run'],
+        onProgress: (done, total, key) => {
+          if (done % 25 === 0 || done === total) {
+            process.stdout.write(`\r  ${String(done).padStart(5)}/${total}  ${dim(key.slice(0, 48))}   `);
+          }
+        },
+      });
+      process.stdout.write('\n');
+
+      console.log(
+        `\n  ${moved.uploaded} copied · ${moved.present} already there · ` +
+          `${moved.missing} missing locally · ${moved.failed.length} failed · ` +
+          `${(moved.bytes / 1024 / 1024).toFixed(0)} MB`,
+      );
+      for (const failure of moved.failed.slice(0, 10)) {
+        console.error(`  [31m${failure.key}[0m ${dim(failure.error)}`);
+      }
+      if (moved.missing) {
+        console.log(
+          dim('  "missing locally" is a row the database knows about with no file on disk to copy.'),
+        );
+      }
+      if (values['dry-run']) {
+        console.log(dim('\n  Dry run; nothing uploaded. Drop --dry-run to do it.'));
+      }
+      return moved.failed.length ? 1 : 0;
     }
 
     case 'serve': {

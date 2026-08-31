@@ -141,6 +141,8 @@ npx tsx src/cli.ts <command>
 | `discover`           | Probe the CivicPlus site for boards and feeds not yet registered             |
 | `serve`              | Web UI plus Atom and JSON feeds                                              |
 | `accounts`           | Report which accounts backend is configured, and probe it                    |
+| `documents`          | Report where the archive lives, probe it, and `--backfill` it into a bucket  |
+| `preflight`          | Probe every external dependency at once; exits non-zero if any is not ready  |
 | `seed`               | Load synthetic fixtures                                                      |
 | `towns`              | List every registered town and what the database holds for each              |
 | `sources` / `events` | Print the registry / recent records                                          |
@@ -900,6 +902,13 @@ every agenda, bid and notice in them is made up. See `fixtures/README.md`.
 
 ### Configuration
 
+**[`.env.example`](.env.example) lists every variable in one place**, with the
+R2 and Supabase values annotated. Copy it to `.env` and the CLI loads it on
+startup — no `export`, no `source`. (Do not `source .env`: that sets shell
+variables, which child processes never see, so `echo` shows the value and the
+command does not.) A real environment variable always wins over the file, so a
+deployment's own configuration cannot be shadowed by a stray working copy.
+
 All optional, all environment variables: `TOWNCIVIC_DATA_DIR`, `TOWNCIVIC_DB`,
 `PORT`, `TOWNCIVIC_BASE_URL`, `TOWNCIVIC_USER_AGENT`, `TOWNCIVIC_TIMEOUT_MS`,
 `TOWNCIVIC_HOST_DELAY_MS`, `TOWNCIVIC_MAX_RETRIES`, `TOWNCIVIC_JURISDICTION`,
@@ -920,6 +929,14 @@ in the wrong database would be the worst of both. The `NEXT_PUBLIC_` spellings
 of those two are read as well, since that is what the dashboard hands you.
 `TOWNCIVIC_SESSION_SECRET` is optional and is not a session store; see
 [supabase/README.md](supabase/README.md). `npm run accounts` checks all of it.
+
+`TOWNCIVIC_DOCUMENTS` chooses where the raw archive lives: `local` (default) or
+`s3`. The S3 backend reads `S3_BUCKET`, `S3_ENDPOINT`, `S3_REGION`,
+`S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY`, and works against any
+S3-compatible store rather than one provider — R2, Tigris, B2, MinIO, AWS.
+`npm run documents` probes it with a real write and read; `--backfill` copies an
+existing local archive in. See
+[docs/operations.md](docs/operations.md#moving-the-archive-out).
 
 `TOWNCIVIC_BASE_URL` is the origin the server is reachable at, used for absolute
 links in feeds. The default is right for localhost; set it once there is a public

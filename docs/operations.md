@@ -60,7 +60,184 @@ The records are disposable and the readers are not, and a reader is a person
 rather than a town: splitting the files would mean either splitting the accounts
 or keeping a separate account database anyway.
 
-### Moving the exception out
+### Moving the archive out
+
+`TOWNCIVIC_DOCUMENTS=s3` puts `data/documents/` in any S3-compatible object
+store — Cloudflare R2, Tigris, Backblaze B2, MinIO, AWS. Configuration is an
+endpoint and a key pair, deliberately rather than a provider integration: the
+reason to use object storage instead of a platform's bundled add-on is that the
+bucket should outlive the decision about where the app runs.
+
+```bash
+export TOWNCIVIC_DOCUMENTS=s3
+export S3_BUCKET=towncivic
+export S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com   # omit for AWS
+export S3_REGION=auto                                            # a real region on AWS
+export S3_ACCESS_KEY_ID=…
+export S3_SECRET_ACCESS_KEY=…
+
+npm run documents                 # probe it: a real write, read and delete
+npm run documents -- --backfill   # copy an existing local archive in
+```
+
+`--backfill` reads its manifest from the database rather than by walking a
+directory, because `documents.path` and `attachments.path` already name every
+object and their `id` is the content hash. Keys are the same in both backends,
+so this is a copy rather than a migration: it is restartable, an object already
+there is skipped, and a row whose file is missing from disk is counted and
+reported rather than passed over.
+
+This is what frees the pipeline from a persistent disk. With the archive in
+object storage, `.github/workflows/refresh.yml` running in Actions is durable on
+its own instead of depending on a cache that can be evicted — and combined with
+readers in Supabase, nothing that matters lives on any machine you have to keep.
+
+Sizing, from four towns of Massachusetts municipal records: about 550 MB, of
+which 510 MB is roughly 1,850 attachment PDFs averaging 276 KB, and 40 MB is
+listing pages. R2's free tier is 10 GB. Requests are negligible in both
+directions — the pipeline writes at most a few hundred objects a day and nothing
+reads the archive at all.
+
+#### Setting up a bucket, end to end
+
+Cloudflare R2, because it is the one with a 10 GB free tier and no egress
+charge. Any S3-compatible store works the same way; only the endpoint changes.
+
+**1. A bucket, and the endpoint.** Create a bucket in the R2 dashboard. Take the
+**account ID** from the R2 overview page — the S3 endpoint is
+`https://<account-id>.r2.cloudflarestorage.com`, and the region is the literal
+string `auto`.
+
+**2. A key pair — not a Cloudflare API token.** In R2, **Manage API tokens →
+Create API token**, scoped to _Object Read & Write_ on that one bucket. What
+comes back is an **Access Key ID** and a **Secret Access Key**, and the secret is
+shown once.
+
+This is the step with a trap in it. Cloudflare also issues _API tokens_, which
+are bearer tokens for Cloudflare's own REST API and look like the obvious thing
+to reach for. The S3 protocol cannot use one: it signs each request with a key
+pair, so `CF_API_TOKEN` has nowhere to go. townCivic never sends a bearer token
+to a bucket.
+
+**3. Point at it and prove it.**
+
+```bash
+export TOWNCIVIC_DOCUMENTS=s3
+export S3_BUCKET=towncivic
+export S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+export S3_REGION=auto
+export S3_ACCESS_KEY_ID=…
+export S3_SECRET_ACCESS_KEY=…
+
+npm run documents
+```
+
+That writes, reads back and deletes a probe object, which is the only check that
+proves the credentials, the signature, the region and the bucket policy are all
+right _at once_. It exits non-zero if any of them is not.
+
+**4. Move the archive you already have.**
+
+```bash
+npm run documents -- --backfill
+```
+
+Run this **from wherever the archive actually is** — your laptop, most likely.
+Nothing else has a copy: a fresh Actions runner has an empty `data/`, so the
+scheduled job cannot do this for you. About 550 MB and a few thousand requests,
+comfortably inside R2's free tier, and safe to interrupt and re-run.
+
+`.env.example` lists every variable in one place.
+
+#### Doing all of it from the cloud
+
+Two commands and a workflow, so the operational loop does not live in a shell.
+
+```bash
+npm run preflight                        # both dependencies, one exit code
+./scripts/sync-github-config.sh          # show what would go to Actions
+./scripts/sync-github-config.sh --apply  # send it
+gh workflow run Preflight                # prove it from up there
+```
+
+`gh workflow run Preflight` answers `could not find any workflows named
+Preflight` until `preflight.yml` is on the **default branch**. That is GitHub,
+not a typo: `workflow_dispatch` workflows are registered from the default branch
+only, so a workflow that exists solely on a feature branch cannot be dispatched —
+not even by naming the branch. Merge first, then dispatch. Secrets and variables
+are repository-level and can be set at any time, so the sync script works before
+the merge.
+
+`preflight` asks the question an operator actually has, which is "can I deploy",
+rather than "is the bucket reachable". It runs the archive check and the accounts
+check, adds the two serve-time settings that are only wrong _in combination_ —
+a `Secure` cookie over plain HTTP is never sent, so signing in silently does
+nothing — and exits non-zero if anything is not ready.
+
+`scripts/sync-github-config.sh` copies a working `.env` into the repository's
+Actions configuration, so the values are not retyped into a web form. It follows
+one rule, which is also the rule the workflows follow:
+
+> **The locator is a variable. The credential is a secret.**
+
+A bucket name, an endpoint, a project URL: not credentials, and masking them
+turns a configuration mistake into an unreadable log. Keys are secrets. Anything
+not on its allowlist is left alone and reported, because a `.env` is a working
+file and uploading it wholesale is how a credential ends up somewhere nobody
+meant to put it. Dry run by default; no secret value is ever printed, only its
+length, which is enough to spot a truncated paste.
+
+`.github/workflows/preflight.yml` then runs the same command on a schedule and
+on demand. Running it _there_ is the point: it proves what Actions can reach
+with the secrets Actions holds, which is the thing that has to be true. A green
+run on a laptop only ever proved that laptop's `.env` was right.
+
+Weekly, because the failures it catches are all silent — a rotated key, a
+deleted bucket, a Supabase project paused for inactivity. None of them affect a
+single public record, so nothing else would notice.
+
+#### On a schedule, in GitHub Actions
+
+`.github/workflows/refresh.yml` reads the bucket configuration from the
+repository's own settings, so once these are set the twice-daily run stores
+straight to R2 with no further edits.
+
+Under **Settings → Secrets and variables → Actions**:
+
+| Where     | Name                   | Value                                           |
+| --------- | ---------------------- | ----------------------------------------------- |
+| Variables | `S3_BUCKET`            | `towncivic`                                     |
+| Variables | `S3_ENDPOINT`          | `https://<account-id>.r2.cloudflarestorage.com` |
+| Variables | `S3_REGION`            | `auto`                                          |
+| Secrets   | `S3_ACCESS_KEY_ID`     | the R2 access key id                            |
+| Secrets   | `S3_SECRET_ACCESS_KEY` | the R2 secret                                   |
+
+Variables rather than secrets for the first three on purpose: they are not
+credentials, and a masked bucket name turns a configuration mistake into an
+unreadable log. The key pair is the only part worth hiding.
+
+`TOWNCIVIC_DOCUMENTS` is derived rather than set — the workflow selects `s3`
+when `S3_BUCKET` is present and `local` otherwise, so a fork with none of this
+configured still runs, and a half-finished setup fails loudly at the probe
+instead of silently writing the archive to a disk that is about to vanish.
+
+Two things deliberately not here:
+
+- **No Supabase.** The pipeline never reads a user. Readers are a serve-time
+  dependency, so nothing about accounts belongs in this job.
+- **Nothing in `ci.yml`.** That workflow runs on `pull_request`; this one runs
+  only on a schedule and on manual dispatch, which is what keeps the credentials
+  out of reach of anything triggered by a branch or a fork.
+
+Run it by hand once — **Actions → Refresh → Run workflow** — and read the
+"Check the document store" step. It fails before the first request to any town,
+so a wrong key costs nobody else anything.
+
+After that the Actions cache is a performance optimization rather than the place
+the archive lives. Losing it means the towns get asked for everything again,
+which is slow and impolite; it no longer means anything is gone.
+
+### Moving the readers out
 
 `TOWNCIVIC_ACCOUNTS=supabase` puts readers in a hosted Postgres and leaves every
 record where it is. Then there are still two pieces of state, but the second one
@@ -68,9 +245,13 @@ is not on this machine:
 
 |                     |                                                                            |
 | ------------------- | -------------------------------------------------------------------------- |
-| `data/documents/`   | The authority. Still yours, still a volume.                                |
+| `data/documents/`   | The authority. A volume, until `TOWNCIVIC_DOCUMENTS=s3` moves it too.      |
 | `data/towncivic.db` | Derived, and now **disposable again** — delete it and re-run the pipeline. |
 | Supabase            | Readers and subscriptions. The only thing that must be backed up.          |
+
+With both backends switched, nothing that matters is on any machine you have to
+keep: the archive is in a bucket, the readers are in Postgres, and the database
+between them is a cache the pipeline rebuilds.
 
 Setup is in [supabase/README.md](../supabase/README.md); `npm run accounts`
 reports what is configured and probes it. Two operational notes:
@@ -211,10 +392,15 @@ unreachable or the migrations have not been applied. Then the web tier can be
 redeployed, scaled to several instances, or thrown away and rebuilt without
 anybody being signed out, because nothing a reader owns is on its disk.
 
-What this does not buy: the pipeline still needs somewhere with a real volume,
-because `data/documents/` is the authority and no amount of hosting changes
-that. This shape moves the _web_ tier onto ephemeral infrastructure, not the
-archive.
+With `TOWNCIVIC_DOCUMENTS=s3` as well, the pipeline stops needing a volume too,
+and the scheduled refresh in GitHub Actions becomes the whole back end: it
+fetches, extracts, writes the archive to a bucket, and publishes the database as
+the artifact the web tier ships with. At that point there is no machine in this
+picture that anyone has to keep running.
+
+What it still does not buy is somewhere to _put_ the archive for free forever —
+object storage is cheap and durable rather than magic, and losing the bucket
+loses the one thing here that cannot be re-derived.
 
 ### Not a shape: GitHub Pages
 
