@@ -407,11 +407,38 @@ loses the one thing here that cannot be re-derived.
 `Dockerfile`, `fly.toml` and `.github/workflows/deploy.yml` are the whole of it.
 
 ```bash
-fly apps create towncivic          # once
-./scripts/setup-fly.sh             # dry run; --apply to send the credentials
-npm run snapshot                   # publish the database the deploy will bake
-gh workflow run Deploy
+fly apps create towncivic          # once — NOT `fly launch`, see below
+./scripts/setup-fly.sh --apply     # the credentials (dry run without --apply)
+npm run snapshot                   # publish the database, from wherever it is
+./scripts/deploy-fly.sh            # preflight, pull, deploy, verify
 ```
+
+Three things that bite in that order, all of them once:
+
+**`fly launch` rewrites `fly.toml`.** It generates its own and discards this one,
+comments and all. `fly apps create` makes the app and leaves the file alone.
+App names are global, so if `towncivic` is taken, pick another and change
+`TOWNCIVIC_BASE_URL` to match — a test pins those two together for `.fly.dev`
+hostnames, because a mismatch is invisible until every Atom feed advertises a
+self-link that resolves nowhere.
+
+**`data/` is gitignored, so a fresh clone has no database.** Deploying from a
+branch rather than a working copy fails at the `COPY`:
+
+```
+failed to compute cache key: "/data/towncivic.db": not found
+```
+
+That failure is deliberate — an image without a database comes up healthy and
+serves an empty archive — but the message is Docker's and says none of that. The
+fix is ordering: publish a snapshot once (`npm run snapshot`, from wherever the
+pipeline actually ran), then let `deploy-fly.sh` or `deploy.yml` pull it into the
+build context. Neither can invent one.
+
+**flyctl versions disagree about `fly.toml`.** `auto_stop_machines` was a bool
+before it accepted `"stop"` / `"suspend"` / `"off"`, and an older flyctl rejects
+the string outright. This file uses the bool, which every version reads. If some
+other field is rejected as the wrong type, `fly version upgrade` is the answer.
 
 **The database is baked into the image**, and that is the decision the files
 encode. At 24 MB for four towns it is a trivial layer, the file is read-only at
