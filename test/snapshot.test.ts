@@ -125,6 +125,31 @@ describe('the deployment files', () => {
     expect(https).toBe(secure);
   });
 
+  it('spells auto_stop_machines as a bool', () => {
+    // A string here is rejected outright by older flyctl:
+    //   cannot unmarshal string into ... auto_stop_machines of type bool
+    // `false` means the same thing in every version, and there is nothing for
+    // auto-stop to do while `min_machines_running` keeps one up anyway.
+    const line = read('fly.toml')
+      .split('\n')
+      .find((l) => l.trim().startsWith('auto_stop_machines'));
+    expect(line).toBeDefined();
+    expect(line).toMatch(/=\s*(true|false)\s*$/);
+  });
+
+  it('points the base URL at the app it actually deploys', () => {
+    // The two are set in different places and a mismatch is invisible until
+    // every Atom feed advertises a self-link that resolves nowhere. Only
+    // checked for `.fly.dev`, so a custom domain is free to differ.
+    const toml = read('fly.toml');
+    const app = /^app = "([^"]+)"/m.exec(toml)?.[1];
+    const base = /TOWNCIVIC_BASE_URL = "([^"]+)"/.exec(toml)?.[1] ?? '';
+    expect(app).toBeDefined();
+    if (base.endsWith('.fly.dev')) {
+      expect(base).toBe(`https://${app}.fly.dev`);
+    }
+  });
+
   it('asks whether it can deploy before deploying', () => {
     // The whole reason preflight exists: a machine that starts, serves every
     // record, and cannot sign anybody in looks exactly like a healthy one.

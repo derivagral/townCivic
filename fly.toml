@@ -17,9 +17,16 @@
 # credentials, because a locator is not a secret and burying it in `fly secrets`
 # only makes it harder to see what is configured.
 
+# App names are global on Fly, so `towncivic` may already be taken. If you pick
+# another, change TOWNCIVIC_BASE_URL below to match — a mismatch means every
+# Atom feed advertises a self-link that resolves nowhere. A test pins the two
+# together for `.fly.dev` hostnames.
 app = "towncivic"
 primary_region = "bos"
 
+# Wants a reasonably current flyctl — `fly version upgrade` if a field below is
+# rejected as the wrong type. Create the app with `fly apps create`, never
+# `fly launch`: launch regenerates this file and discards everything in it.
 [build]
   dockerfile = "Dockerfile"
 
@@ -42,7 +49,13 @@ primary_region = "bos"
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "suspend"
+  # A bool, not a string. flyctl grew string values ("stop" / "suspend" / "off")
+  # relatively recently and older versions reject them outright:
+  #   cannot unmarshal string into ... auto_stop_machines of type bool
+  # `false` means the same thing in every version and is what an always-on floor
+  # wants anyway — there is nothing for auto-stop to do while a machine is
+  # required to be running.
+  auto_stop_machines = false
   auto_start_machines = true
   # One machine always up. Scaling to zero would be cheaper, but a cold start on
   # the first request is exactly the impression a civic archive should not make,
