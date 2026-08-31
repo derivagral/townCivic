@@ -902,9 +902,11 @@ every agenda, bid and notice in them is made up. See `fixtures/README.md`.
 ### Configuration
 
 **[`.env.example`](.env.example) lists every variable in one place**, with the
-R2 and Supabase values annotated. townCivic does not load `.env` itself — export
-them, or use whatever your host provides — so that config arrives one way
-everywhere.
+R2 and Supabase values annotated. Copy it to `.env` and the CLI loads it on
+startup — no `export`, no `source`. (Do not `source .env`: that sets shell
+variables, which child processes never see, so `echo` shows the value and the
+command does not.) A real environment variable always wins over the file, so a
+deployment's own configuration cannot be shadowed by a stray working copy.
 
 All optional, all environment variables: `TOWNCIVIC_DATA_DIR`, `TOWNCIVIC_DB`,
 `PORT`, `TOWNCIVIC_BASE_URL`, `TOWNCIVIC_USER_AGENT`, `TOWNCIVIC_TIMEOUT_MS`,

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import './util/quiet.ts';
+import './util/env.ts';
 import { parseArgs } from 'node:util';
 import { serve } from '@hono/node-server';
 import { config } from './config.ts';
