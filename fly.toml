@@ -1,73 +1,38 @@
-# townCivic on Fly.
+# fly.toml app configuration file generated for towncivic on 2026-08-31T21:23:40Z
 #
-# Rename `app` and this is deployable as-is. What is notable is what is missing:
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
-#   no [mounts]     There is no volume, and that is the point of everything
-#                   that came before it. The archive is in a bucket, the readers
-#                   are in Supabase, and the database is baked into the image —
-#                   so a machine holds nothing anybody would miss. Destroy it,
-#                   move it between regions, run three of them; none of it costs
-#                   anything but a restart.
-#
-#   no secrets here `fly secrets set` writes them into the app, not into a file
-#                   that lives in a public repository. `scripts/setup-fly.sh`
-#                   copies them out of `.env`.
-#
-# Everything the server needs to be told is in [env] below, except the two
-# credentials, because a locator is not a secret and burying it in `fly secrets`
-# only makes it harder to see what is configured.
 
-app = "towncivic"
-primary_region = "bos"
+app = 'towncivic'
+primary_region = 'ams'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  PORT = "8080"
-  # The origin readers actually reach, which the Atom feeds put in every entry's
-  # self-link. Wrong here means feed URLs that resolve nowhere.
-  TOWNCIVIC_BASE_URL = "https://towncivic.fly.dev"
-  # Fly terminates TLS, so the session cookie must be marked Secure. `preflight`
-  # fails if this disagrees with the base URL above, because a Secure cookie
-  # over plain HTTP is never sent and signing in silently does nothing.
-  TOWNCIVIC_SECURE_COOKIES = "1"
-  TOWNCIVIC_ACCOUNTS = "supabase"
-  # The archive is not read at serve time. This is set so that if a pipeline
-  # command is ever run on the machine, it writes to the bucket rather than to a
-  # filesystem that is about to disappear.
-  TOWNCIVIC_DOCUMENTS = "s3"
-  S3_REGION = "auto"
+  PORT = '8080'
+  S3_REGION = 'auto'
+  TOWNCIVIC_ACCOUNTS = 'supabase'
+  TOWNCIVIC_BASE_URL = 'https://towncivic.fly.dev'
+  TOWNCIVIC_DOCUMENTS = 's3'
+  TOWNCIVIC_SECURE_COOKIES = '1'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "suspend"
+  auto_stop_machines = 'suspend'
   auto_start_machines = true
-  # One machine always up. Scaling to zero would be cheaper, but a cold start on
-  # the first request is exactly the impression a civic archive should not make,
-  # and the point of an always-on floor is that the wake path is never on
-  # anybody's critical path.
-  #
-  # Raise this to 2 before caring about deploys being invisible: with one
-  # machine, a rolling deploy has a gap while the replacement comes up, and the
-  # database changing twice a day means two of those a day.
   min_machines_running = 1
-  processes = ["app"]
+  processes = ['app']
 
   [[http_service.checks]]
-    # `/healthz` names the accounts backend as well as answering, so a machine
-    # that came up against the wrong configuration is visible in `fly checks
-    # list` rather than only on the first sign-in attempt.
-    path = "/healthz"
-    interval = "30s"
-    timeout = "5s"
-    grace_period = "10s"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    path = '/healthz'
 
 [[vm]]
-  # The database is a 24 MB file read through SQLite, and every page is rendered
-  # from it synchronously. This is not a memory-hungry workload; 512 MB is
-  # generous and leaves room for the FTS queries to breathe.
-  memory = "512mb"
-  cpu_kind = "shared"
+  memory = '512mb'
+  cpu_kind = 'shared'
   cpus = 1
+  memory_mb = 256
