@@ -140,6 +140,7 @@ npx tsx src/cli.ts <command>
 | `verify`             | Check every registered URL against the live site                             |
 | `discover`           | Probe the CivicPlus site for boards and feeds not yet registered             |
 | `serve`              | Web UI plus Atom and JSON feeds                                              |
+| `accounts`           | Report which accounts backend is configured, and probe it                    |
 | `seed`               | Load synthetic fixtures                                                      |
 | `towns`              | List every registered town and what the database holds for each              |
 | `sources` / `events` | Print the registry / recent records                                          |
@@ -549,6 +550,21 @@ that is the union of them.
 Following a matter is the point — it tracks a property across whichever board
 takes it up next, which is exactly what channel and board filters cannot do.
 
+Readers can live in either of two places, chosen by `TOWNCIVIC_ACCOUNTS`:
+
+|                                          | `sqlite` (default)                      | `supabase`                       |
+| ---------------------------------------- | --------------------------------------- | -------------------------------- |
+| Where readers are                        | `data/towncivic.db`, beside the records | A hosted Postgres, behind GoTrue |
+| Needs an account anywhere                | no                                      | yes                              |
+| Email confirmation, reset, rate limiting | no                                      | yes                              |
+| `data/towncivic.db` stays disposable     | **no**                                  | yes                              |
+
+Both sit behind one interface — `src/accounts/store.ts` — and one test suite
+runs against both, so the second backend is not a promise about a future
+refactor. `npm run accounts` says which one is configured and probes it.
+
+### The local backend
+
 The security primitives are real: scrypt with a per-user salt, constant-time
 comparison, an opaque `HttpOnly` `SameSite=Lax` session cookie, a per-session
 CSRF token on every state change, no open redirect on login, and one error
@@ -560,16 +576,40 @@ at all. Set `TOWNCIVIC_SECURE_COOKIES=1` for anything served over HTTPS. The
 personal feed URL contains a bearer token — rotatable, not the password, and a
 secret.
 
-Alerts are recorded but not sent. The `alerts` column carries the intent; there
-is no sender. The honest description of alerts today is "an Atom feed you can
-point anything at".
+It is also the reason the database is not disposable. Accounts are the one thing
+in `data/towncivic.db` that is not derived from the document store: run them
+here, and deleting the file signs everybody out and loses their subscriptions.
 
-Accounts are also the one thing in the database that is not derived. If you run
-them, `data/towncivic.db` stops being disposable.
+### The hosted backend
+
+`TOWNCIVIC_ACCOUNTS=supabase` moves exactly that undeletable part out — and only
+that part. Every civic record stays in SQLite, built by the pipeline and carried
+by the deploy, because the records are the same for every reader and are
+rebuildable by re-running `ingest`. Which means the list above is not a list of
+things still to write: email confirmation, password reset and rate limiting are
+someone else's job the moment you switch, and the database goes back to being a
+cache.
+
+Setup, the migration, and what it costs are in
+**[supabase/README.md](supabase/README.md)**. Three things worth knowing before
+reading it:
+
+- The web tier holds only the **anon** key. Row-level security is what keeps one
+  reader's list out of another's, and a service role key would bypass every
+  policy in `supabase/migrations/`.
+- A signed-in request costs one round trip. Signed-out pages — which is nearly
+  everything here — cost nothing, and stay up when the hosted project is down.
+- There is no import for existing local accounts. Password hashes cannot be
+  converted between scrypt and bcrypt by anyone, so switch before you have
+  readers, or invite them.
+
+Alerts are recorded but not sent under either backend. The `alerts` column
+carries the intent; there is no sender. The honest description of alerts today is
+"an Atom feed you can point anything at".
 
 ## Operations
 
-Full detail in **[docs/operations.md](docs/operations.md)** — the three
+Full detail in **[docs/operations.md](docs/operations.md)** — the four
 deployment shapes, a systemd unit, and what to watch.
 
 The short version: `.github/workflows/refresh.yml` runs the cycle twice a day,
@@ -785,8 +825,22 @@ AG decides within 90`. The AG Municipal Law Unit source is registered and
 - **Sending an alert.** Subscriptions and the personal feed work; nothing mails
   or pushes. That needs a sender, a digest schedule, and an unsubscribe path
   that works without signing in.
-- **Accounts that could face the internet.** See [Accounts](#accounts) for the
-  list — email verification, password reset, rate limiting, recovery.
+- **Accounts that could face the internet, on the local backend.** See
+  [Accounts](#accounts) for the list — email verification, password reset, rate
+  limiting, recovery. Not staged so much as declined: `TOWNCIVIC_ACCOUNTS=supabase`
+  hands all four to someone whose job they are, and re-implementing them here
+  would be the wrong way to spend the effort.
+- **Records in the hosted database.** The accounts backend moved the one thing
+  that is not derived. Moving the records too would make the web tier stateless
+  entirely and let a static front end query them over PostgREST — but it is a
+  different change with a different budget. `events` and its full-text index are
+  the large tables, Supabase's free tier is 500 MB, and the pipeline would need
+  a publish stage and a story for what happens when a rebuild disagrees with
+  what is already up there. Nothing in `src/accounts/` assumes it either way.
+- **Sign-in that is not a password.** Magic links and OAuth are dashboard
+  switches on the hosted backend, and the trigger in `supabase/migrations/`
+  already gives an account arriving that way a reader row and a feed token. What
+  is missing is the buttons.
 - **Parcels rather than points.** The map geocodes to a street address and draws
   the town outline. MassGIS also publishes the statewide parcel layer, which is
   what a land-use record is actually about.
@@ -856,6 +910,22 @@ All optional, all environment variables: `TOWNCIVIC_DATA_DIR`, `TOWNCIVIC_DB`,
 default so `npm run serve` works on localhost, where a `Secure` cookie is never
 sent and signing in would appear to fail silently. Turn it on for anything
 served over HTTPS.
+
+`TOWNCIVIC_ACCOUNTS` chooses where readers live: `sqlite` (default) or
+`supabase`. The hosted backend needs `SUPABASE_URL` and `SUPABASE_ANON_KEY` —
+Supabase's newer `sb_publishable_…` key goes in the latter, it is the same role
+under a new name — and refuses to start without them rather than falling back,
+because a fat-fingered variable that quietly served a working site with readers
+in the wrong database would be the worst of both. The `NEXT_PUBLIC_` spellings
+of those two are read as well, since that is what the dashboard hands you.
+`TOWNCIVIC_SESSION_SECRET` is optional and is not a session store; see
+[supabase/README.md](supabase/README.md). `npm run accounts` checks all of it.
+
+`TOWNCIVIC_BASE_URL` is the origin the server is reachable at, used for absolute
+links in feeds. The default is right for localhost; set it once there is a public
+hostname, together with `TOWNCIVIC_SECURE_COOKIES=1`. Note that this is a Node
+server rather than a static site, so it does not run on GitHub Pages — see
+[docs/operations.md](docs/operations.md#not-a-shape-github-pages).
 
 The crawler identifies itself honestly, waits between requests to the same host,
 and sends conditional requests. `HTTPS_PROXY` / `HTTP_PROXY` are honoured — Node's

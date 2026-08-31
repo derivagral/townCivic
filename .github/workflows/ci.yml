@@ -94,6 +94,11 @@ jobs:
           grep -q 'class="townline"' /tmp/map.html || { echo "no town outline on /map"; exit 1; }
           curl -fsS http://localhost:8787/login > /dev/null
 
+          # Which accounts backend is live is the one thing a deploy can get
+          # wrong invisibly — every public record serves identically either way.
+          curl -fsS http://localhost:8787/healthz | grep -q '"accounts":"sqlite"' \
+            || { echo "healthz does not name the accounts backend"; exit 1; }
+
           # A matter page, found the way a reader would find one, so a broken
           # link between the index and the timeline fails the build.
           curl -fsS http://localhost:8787/matters -o /tmp/matters.html
@@ -104,3 +109,8 @@ jobs:
           curl -fsS http://localhost:8787/feeds/all.atom | head -c 200
           echo
           echo "routes OK"
+
+      # The default backend needs no configuration, so this must pass on a clean
+      # checkout. It is also the command a real deploy gates on.
+      - name: Check accounts
+        run: npm run accounts

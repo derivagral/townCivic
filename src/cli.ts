@@ -24,6 +24,8 @@ import { status } from './commands/status.ts';
 import { fetchBoundary } from './commands/boundary.ts';
 import { seed, clearSampleData, hasSampleData } from './commands/seed.ts';
 import { CLEAR_SCOPES, clearJurisdiction, clearOrphans, isClearScope } from './commands/clear.ts';
+import { checkAccounts, formatAccounts } from './commands/accounts.ts';
+import { createAccounts } from './accounts/index.ts';
 import { createApp } from './web/server.ts';
 import { countEvents, listJurisdictionRows, queryEvents } from './db/repo.ts';
 
@@ -43,6 +45,7 @@ Commands
   boundary             Refetch the town outline from MassGIS (maintenance; commit the result)
   discover             Probe the CivicPlus site for boards and feeds not yet registered
   serve                Run the web UI and the Atom / JSON feeds
+  accounts             Report which accounts backend is configured, and probe it
   towns                List every registered town and what the database holds for it
   sources              Print the source registry
   events               Print recent records as JSON
@@ -676,6 +679,26 @@ async function main(): Promise<number> {
       return 0;
     }
 
+    case 'accounts': {
+      const db = getDb();
+      const report = await checkAccounts(db);
+      if (values.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(formatAccounts(report, dim));
+        console.log(
+          dim(
+            report.backend === 'sqlite'
+              ? '\nSet TOWNCIVIC_ACCOUNTS=supabase to move readers out — see supabase/README.md.'
+              : '\nA failure above is configuration, not code. supabase/README.md has the setup.',
+          ),
+        );
+      }
+      // Non-zero on a problem, so a deploy can gate on this rather than finding
+      // out when somebody tries to sign in.
+      return report.ok ? 0 : 1;
+    }
+
     case 'serve': {
       const db = getDb();
       // Every town this build knows, so the switcher is the registry.
@@ -684,9 +707,14 @@ async function main(): Promise<number> {
       // Feed self-links have to match where the server actually is, not the
       // default port, or an --port run publishes URLs that do not resolve.
       const baseUrl = process.env.TOWNCIVIC_BASE_URL ?? `http://localhost:${port}`;
+      // Built here rather than inside `createApp` so a misconfigured hosted
+      // backend fails at startup, with its own message, instead of on the first
+      // request that needs it.
+      const accounts = createAccounts(db);
       const app = createApp(db, {
         ...(jurisdiction === ALL ? {} : { jurisdiction }),
         baseUrl,
+        accounts,
       });
       serve({ fetch: app.fetch, port }, (info) => {
         console.log(`townCivic → http://localhost:${info.port}`);
@@ -695,6 +723,7 @@ async function main(): Promise<number> {
             dim(`  ${String(countEvents(db, { jurisdiction: town })).padStart(6)} records · ${town}`),
           );
         }
+        console.log(dim(`  accounts: ${accounts.describe()}`));
         if (hasSampleData(db)) {
           console.log(dim('  database contains synthetic sample data (run `clear-samples` to drop it)'));
         }

@@ -32,24 +32,15 @@ import { getProfile, hasJurisdiction, listJurisdictions, loadSources } from '../
 import {
   ALL_JURISDICTIONS,
   SESSION_COOKIE,
-  addSubscription,
-  authenticate,
-  checkCsrf,
+  AccountsUnavailableError,
   clearedCookie,
-  createSession,
-  createUser,
-  destroySession,
-  getUser,
-  getUserByFeedToken,
+  createAccounts,
   isSubscriptionKind,
-  isWatching,
-  listSubscriptions,
   readCookie,
-  readSession,
-  removeSubscription,
+  readerName,
   sessionCookie,
-} from './accounts.ts';
-import type { Session, UserRow } from './accounts.ts';
+} from '../accounts/index.ts';
+import type { AccountStore, Identity, StartedSession } from '../accounts/index.ts';
 import { STYLES } from './styles.ts';
 import {
   EMPTY_FILTERS,
@@ -114,6 +105,14 @@ function toQuery(filters: Filters, jurisdiction: string): EventQuery {
 }
 
 export interface AppOptions {
+  /**
+   * Where readers live. Defaults to whatever `TOWNCIVIC_ACCOUNTS` selects,
+   * which is the local database unless someone has said otherwise.
+   *
+   * Injected rather than reached for so a test can hand in either backend —
+   * and so the one place that decides "local or hosted" is `createAccounts`.
+   */
+  accounts?: AccountStore;
   /** The town served when a request does not name one. */
   jurisdiction?: string;
   /** Every town this instance serves. Defaults to the whole registry. */
@@ -132,6 +131,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
   const app = new Hono();
   const baseUrl = options.baseUrl ?? config.baseUrl;
   const secureCookies = options.secureCookies ?? config.secureCookies;
+  const accounts = options.accounts ?? createAccounts(db);
 
   /**
    * The towns this instance serves, and the one a bare URL means.
@@ -198,27 +198,41 @@ export function createApp(db: Db, options: AppOptions = {}) {
   /**
    * The signed-in reader, if any.
    *
-   * Cheap enough to do per request — two indexed lookups against a local SQLite
-   * file — and doing it inline keeps every handler's data flow visible rather
-   * than hiding it in middleware state.
+   * Called once per request and awaited, which is the shape the hosted backend
+   * needs: on the local backend this is two indexed lookups against a file, and
+   * on Supabase it is one round trip that both authenticates the cookie and
+   * fetches the reader. Doing it inline rather than in middleware keeps every
+   * handler's data flow visible.
+   *
+   * It also re-sets the cookie when resolving rotated it. A Supabase access
+   * token lives about an hour, so a reader who comes back the next day arrives
+   * with an expired one; the store refreshes it and hands back a new envelope,
+   * and dropping that here would silently sign them out on the following
+   * request.
    */
-  const currentUser = (c: Context): { session: Session; user: UserRow } | null => {
-    const session = readSession(db, readCookie(c.req.header('cookie'), SESSION_COOKIE));
-    if (!session) return null;
-    const user = getUser(db, session.userId);
-    return user ? { session, user } : null;
+  const currentUser = async (c: Context): Promise<Identity | null> => {
+    const identity = await accounts.resolve(readCookie(c.req.header('cookie'), SESSION_COOKIE));
+    if (identity?.refreshedCookie) {
+      c.header('set-cookie', sessionCookie(identity.refreshedCookie, secureCookies));
+    }
+    return identity;
   };
 
-  const nameFor = (user: UserRow) => user.display_name || user.email.split('@')[0] || user.email;
+  const nameFor = (identity: Identity | null) => (identity ? readerName(identity.reader) : null);
 
   app.get('/styles.css', (c) => c.body(STYLES, 200, { 'content-type': 'text/css; charset=utf-8' }));
-  app.get('/healthz', (c) => c.json({ ok: true, jurisdiction: defaultJurisdiction, jurisdictions: served }));
+  app.get('/healthz', (c) =>
+    // `accounts` is here because it is the one thing about a running instance
+    // that a deploy can get wrong invisibly: the site looks identical whether
+    // readers are in the file beside it or in a hosted database.
+    c.json({ ok: true, jurisdiction: defaultJurisdiction, jurisdictions: served, accounts: accounts.kind }),
+  );
 
-  app.get('/', (c) => {
+  app.get('/', async (c) => {
     const url = new URL(c.req.url);
     const town = townFor(c);
     const filters = readFilters(url, town);
-    const current = currentUser(c);
+    const current = await currentUser(c);
     const base = toQuery(filters, town.id);
 
     // "All" shows what is coming up, then what already happened. Explicitly
@@ -257,15 +271,15 @@ export function createApp(db: Db, options: AppOptions = {}) {
         feedUrl: withTown(`/feeds/${filters.channel ?? 'all'}.atom`, town),
         hasDerived: countInterpretations(db, town.id) > 0,
         townDormant: !loadSources(town.id).some((source) => source.enabled),
-        account: current ? nameFor(current.user) : null,
+        account: nameFor(current),
       }),
     );
   });
 
-  app.get('/event/:id', (c) => {
+  app.get('/event/:id', async (c) => {
     const row = getEvent(db, c.req.param('id'));
     if (!row) return c.notFound();
-    const current = currentUser(c);
+    const current = await currentUser(c);
 
     const attachment = getAttachment(db, row.id);
     let notice: NoticeView | null = null;
@@ -291,12 +305,12 @@ export function createApp(db: Db, options: AppOptions = {}) {
           data: item.data,
           created_at: item.created_at,
         })),
-        account: current ? nameFor(current.user) : null,
+        account: nameFor(current),
       }),
     );
   });
 
-  app.get('/matters', (c) => {
+  app.get('/matters', async (c) => {
     const url = new URL(c.req.url);
     const town = townFor(c);
     const kindParam = url.searchParams.get('kind')?.trim();
@@ -324,15 +338,15 @@ export function createApp(db: Db, options: AppOptions = {}) {
         linked: countMatters(db, { jurisdiction: town.id }) > 0,
         sampleData: hasSampleData(db, town.id),
         town,
-        account: currentUser(c) ? nameFor(currentUser(c)!.user) : null,
+        account: nameFor(await currentUser(c)),
       }),
     );
   });
 
-  app.get('/matter/:id', (c) => {
+  app.get('/matter/:id', async (c) => {
     const matter = getMatter(db, c.req.param('id'));
     if (!matter) return c.notFound();
-    const current = currentUser(c);
+    const current = await currentUser(c);
     return c.html(
       renderMatter({
         matter,
@@ -341,9 +355,9 @@ export function createApp(db: Db, options: AppOptions = {}) {
         ...(current
           ? {
               signedIn: true,
-              watched: isWatching(db, current.user.id, 'matter', matter.id, matter.jurisdiction),
-              csrfToken: current.session.csrfToken,
-              account: nameFor(current.user),
+              watched: await accounts.isWatching(current, 'matter', matter.id, matter.jurisdiction),
+              csrfToken: current.csrfToken,
+              account: readerName(current.reader),
             }
           : { signedIn: false, account: null }),
         sampleData: hasSampleData(db, matter.jurisdiction),
@@ -352,7 +366,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
     );
   });
 
-  app.get('/map', (c) => {
+  app.get('/map', async (c) => {
     const town = townFor(c);
     const highlight = new URL(c.req.url).searchParams.get('matter')?.trim();
     const placed = listPlacedMatters(db, town.id);
@@ -384,7 +398,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
         filters: EMPTY_FILTERS,
         sampleData: hasSampleData(db, town.id),
         body,
-        account: currentUser(c) ? nameFor(currentUser(c)!.user) : null,
+        account: nameFor(await currentUser(c)),
       }),
     );
   });
@@ -398,8 +412,8 @@ export function createApp(db: Db, options: AppOptions = {}) {
   const safeNext = (value: string | undefined): string | undefined =>
     value && value.startsWith('/') && !value.startsWith('//') ? value : undefined;
 
-  app.get('/login', (c) => {
-    if (currentUser(c)) return c.redirect('/my', 302);
+  app.get('/login', async (c) => {
+    if (await currentUser(c)) return c.redirect('/my', 302);
     const next = safeNext(new URL(c.req.url).searchParams.get('next') ?? undefined);
     return c.html(
       renderAuth({
@@ -411,87 +425,112 @@ export function createApp(db: Db, options: AppOptions = {}) {
     );
   });
 
-  app.get('/signup', (c) => {
-    if (currentUser(c)) return c.redirect('/my', 302);
+  app.get('/signup', async (c) => {
+    if (await currentUser(c)) return c.redirect('/my', 302);
     return c.html(
       renderAuth({ mode: 'signup', sampleData: hasSampleData(db, defaultJurisdiction), town: townFor(c) }),
     );
   });
 
-  const startSession = (c: Context, userId: string, next: string | undefined) => {
-    const session = createSession(db, userId);
+  const startSession = (c: Context, session: StartedSession, next: string | undefined) => {
     c.header('set-cookie', sessionCookie(session, secureCookies));
     return c.redirect(next ?? '/my', 303);
   };
+
+  /**
+   * Render the sign-in or sign-up form again, with something to say.
+   *
+   * Every failure on these two routes lands here, including the one the local
+   * backend could not produce: the store being unreachable. When readers live
+   * at a single point, that point being down has to say so rather than look
+   * like a rejected password.
+   */
+  const authAgain = (
+    c: Context,
+    mode: 'login' | 'signup',
+    status: 400 | 401 | 503,
+    fields: { error?: string; notice?: string; email?: string; next?: string | undefined },
+  ) =>
+    c.html(
+      renderAuth({
+        mode,
+        ...(fields.error ? { error: fields.error } : {}),
+        ...(fields.notice ? { notice: fields.notice } : {}),
+        ...(fields.email ? { email: fields.email } : {}),
+        ...(fields.next ? { next: fields.next } : {}),
+        sampleData: hasSampleData(db, defaultJurisdiction),
+        town: townFor(c),
+      }),
+      status,
+    );
+
+  const UNAVAILABLE = 'Accounts are temporarily unavailable. The records below are unaffected.';
 
   app.post('/login', async (c) => {
     const form = await c.req.parseBody();
     const email = String(form['email'] ?? '');
     const next = safeNext(form['next'] ? String(form['next']) : undefined);
-    const user = authenticate(db, email, String(form['password'] ?? ''));
 
-    if (!user) {
-      // One message for both "no such account" and "wrong password": which of
-      // the two it was is not the visitor's business to learn.
-      return c.html(
-        renderAuth({
-          mode: 'login',
-          error: 'That email and password did not match.',
-          email,
-          next,
-          sampleData: hasSampleData(db, defaultJurisdiction),
-          town: townFor(c),
-        }),
-        401,
-      );
+    let session: StartedSession | null;
+    try {
+      session = await accounts.signIn(email, String(form['password'] ?? ''));
+    } catch (error) {
+      if (!(error instanceof AccountsUnavailableError)) throw error;
+      return authAgain(c, 'login', 503, { error: UNAVAILABLE, email, next });
     }
-    return startSession(c, user.id, next);
+
+    // One message for both "no such account" and "wrong password": which of
+    // the two it was is not the visitor's business to learn.
+    if (!session) {
+      return authAgain(c, 'login', 401, { error: 'That email and password did not match.', email, next });
+    }
+    return startSession(c, session, next);
   });
 
   app.post('/signup', async (c) => {
     const form = await c.req.parseBody();
     const email = String(form['email'] ?? '');
-    const result = createUser(db, {
-      email,
-      password: String(form['password'] ?? ''),
-      ...(form['displayName'] ? { displayName: String(form['displayName']) } : {}),
-    });
 
-    if (!result.ok || !result.user) {
-      return c.html(
-        renderAuth({
-          mode: 'signup',
-          ...(result.error ? { error: result.error } : {}),
-          email,
-          sampleData: hasSampleData(db, defaultJurisdiction),
-          town: townFor(c),
-        }),
-        400,
-      );
+    let result;
+    try {
+      result = await accounts.signUp({
+        email,
+        password: String(form['password'] ?? ''),
+        ...(form['displayName'] ? { displayName: String(form['displayName']) } : {}),
+      });
+    } catch (error) {
+      if (!(error instanceof AccountsUnavailableError)) throw error;
+      return authAgain(c, 'signup', 503, { error: UNAVAILABLE, email });
     }
-    return startSession(c, result.user.id, undefined);
+
+    if (!result.ok) return authAgain(c, 'signup', 400, { error: result.error, email });
+    // A backend that confirms addresses creates the account without signing
+    // anyone in. Sending them to /my would bounce them straight back to a login
+    // form for an account that does not work yet.
+    if (!result.session) return authAgain(c, 'login', 400, { notice: result.message, email });
+    return startSession(c, result.session, undefined);
   });
 
   app.post('/logout', async (c) => {
-    const current = currentUser(c);
+    const current = await currentUser(c);
     const form = await c.req.parseBody();
-    if (current && checkCsrf(current.session, form['csrf'] ? String(form['csrf']) : undefined)) {
-      destroySession(db, current.session.id);
+    if (accounts.verifyCsrf(current, form['csrf'] ? String(form['csrf']) : undefined)) {
+      await accounts.signOut(current!);
     }
     c.header('set-cookie', clearedCookie(secureCookies));
     return c.redirect('/', 303);
   });
 
-  app.get('/my', (c) => {
-    const current = currentUser(c);
+  app.get('/my', async (c) => {
+    const current = await currentUser(c);
     if (!current) return c.redirect('/login?next=%2Fmy', 302);
     const town = townFor(c);
 
-    const subscriptions = listSubscriptions(db, current.user.id);
+    const subscriptions = await accounts.listSubscriptions(current);
     return c.html(
       renderProfile({
-        email: current.user.email,
-        displayName: current.user.display_name,
+        email: current.reader.email,
+        displayName: current.reader.displayName,
         subscriptions: subscriptions.map((s) => ({
           kind: s.kind,
           value: s.value,
@@ -504,14 +543,19 @@ export function createApp(db: Db, options: AppOptions = {}) {
         // person, not a town — while the "follow something" list below is
         // scoped to the town they are looking at, because that is where the
         // board names on it come from.
+        //
+        // The list comes from the accounts store and the records come from the
+        // local database, and that is fine: this join has always lived in
+        // application code rather than in SQL, which is exactly what lets the
+        // two live in different places.
         recent: personalFeed(db, subscriptions, { limit: 20 }),
         bodies: facetCounts(db, 'body', { jurisdiction: town.id }).slice(0, 40),
-        feedUrl: `${baseUrl}/feeds/my/${current.user.feed_token}.atom`,
-        csrfToken: current.session.csrfToken,
+        feedUrl: `${baseUrl}/feeds/my/${current.reader.feedToken}.atom`,
+        csrfToken: current.csrfToken,
         ...(new URL(c.req.url).searchParams.get('saved') ? { notice: 'Saved.' } : {}),
         sampleData: hasSampleData(db),
         town,
-        account: nameFor(current.user),
+        account: readerName(current.reader),
       }),
     );
   });
@@ -519,28 +563,28 @@ export function createApp(db: Db, options: AppOptions = {}) {
   /** Every state-changing post goes through the same gate. */
   const guarded = async (
     c: Context,
-    handler: (user: UserRow, form: Record<string, unknown>) => void,
+    handler: (identity: Identity, form: Record<string, unknown>) => Promise<void>,
   ): Promise<Response> => {
-    const current = currentUser(c);
+    const current = await currentUser(c);
     if (!current) return c.redirect('/login', 302);
     const form = await c.req.parseBody();
-    if (!checkCsrf(current.session, form['csrf'] ? String(form['csrf']) : undefined)) {
+    if (!accounts.verifyCsrf(current, form['csrf'] ? String(form['csrf']) : undefined)) {
       return c.text('Bad request: this form has expired. Reload the page and try again.', 403);
     }
-    handler(current.user, form);
+    await handler(current, form);
     return c.redirect(safeNext(form['next'] ? String(form['next']) : undefined) ?? '/my?saved=1', 303);
   };
 
   app.post('/my/watch', (c) =>
-    guarded(c, (user, form) => {
+    guarded(c, async (identity, form) => {
       const matter = getMatter(db, String(form['matter'] ?? ''));
       if (!matter) return;
       // The matter's own town, not the one in the URL: a matter belongs to
       // exactly one town and the row is the authority on which.
       if (String(form['action'] ?? 'watch') === 'unwatch') {
-        removeSubscription(db, user.id, 'matter', matter.id, matter.jurisdiction);
+        await accounts.removeSubscription(identity, 'matter', matter.id, matter.jurisdiction);
       } else {
-        addSubscription(db, user.id, {
+        await accounts.addSubscription(identity, {
           kind: 'matter',
           value: matter.id,
           label: matter.label,
@@ -551,13 +595,13 @@ export function createApp(db: Db, options: AppOptions = {}) {
   );
 
   app.post('/my/subscribe', (c) =>
-    guarded(c, (user, form) => {
+    guarded(c, async (identity, form) => {
       const kind = String(form['kind'] ?? '');
       const value = String(form['value'] ?? '').trim();
       if (!value || !isSubscriptionKind(kind)) return;
       const label = kind === 'channel' && isChannel(value) ? (CHANNEL_LABELS[value] ?? value) : value;
       const requested = String(form['town'] ?? '');
-      addSubscription(db, user.id, {
+      await accounts.addSubscription(identity, {
         kind,
         value,
         label,
@@ -567,11 +611,10 @@ export function createApp(db: Db, options: AppOptions = {}) {
   );
 
   app.post('/my/unsubscribe', (c) =>
-    guarded(c, (user, form) => {
+    guarded(c, async (identity, form) => {
       const town = String(form['town'] ?? '');
-      removeSubscription(
-        db,
-        user.id,
+      await accounts.removeSubscription(
+        identity,
         String(form['kind'] ?? ''),
         String(form['value'] ?? ''),
         town || undefined,
@@ -586,18 +629,18 @@ export function createApp(db: Db, options: AppOptions = {}) {
    * works. It is rotatable, it is not the password, and the page that shows it
    * says plainly that it is a secret.
    */
-  app.get('/feeds/my/:token{.+\\.atom}', (c) => {
+  app.get('/feeds/my/:token{.+\\.atom}', async (c) => {
     const name = c.req.param('token');
-    const user = getUserByFeedToken(db, name.slice(0, name.lastIndexOf('.')));
-    if (!user) return c.notFound();
+    const feed = await accounts.feedFor(name.slice(0, name.lastIndexOf('.')));
+    if (!feed) return c.notFound();
 
-    const subscriptions = listSubscriptions(db, user.id);
+    const { name: readerLabel, subscriptions } = feed;
     // No jurisdiction filter: each subscription already carries its own town.
     const rows = personalFeed(db, subscriptions, { limit: FEED_SIZE });
 
     return c.body(
       renderAtom(rows, {
-        title: `townCivic — ${nameFor(user)}`,
+        title: `townCivic — ${readerLabel}`,
         subtitle: `Records matching ${subscriptions.length} subscription${subscriptions.length === 1 ? '' : 's'}.`,
         selfUrl: `${baseUrl}/feeds/my/${name}`,
         htmlUrl: `${baseUrl}/my`,
@@ -630,7 +673,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
    * it says which towns are live, which are registered but unconfirmed, and
    * which have records for a town the registry has since dropped.
    */
-  app.get('/towns', (c) => {
+  app.get('/towns', async (c) => {
     const town = townFor(c);
     const rows = listJurisdictionRows(db);
     return c.html(
@@ -649,7 +692,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
           notes: row.notes,
         })),
         sampleData: hasSampleData(db, town.id),
-        account: currentUser(c) ? nameFor(currentUser(c)!.user) : null,
+        account: nameFor(await currentUser(c)),
       }),
     );
   });
