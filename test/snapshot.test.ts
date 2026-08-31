@@ -108,13 +108,35 @@ describe('the deployment files', () => {
   });
 
   it('keeps tsx available, since the source is what runs', () => {
-    // `--omit=dev` would prune the thing that executes the TypeScript. Checked
-    // against the RUN line rather than the whole file, which discusses it.
-    const install = read('Dockerfile')
-      .split('\n')
-      .find((line) => line.startsWith('RUN npm ci'));
+    // Pruning devDependencies removes the thing that executes the TypeScript.
+    //
+    // This assertion used to be `not.toMatch(/--omit=dev/)` and was green while
+    // the image was broken, because there is a second way to prune and the
+    // Dockerfile was using it: `ENV NODE_ENV=production` makes `npm ci` omit
+    // devDependencies with no flag on the line to see. So check both routes.
+    const dockerfile = read('Dockerfile');
+    const install = dockerfile.split('\n').find((line) => line.startsWith('RUN npm ci'));
     expect(install).toBeDefined();
     expect(install).not.toMatch(/--omit=dev/);
+    if (/^ENV NODE_ENV=production/m.test(dockerfile)) {
+      expect(
+        install,
+        'NODE_ENV=production prunes devDependencies unless --include=dev says otherwise',
+      ).toMatch(/--include=dev/);
+    }
+  });
+
+  it('starts the server without reaching for the registry', () => {
+    // `npx` handed a package the image does not have downloads it rather than
+    // failing, which put the npm registry on the boot path and ran a tsx the
+    // lockfile does not pin. `node` can only use what `npm ci` installed.
+    const cmd = read('Dockerfile')
+      .split('\n')
+      .find((line) => line.startsWith('CMD'));
+    expect(cmd).toBeDefined();
+    expect(cmd).not.toMatch(/npx|npm/);
+    // And PID 1, so Fly's SIGTERM reaches the server rather than a wrapper.
+    expect(cmd).toMatch(/^CMD \["node"/);
   });
 
   it('agrees with itself about HTTPS', () => {
