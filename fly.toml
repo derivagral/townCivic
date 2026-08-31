@@ -22,7 +22,19 @@
 # Atom feed advertises a self-link that resolves nowhere. A test pins the two
 # together for `.fly.dev` hostnames.
 app = "towncivic"
-primary_region = "bos"
+
+# Newark, as the nearest live region to the towns this covers. Boston (`bos`)
+# would be closer and is deprecated — Fly refuses to provision new resources
+# there:
+#
+#   Region bos is deprecated and cannot have new resources provisioned.
+#
+# Fly retires regions from time to time, so if a first deploy fails this way
+# again, `fly platform regions` lists what is currently available. Latency is not
+# the thing to optimise here anyway: every page is rendered from a local SQLite
+# file, so the round trip to the reader dominates and a few hundred miles of
+# backhaul does not.
+primary_region = "ewr"
 
 # Wants a reasonably current flyctl — `fly version upgrade` if a field below is
 # rejected as the wrong type. Create the app with `fly apps create`, never
