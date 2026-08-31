@@ -142,6 +142,7 @@ npx tsx src/cli.ts <command>
 | `serve`              | Web UI plus Atom and JSON feeds                                              |
 | `accounts`           | Report which accounts backend is configured, and probe it                    |
 | `documents`          | Report where the archive lives, probe it, and `--backfill` it into a bucket  |
+| `preflight`          | Probe every external dependency at once; exits non-zero if any is not ready  |
 | `seed`               | Load synthetic fixtures                                                      |
 | `towns`              | List every registered town and what the database holds for each              |
 | `sources` / `events` | Print the registry / recent records                                          |

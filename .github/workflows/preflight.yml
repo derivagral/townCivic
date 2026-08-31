@@ -1,0 +1,114 @@
+name: Preflight
+
+# Is the deployment wired up?
+#
+# townCivic depends on exactly two things it does not own: a bucket for the
+# document archive, and a Postgres for the readers. Both are optional, both fall
+# back to something local, and both fail the same quiet way when misconfigured —
+# every public record still serves, because none of them need either one. The
+# archive stops being written, or sign-in stops working, and nobody finds out
+# until somebody tries.
+#
+# So this asks both, from the cloud, using the same repository configuration the
+# real jobs use. Running it here rather than on a laptop is the point: it proves
+# what *Actions* can reach with the secrets *Actions* holds, which is the thing
+# that actually has to be true. A green run on a developer's machine only ever
+# proved their `.env` was right.
+#
+# Configuration lives in Settings → Secrets and variables → Actions, and follows
+# one rule: **the locator is a variable, the credential is a secret.**
+#
+#   Variables   S3_BUCKET, S3_ENDPOINT, S3_REGION, SUPABASE_URL
+#   Secrets     S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, SUPABASE_ANON_KEY
+#
+# `scripts/sync-github-config.sh` copies them out of a working `.env` so the
+# values are not retyped into a web form.
+#
+# Nothing here runs on `pull_request`, which is what keeps the credentials out
+# of reach of anything a branch or a fork can trigger.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, off the hour. This is a smoke alarm rather than a monitor: it
+    # catches a rotated key, a deleted bucket, and a Supabase project paused for
+    # inactivity — all of which are invisible until someone tries to sign in.
+    - cron: '25 8 * * 1'
+
+concurrency:
+  group: preflight
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: probe every dependency
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Both backends are derived from whether their locator is configured, so a
+    # fork with none of this set still runs and reports the local defaults
+    # rather than failing on a missing secret.
+    env:
+      TOWNCIVIC_DOCUMENTS: ${{ vars.S3_BUCKET && 's3' || 'local' }}
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+      S3_ENDPOINT: ${{ vars.S3_ENDPOINT }}
+      S3_REGION: ${{ vars.S3_REGION || 'auto' }}
+      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+
+      TOWNCIVIC_ACCOUNTS: ${{ vars.SUPABASE_URL && 'supabase' || 'sqlite' }}
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      # Serve-time settings, checked for self-consistency rather than reached
+      # over the network: a `Secure` cookie over plain HTTP is never sent, so
+      # signing in silently does nothing.
+      TOWNCIVIC_BASE_URL: ${{ vars.TOWNCIVIC_BASE_URL }}
+      TOWNCIVIC_SECURE_COOKIES: ${{ vars.TOWNCIVIC_SECURE_COOKIES }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # Exits non-zero if any configured dependency did not answer, which is
+      # what turns this run red.
+      - name: Preflight
+        run: npm run preflight
+
+      # Runs even on failure, so the summary explains a red run without anyone
+      # opening the log. `--json` is the same report the human format prints.
+      - name: Summarize
+        if: always()
+        run: |
+          npm run preflight -- --json > /tmp/preflight.json || true
+          {
+            echo "### Preflight"
+            echo
+            echo '| Subsystem | Backend | Ready |'
+            echo '| --- | --- | --- |'
+            node -e '
+              const r = require("/tmp/preflight.json");
+              const row = (name, backend, ok) =>
+                console.log(`| ${name} | \`${backend}\` | ${ok ? "yes" : "**no**"} |`);
+              row("documents", r.documents.backend, r.documents.ok);
+              row("accounts", r.accounts.backend, r.accounts.ok);
+              row("settings", "local", r.settings.ok);
+              console.log("");
+              for (const [section, part] of Object.entries(r)) {
+                if (!part || !part.findings) continue;
+                for (const f of part.findings) {
+                  if (f.ok) continue;
+                  console.log(`- **${section} / ${f.label}** — ${f.detail}`);
+                }
+              }
+            '
+          } >> "$GITHUB_STEP_SUMMARY"

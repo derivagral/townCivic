@@ -27,6 +27,7 @@ import { seed, clearSampleData, hasSampleData } from './commands/seed.ts';
 import { CLEAR_SCOPES, clearJurisdiction, clearOrphans, isClearScope } from './commands/clear.ts';
 import { checkAccounts, formatAccounts } from './commands/accounts.ts';
 import { backfillDocuments, checkDocuments, formatDocuments } from './commands/documents.ts';
+import { formatPreflight, preflight } from './commands/preflight.ts';
 import { createAccounts } from './accounts/index.ts';
 import { createApp } from './web/server.ts';
 import { countEvents, listJurisdictionRows, queryEvents } from './db/repo.ts';
@@ -49,6 +50,7 @@ Commands
   serve                Run the web UI and the Atom / JSON feeds
   accounts             Report which accounts backend is configured, and probe it
   documents            Report where the document archive lives, probe it, and copy it
+  preflight            Probe every external dependency at once; exit 1 if any is not ready
   towns                List every registered town and what the database holds for it
   sources              Print the source registry
   events               Print recent records as JSON
@@ -701,6 +703,21 @@ async function main(): Promise<number> {
       }
       // Non-zero on a problem, so a deploy can gate on this rather than finding
       // out when somebody tries to sign in.
+      return report.ok ? 0 : 1;
+    }
+
+    case 'preflight': {
+      const report = await preflight(getDb());
+      if (values.json) {
+        console.log(JSON.stringify(report, null, 2));
+        return report.ok ? 0 : 1;
+      }
+      console.log(formatPreflight(report, dim));
+      console.log(
+        report.ok
+          ? '\n[32mReady.[0m Every configured dependency answered.'
+          : '\n[31mNot ready.[0m Fix the failures above; each one is configuration rather than code.',
+      );
       return report.ok ? 0 : 1;
     }
 

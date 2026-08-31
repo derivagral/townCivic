@@ -149,6 +149,45 @@ comfortably inside R2's free tier, and safe to interrupt and re-run.
 
 `.env.example` lists every variable in one place.
 
+#### Doing all of it from the cloud
+
+Two commands and a workflow, so the operational loop does not live in a shell.
+
+```bash
+npm run preflight                        # both dependencies, one exit code
+./scripts/sync-github-config.sh          # show what would go to Actions
+./scripts/sync-github-config.sh --apply  # send it
+gh workflow run Preflight                # prove it from up there
+```
+
+`preflight` asks the question an operator actually has, which is "can I deploy",
+rather than "is the bucket reachable". It runs the archive check and the accounts
+check, adds the two serve-time settings that are only wrong _in combination_ —
+a `Secure` cookie over plain HTTP is never sent, so signing in silently does
+nothing — and exits non-zero if anything is not ready.
+
+`scripts/sync-github-config.sh` copies a working `.env` into the repository's
+Actions configuration, so the values are not retyped into a web form. It follows
+one rule, which is also the rule the workflows follow:
+
+> **The locator is a variable. The credential is a secret.**
+
+A bucket name, an endpoint, a project URL: not credentials, and masking them
+turns a configuration mistake into an unreadable log. Keys are secrets. Anything
+not on its allowlist is left alone and reported, because a `.env` is a working
+file and uploading it wholesale is how a credential ends up somewhere nobody
+meant to put it. Dry run by default; no secret value is ever printed, only its
+length, which is enough to spot a truncated paste.
+
+`.github/workflows/preflight.yml` then runs the same command on a schedule and
+on demand. Running it _there_ is the point: it proves what Actions can reach
+with the secrets Actions holds, which is the thing that has to be true. A green
+run on a laptop only ever proved that laptop's `.env` was right.
+
+Weekly, because the failures it catches are all silent — a rotated key, a
+deleted bucket, a Supabase project paused for inactivity. None of them affect a
+single public record, so nothing else would notice.
+
 #### On a schedule, in GitHub Actions
 
 `.github/workflows/refresh.yml` reads the bucket configuration from the
