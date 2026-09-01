@@ -2,9 +2,10 @@ name: Deploy
 
 # Ship the web tier, with the current database baked into the image.
 #
-# Runs after every successful Refresh, because the database *is* part of the
-# image: new records only reach readers when a new image does. Also dispatchable,
-# for shipping a code change between refreshes.
+# Runs after every successful Refresh or manually requested Interpret run,
+# because the database *is* part of the image: new records and new derived
+# readings only reach readers when a new image does. Also dispatchable, for
+# shipping a code change between data runs.
 #
 # The order matters and is the reason this is its own job rather than a step at
 # the end of Refresh. Preflight first — if the bucket or the Supabase project is
@@ -21,7 +22,7 @@ name: Deploy
 on:
   workflow_dispatch:
   workflow_run:
-    workflows: ['Refresh']
+    workflows: ['Refresh', 'Interpret']
     types: [completed]
 
 concurrency:
@@ -84,7 +85,8 @@ jobs:
           ls -lh data/towncivic.db
           npm run --silent status -- --jurisdiction all || true
 
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      # v1.5, pinned: this action prepares the binary used with FLY_API_TOKEN.
+      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be
 
       # Fly's rolling strategy replaces machines one at a time and waits for the
       # health check, so a database that will not open never reaches readers —

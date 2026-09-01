@@ -9,13 +9,16 @@ mostly a question of where you put the two pieces of state.
 ingest     fetch every enabled source, normalize, store what changed
 extract    open the linked PDFs and read what the meetings are about
 link       group records about the same property or article into timelines
-interpret  read votes and dispositions out of the prose in minutes
 geocode    resolve linked addresses to coordinates for the map
+
+interpret  optionally read votes and dispositions out of minutes
 ```
 
-They run in that order because each depends on what the one before it wrote.
-Only `ingest`, `extract` and `geocode` touch the network; `link` and `interpret`
-(with the default provider) are pure functions of the database.
+The scheduled cycle is `ingest` → `extract` → `link` → `geocode`, in that order.
+`interpret` is deliberately outside it: its requirements are less settled, and
+its model provider is metered. Run it locally when wanted, or dispatch the
+**Interpret** workflow; a successful workflow publishes the changed snapshot
+and triggers the normal deployment. The rules provider remains offline and free.
 
 Every one of them takes `--jurisdiction <id>`, or `--jurisdiction all` for every
 registered town in one pass. `all` is what the scheduled refresh runs, so adding a
@@ -36,12 +39,18 @@ the whole monitoring story:
 npm run status                          # the default town
 npm run status -- --jurisdiction all    # every town; the worst exit code wins
 npm run status -- --json | jq .problems
+npm run status -- --json | jq .warnings
 ```
 
 A town that is registered with nothing enabled yet reports counts and no
 problems. That is deliberate: a town can sit in the registry for months waiting
 for someone to run `discover` against its site, and a red light that is always on
 is the same as no red light at all.
+
+Fetch failures, missing required state and invalid registry/database relationships
+are problems and make the command non-zero. A verified source that is empty or
+has gone quiet is a warning: it still needs inspection, but it does not make a
+healthy new snapshot less publishable than the older one already on Fly.
 
 ## The two pieces of state
 
@@ -234,8 +243,27 @@ Run it by hand once — **Actions → Refresh → Run workflow** — and read th
 so a wrong key costs nobody else anything.
 
 After that the Actions cache is a performance optimization rather than the place
-the archive lives. Losing it means the towns get asked for everything again,
+the archive lives. It carries only `data/towncivic.db`; R2 carries the raw
+documents. Losing the cache means the towns get asked for everything again,
 which is slow and impolite; it no longer means anything is gone.
+
+#### Interpretation, when wanted
+
+**Actions → Interpret → Run workflow** pulls the last published database, runs
+the selected provider, publishes the updated snapshot, and triggers Deploy.
+Choose a town or `all`, and optionally cap the document count or provide a
+`since` date. Nothing runs on a schedule.
+
+The `rules` provider needs no additional configuration. For `anthropic`, add an
+Actions secret named `ANTHROPIC_API_KEY`; the workflow installs its pinned SDK
+only for that run. Locally, the equivalent is:
+
+```bash
+npm run snapshot -- --pull
+npm run interpret -- --jurisdiction all --provider rules
+npm run snapshot
+./scripts/deploy-fly.sh
+```
 
 ### Moving the readers out
 
@@ -341,7 +369,6 @@ Environment=TOWNCIVIC_DATA_DIR=/var/lib/towncivic
 ExecStart=/usr/bin/npm run ingest -- --jurisdiction all
 ExecStart=/usr/bin/npm run extract -- --jurisdiction all --limit 200
 ExecStart=/usr/bin/npm run link -- --jurisdiction all
-ExecStart=/usr/bin/npm run interpret -- --jurisdiction all
 ExecStart=/usr/bin/npm run status -- --jurisdiction all
 ```
 
@@ -408,10 +435,21 @@ loses the one thing here that cannot be re-derived.
 
 ```bash
 fly apps create towncivic          # once — NOT `fly launch`, see below
-./scripts/setup-fly.sh --apply     # the credentials (dry run without --apply)
+./scripts/setup-fly.sh --apply     # hosted-account runtime values
 npm run snapshot                   # publish the database, from wherever it is
 ./scripts/deploy-fly.sh            # preflight, pull, deploy, verify
 ```
+
+If the app was configured before the web/archive credential split, stage removal
+of the four R2 values once; the next deploy applies it without an extra restart:
+
+```bash
+fly secrets unset --app towncivic --stage \
+  S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY S3_BUCKET S3_ENDPOINT
+```
+
+Refresh and Deploy retain their own R2 configuration in GitHub Actions. The
+running web machine does not read the bucket.
 
 Three things that bite in that order, all of them once:
 
@@ -540,6 +578,7 @@ floor cost.
 | -------------------------------------- | -------------------------------------------------------------- |
 | `problems` non-empty                   | Read it; each entry names the source                           |
 | a source failing repeatedly            | The town changed its site — run `verify`, then `discover`      |
+| `warnings` non-empty                   | Publishable, but inspect the data-quality signal               |
 | `answered but has produced no records` | The URL is right and the adapter is not, or the feed is empty  |
 | `nothing new in N days`                | Often just August. Check the town's site before assuming a bug |
 | `documentsPending` only growing        | `extract --limit` is set lower than the arrival rate           |

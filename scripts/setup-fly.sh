@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Push the runtime configuration from `.env` into a Fly app.
 #
-# The sibling of `sync-github-config.sh`, and deliberately built on the same
-# allowlist so the two cannot describe different deployments. Fly has no
-# variable/secret split the way Actions does — `fly secrets` is the only
-# mechanism — but the non-credentials are already in `fly.toml` under `[env]`,
-# where they are readable, so this only sends the credentials.
+# The sibling of `sync-github-config.sh`, narrowed to what the web process
+# actually reads. Fly has no variable/secret split the way Actions does — `fly
+# secrets` is the only mechanism — but the non-credentials are already in
+# `fly.toml` under `[env]`, where they are readable.
+#
+# R2 is deliberately absent. Refresh writes the archive and Deploy reads the
+# snapshot; the running web machine serves the database baked into its image and
+# has no reason to hold a credential capable of changing the archive.
 #
 # Dry run by default. No secret value is printed, only its length.
 #
@@ -22,13 +25,10 @@ APP="${FLY_APP:-$(grep -E '^app *= *' fly.toml | head -1 | sed 's/.*= *"\(.*\)"/
 APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
 
-# Only the credentials. Everything else is in fly.toml's [env], on purpose:
-# a locator buried in `fly secrets` is a locator nobody can read back.
+# Only the hosted-account values the running server needs. Everything else is
+# in fly.toml's [env], on purpose: a locator buried in `fly secrets` is a locator
+# nobody can read back.
 SECRETS=(
-  S3_ACCESS_KEY_ID
-  S3_SECRET_ACCESS_KEY
-  S3_BUCKET
-  S3_ENDPOINT
   SUPABASE_URL
   SUPABASE_ANON_KEY
   TOWNCIVIC_SESSION_SECRET
