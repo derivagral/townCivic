@@ -7,6 +7,7 @@ import type { Boundary } from '../geo/boundary.ts';
 import { CHANNEL_LABELS } from '../taxonomy.ts';
 import type { Channel } from '../taxonomy.ts';
 import { STAGE_LABELS, isStage } from '../matters/stages.ts';
+import { formatDate } from '../util/dates.ts';
 
 /**
  * The map, as server-rendered SVG.
@@ -30,6 +31,11 @@ export interface MapPoint extends LatLon {
   status: string | null;
   channel: string | null;
   matched: string | null;
+  href?: string;
+  latestEventId?: string | null;
+  latestEventTitle?: string | null;
+  latestEventAt?: string | null;
+  latestStage?: string | null;
 }
 
 export interface MapModel {
@@ -131,7 +137,7 @@ export function renderMapSvg(model: MapModel): string {
       const title = `${point.label} — ${point.eventCount} record${point.eventCount === 1 ? '' : 's'}${
         stage ? ` · ${stage}` : ''
       }`;
-      return `<a class="pin" href="/matter/${escapeHtml(point.matterId)}" aria-label="${escapeHtml(title)}">
+      return `<a class="pin" href="${escapeHtml(point.href ?? `/matter/${point.matterId}`)}" aria-label="${escapeHtml(title)}">
   <title>${escapeHtml(title)}</title>
   <circle cx="${round(x)}" cy="${round(y)}" r="${on ? round(r + 4, 1) : r}" fill="${color}" fill-opacity="${on ? 1 : 0.82}"></circle>
 </a>`;
@@ -161,14 +167,22 @@ export function renderMapSvg(model: MapModel): string {
 </svg>`;
 }
 
-/** The map page body, ready to hand to `layout`. */
-export function renderMapBody(model: MapModel): string {
+export interface NearbyModel extends MapModel {
+  q?: string;
+  channel?: string;
+  status?: string;
+  town?: string;
+}
+
+/** The Nearby map/list body, ready to hand to `layout`. */
+export function renderNearbyBody(model: NearbyModel): string {
   // Before geocoding there are no pins, but with an outline there is still a
   // map — so draw the town and say what is missing, rather than showing a page
   // that looks broken. The outline needs no network; the pins do.
   if (!model.geocoded) {
     const explain = `<div class="detail"${model.boundary ? ' style="margin-bottom:0"' : ''}>
-  <h1>Map</h1>
+  <p class="eyebrow">Nearby</p>
+  <h1>What is happening around town</h1>
   <p>No address has been placed yet.${
     model.boundary ? ' The outline below is the town; the pins are what is missing.' : ''
   }</p>
@@ -203,26 +217,53 @@ export function renderMapBody(model: MapModel): string {
 </details>`
     : '';
 
-  return `<div class="detail" style="margin-bottom:0">
-  <h1>Map</h1>
-  <p>Every property the town has a record about, sized by how many records mention it and coloured by
-     channel. ${model.points.length} of ${model.totalAddresses} address${model.totalAddresses === 1 ? '' : 'es'}
-     resolved to a point. Click a pin for that property's timeline.</p>
+  const statusOptions = ['filed', 'scheduled', 'heard', 'continued', 'decided', 'withdrawn']
+    .map(
+      (status) =>
+        `<option value="${status}"${model.status === status ? ' selected' : ''}>${escapeHtml(STAGE_LABELS[status as keyof typeof STAGE_LABELS])}</option>`,
+    )
+    .join('');
+  const filters = `<form class="search nearby-search" action="/nearby" method="get">
+  <input type="search" name="q" value="${escapeHtml(model.q ?? '')}" placeholder="Find an address" aria-label="Find an address">
+  <select name="status" aria-label="Matter status"><option value="">Any status</option>${statusOptions}</select>
+  ${model.town ? `<input type="hidden" name="town" value="${escapeHtml(model.town)}">` : ''}
+  ${model.channel ? `<input type="hidden" name="channel" value="${escapeHtml(model.channel)}">` : ''}
+  <button type="submit">Show</button>
+</form>`;
+  const list = model.points.length
+    ? `<div class="nearby-list" aria-label="Mapped matters">${model.points
+        .map((point) => {
+          const selected = model.highlight === point.matterId;
+          const stage = point.status && isStage(point.status) ? STAGE_LABELS[point.status] : point.status;
+          return `<article class="nearby-card${selected ? ' selected' : ''}"${selected ? ' aria-current="true"' : ''}>
+  <div class="meta">${stage ? `<span class="badge stage stage-${escapeHtml(point.status)}">${escapeHtml(stage)}</span>` : ''}<span>${point.eventCount} record${point.eventCount === 1 ? '' : 's'}</span></div>
+  <h2><a href="/matter/${escapeHtml(point.matterId)}">${escapeHtml(point.label)}</a></h2>
+  ${point.latestEventTitle ? `<p>${escapeHtml(point.latestEventTitle)}</p>` : ''}
+  ${point.latestEventAt ? `<p class="count">Latest ${escapeHtml(formatDate(point.latestEventAt))}</p>` : ''}
+</article>`;
+        })
+        .join('')}</div>`
+    : `<div class="empty"><p>No mapped matters match these filters.</p></div>`;
+
+  return `<div class="view-intro">
+  <p class="eyebrow">Nearby</p>
+  <h1>What is happening around town</h1>
+  <p>Properties mentioned in town records, paired with the latest activity and their full timeline.</p>
 </div>
-<div class="mapwrap">
-  ${renderMapSvg(model)}
-  <div class="maplegend">${legend}</div>
-  ${
-    model.boundary
-      ? `<p class="count" style="margin:10px 0 0;font-size:12px">Town outline:
-           ${escapeHtml(model.boundary.source)}${
-             model.boundary.retrieved ? `, retrieved ${escapeHtml(model.boundary.retrieved)}` : ''
-           }. It is a municipal boundary, not a rendering of streets.</p>`
-      : ''
-  }
-  <p class="count" style="margin:10px 0 0;font-size:12px">Pins are a geocoder's reading of a street address,
-     not a parcel boundary, and the grid is latitude and longitude rather than streets. Use them to see
-     whether records cluster, not to identify a lot line.</p>
+${filters}
+<p class="count nearby-coverage">Showing ${model.points.length} mapped matter${model.points.length === 1 ? '' : 's'}. Overall, ${model.totalAddresses - model.unplaced.length} of ${model.totalAddresses} known addresses are placed.</p>
+<div class="nearby-grid">
+  <div class="mapwrap">
+    ${renderMapSvg(model)}
+    <div class="maplegend">${legend}</div>
+    <p class="count map-note">Pins are geocoder readings of street addresses, not parcel boundaries.${
+      model.boundary ? ` Town outline: ${escapeHtml(model.boundary.source)}.` : ''
+    }</p>
+  </div>
+  ${list}
 </div>
 ${unplaced}`;
 }
+
+/** Compatibility for callers that still use the old map-body name. */
+export const renderMapBody = renderNearbyBody;

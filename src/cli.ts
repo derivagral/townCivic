@@ -400,7 +400,7 @@ async function main(): Promise<number> {
         const placed = reports.filter((r) => r.ok).length;
         console.log(`\n${placed} of ${reports.length} addresses placed.`);
         if (placed < reports.length) {
-          console.log(dim('Unplaced addresses are listed on /map rather than dropped.'));
+          console.log(dim('Unplaced addresses are listed on /nearby rather than dropped.'));
         }
         return 0;
       });

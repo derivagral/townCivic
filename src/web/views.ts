@@ -1,4 +1,4 @@
-import type { EventRow, MatterRow, SourceRow, TimelineRow } from '../db/repo.ts';
+import type { EventRow, MatterRow, SearchEvidence, SourceRow, TimelineRow } from '../db/repo.ts';
 import { CHANNELS, CHANNEL_DESCRIPTIONS, CHANNEL_LABELS, EVENT_TYPE_LABELS } from '../taxonomy.ts';
 import type { Channel } from '../taxonomy.ts';
 import { MATTER_KIND_LABELS } from '../matters/key.ts';
@@ -115,19 +115,32 @@ export interface LayoutOptions {
   feedUrl?: string;
   /** Display name of the signed-in reader, when there is one. */
   account?: string | null;
+  /** The reader job this page belongs to in the primary navigation. */
+  activeView?: 'activity' | 'nearby' | 'timelines';
 }
 
 export function layout(options: LayoutOptions): string {
   const { filters, town } = options;
+  const channelPath = options.activeView === 'nearby' ? '/nearby' : '/';
   const tabs = [
     { value: '', label: 'Everything' },
     ...CHANNELS.map((c) => ({ value: c, label: CHANNEL_LABELS[c] })),
   ]
     .map((tab) => {
       const on = (filters.channel ?? '') === tab.value;
-      const url = href(filters, { channel: tab.value || undefined, page: 1 });
+      const url = href(filters, { channel: tab.value || undefined, page: 1 }, channelPath);
       return `<a class="${on ? 'on' : ''}" href="${escapeHtml(url)}">${escapeHtml(tab.label)}</a>`;
     })
+    .join('');
+  const primary = [
+    { value: 'activity', label: 'Activity', path: '/' },
+    { value: 'nearby', label: 'Nearby', path: '/nearby' },
+    { value: 'timelines', label: 'Timelines', path: '/matters' },
+  ]
+    .map(
+      (item) =>
+        `<a class="${options.activeView === item.value ? 'on' : ''}" href="${escapeHtml(withTown(item.path, town))}">${item.label}</a>`,
+    )
     .join('');
 
   // The switcher is the whole multi-town UI: the same pages, a different town.
@@ -167,12 +180,13 @@ ${options.feedUrl ? `<link rel="alternate" type="application/atom+xml" title="${
       <h1><a href="${escapeHtml(withTown('/', town))}">townCivic</a></h1>
       <span class="tag">${escapeHtml(town.label)} · primary-source civic record</span>
       <span class="spacer"></span>
-      <span class="util"><a href="${escapeHtml(withTown('/matters', town))}">Timelines</a><a href="${escapeHtml(withTown('/map', town))}">Map</a><a href="${escapeHtml(withTown('/sources', town))}">Sources</a><a href="${escapeHtml(withTown('/feeds', town))}">Feeds</a>${
+      <span class="util"><a href="${escapeHtml(withTown('/sources', town))}">Sources</a><a href="${escapeHtml(withTown('/feeds', town))}">Feeds</a>${
         options.account ? `<a href="/my">${escapeHtml(options.account)}</a>` : '<a href="/login">Sign in</a>'
       }</span>
     </div>
     ${switcher}
-    <nav class="channels">${tabs}</nav>
+    <nav class="primary" aria-label="Explore">${primary}</nav>
+    ${options.activeView === 'activity' || options.activeView === 'nearby' ? `<nav class="channels" aria-label="Channel">${tabs}</nav>` : ''}
   </div>
 </header>
 <div class="wrap">
@@ -195,7 +209,17 @@ function badge(row: EventRow): string {
   return `<span class="badge ch ch-${escapeHtml(channel)}">${escapeHtml(CHANNEL_LABELS[channel] ?? channel)}</span>`;
 }
 
-function eventCard(row: EventRow, filters: Filters): string {
+function evidenceHtml(evidence?: SearchEvidence): string {
+  if (!evidence) return '';
+  const safe = evidence.text
+    .split(/(\[\[|\]\])/)
+    .map((part) => (part === '[[' ? '<mark>' : part === ']]' ? '</mark>' : escapeHtml(part)))
+    .join('');
+  const label = evidence.source === 'record' ? 'Match in the official record' : 'Match in a derived reading';
+  return `<p class="search-evidence"><span>${escapeHtml(label)}</span>${safe}</p>`;
+}
+
+function eventCard(row: EventRow, filters: Filters, evidence?: SearchEvidence): string {
   const subjects = parseJsonArray(row.subjects)
     .slice(0, 4)
     .map((s) => `<span class="badge subject">${escapeHtml(s)}</span>`)
@@ -222,6 +246,7 @@ function eventCard(row: EventRow, filters: Filters): string {
   return `<article class="event p-${escapeHtml(row.priority)}">
   <h4><a href="/event/${escapeHtml(row.id)}">${escapeHtml(row.title)}</a></h4>
   ${row.summary ? `<p class="summary">${escapeHtml(row.summary)}</p>` : ''}
+  ${evidenceHtml(evidence)}
   <div class="meta">
     ${badge(row)}
     <span class="badge kind">${escapeHtml(kind)}</span>
@@ -234,7 +259,12 @@ function eventCard(row: EventRow, filters: Filters): string {
 </article>`;
 }
 
-function dayGroups(rows: EventRow[], filters: Filters, upcoming: boolean): string {
+function dayGroups(
+  rows: EventRow[],
+  filters: Filters,
+  upcoming: boolean,
+  evidence: Record<string, SearchEvidence> = {},
+): string {
   const groups = new Map<string, EventRow[]>();
   for (const row of rows) {
     const key = dayKey(row.occurred_at ?? row.published_at ?? row.first_seen_at);
@@ -250,7 +280,7 @@ function dayGroups(rows: EventRow[], filters: Filters, upcoming: boolean): strin
         days === 0 ? ' · today' : days === 1 ? ' · tomorrow' : days === -1 ? ' · yesterday' : '';
       return `<section class="daygroup${upcoming ? ' upcoming' : ''}">
   <h3>${escapeHtml(formatDayHeading(key))}${escapeHtml(relative)}</h3>
-  ${items.map((row) => eventCard(row, filters)).join('\n')}
+  ${items.map((row) => eventCard(row, filters, evidence[row.id])).join('\n')}
 </section>`;
     })
     .join('\n');
@@ -274,6 +304,7 @@ export interface IndexViewModel {
   feedUrl: string;
   /** Whether the interpretation stage has produced anything to search. */
   hasDerived: boolean;
+  evidence?: Record<string, SearchEvidence>;
   /**
    * True when this town is registered but has nothing enabled yet. Its empty
    * page then says what is actually true of it, rather than telling a reader to
@@ -311,7 +342,7 @@ export function renderIndex(model: IndexViewModel): string {
   const derivedToggle = model.hasDerived
     ? `<label class="derivedtoggle">
          <input type="checkbox" name="derived" value="1"${filters.derived ? ' checked' : ''}>
-         <span>Also search AI-derived readings of minutes</span>
+         <span>Include derived readings of minutes</span>
        </label>`
     : '';
 
@@ -360,17 +391,21 @@ ${
                 or fetch the live site with <code>npm run ingest</code>.</p>
            </div>`;
 
-  const body = `
+  const body = `<div class="view-intro">
+  <p class="eyebrow">Activity</p>
+  <h1>What changed in town</h1>
+  <p>New notices, agendas, minutes, decisions, and deadlines—ordered by when they happen.</p>
+</div>
 <div class="toolbar">
   <strong>${model.total.toLocaleString('en-US')}</strong>
   <span class="count">record${model.total === 1 ? '' : 's'}${filters.q ? ` matching “${escapeHtml(filters.q)}”` : ''}${
-    filters.q && filters.derived ? ', including AI-derived readings' : ''
+    filters.q && filters.derived ? ', including derived readings' : ''
   }</span>
   ${channelNote}
   <span class="modes">${modes}</span>
 </div>
-${model.upcoming.length ? `<h2 class="count" style="margin:22px 0 0;font-size:13px;text-transform:uppercase;letter-spacing:.07em;">Upcoming</h2>${dayGroups(model.upcoming, filters, true)}` : ''}
-${model.past.length ? `${model.upcoming.length ? `<h2 class="count" style="margin:34px 0 0;font-size:13px;text-transform:uppercase;letter-spacing:.07em;">Already happened</h2>` : ''}${dayGroups(model.past, filters, false)}` : ''}
+${model.upcoming.length ? `<h2 class="count" style="margin:22px 0 0;font-size:13px;text-transform:uppercase;letter-spacing:.07em;">Upcoming</h2>${dayGroups(model.upcoming, filters, true, model.evidence)}` : ''}
+${model.past.length ? `${model.upcoming.length ? `<h2 class="count" style="margin:34px 0 0;font-size:13px;text-transform:uppercase;letter-spacing:.07em;">Already happened</h2>` : ''}${dayGroups(model.past, filters, false, model.evidence)}` : ''}
 ${empty}
 ${
   model.past.length >= model.pageSize || filters.page > 1
@@ -391,6 +426,7 @@ ${
     body,
     aside,
     feedUrl: model.feedUrl,
+    activeView: 'activity',
     ...(model.account !== undefined ? { account: model.account } : {}),
   });
 }
@@ -502,6 +538,7 @@ export function renderEvent(model: EventViewModel): string {
     filters: EMPTY_FILTERS,
     sampleData,
     body,
+    activeView: 'activity',
     ...(model.account !== undefined ? { account: model.account } : {}),
   });
 }
@@ -580,6 +617,7 @@ export interface MattersViewModel {
   kinds: { value: string; n: number }[];
   kind?: string;
   q?: string;
+  sort: 'recent' | 'documented';
   /** Whether single-record matters are being shown. */
   includeSingletons: boolean;
   linked: boolean;
@@ -596,6 +634,7 @@ export function renderMatters(model: MattersViewModel): string {
       kind: model.kind,
       q: model.q,
       all: model.includeSingletons ? '1' : undefined,
+      sort: model.sort === 'documented' ? 'documented' : undefined,
       ...patch,
     };
     for (const [key, value] of Object.entries(merged)) if (value) search.set(key, value);
@@ -622,8 +661,19 @@ export function renderMatters(model: MattersViewModel): string {
            ${model.includeSingletons ? '' : '<p>Only matters with more than one record are shown by default.</p>'}</div>`
       : '';
 
+  const sortTabs = [
+    { value: 'recent', label: 'Recently active' },
+    { value: 'documented', label: 'Most documented' },
+  ]
+    .map(
+      (item) =>
+        `<a class="${model.sort === item.value ? 'on' : ''}" href="${escapeHtml(params({ sort: item.value === 'recent' ? undefined : item.value }))}">${item.label}</a>`,
+    )
+    .join('');
+
   const body = `<div class="detail" style="margin-bottom:6px">
-  <h1>Timelines</h1>
+  <p class="eyebrow">Timelines</p>
+  <h1>Follow a matter over time</h1>
   <p>A <em>matter</em> is the thing the town is deciding about — a property, a warrant article, a procurement —
      as opposed to any one meeting about it. The town publishes no case number, so these are grouped by
      normalizing the subject the extractor read out of the notice. Every entry links back to the record it
@@ -634,11 +684,13 @@ export function renderMatters(model: MattersViewModel): string {
   <span class="count">matter${model.total === 1 ? '' : 's'}</span>
   <span class="modes">${kindTabs}</span>
 </div>
+<div class="subnav" aria-label="Timeline order">${sortTabs}</div>
 <form class="search" action="/matters" method="get" style="margin:14px 0">
   <input type="search" name="q" value="${escapeHtml(model.q ?? '')}" placeholder="Find an address or article" aria-label="Find a matter">
   ${isMultiTown(model.town) ? `<input type="hidden" name="town" value="${escapeHtml(model.town.id)}">` : ''}
   ${model.kind ? `<input type="hidden" name="kind" value="${escapeHtml(model.kind)}">` : ''}
   ${model.includeSingletons ? '<input type="hidden" name="all" value="1">' : ''}
+  ${model.sort === 'documented' ? '<input type="hidden" name="sort" value="documented">' : ''}
   <button type="submit">Go</button>
 </form>
 <p class="count"><a href="${escapeHtml(params({ all: model.includeSingletons ? undefined : '1' }))}">${
@@ -653,6 +705,7 @@ ${empty}`;
     filters: EMPTY_FILTERS,
     sampleData: model.sampleData,
     body,
+    activeView: 'timelines',
     ...(model.account !== undefined ? { account: model.account } : {}),
   });
 }
@@ -714,7 +767,7 @@ export function renderMatter(model: MatterViewModel): string {
   <div class="actions">
     ${watch}
     <a href="${escapeHtml(withTown('/', model.town, { q: matter.label }))}">Search records for this</a>
-    ${model.place ? `<a href="${escapeHtml(withTown('/map', model.town, { matter: matter.id }))}">Show on the map</a>` : ''}
+    ${model.place ? `<a href="${escapeHtml(withTown('/nearby', model.town, { matter: matter.id }))}">Show nearby</a>` : ''}
   </div>
   ${
     matter.event_count === 1
@@ -733,6 +786,7 @@ export function renderMatter(model: MatterViewModel): string {
     filters: EMPTY_FILTERS,
     sampleData: model.sampleData,
     body,
+    activeView: 'timelines',
     ...(model.account !== undefined ? { account: model.account } : {}),
   });
 }
