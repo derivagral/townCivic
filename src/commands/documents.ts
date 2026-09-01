@@ -81,6 +81,8 @@ export async function backfillDocuments(db: Db, options: BackfillOptions = {}): 
       `SELECT path, bytes FROM documents
        UNION
        SELECT path, bytes FROM attachments WHERE path IS NOT NULL
+       UNION
+       SELECT text_path AS path, text_chars AS bytes FROM attachments WHERE text_path IS NOT NULL
        ORDER BY path`,
     )
     .all() as unknown as { path: string; bytes: number }[];

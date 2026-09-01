@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { getDocument, OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 /**
  * PDF text and form extraction, built on Mozilla's pdf.js (Apache-2.0).
@@ -35,10 +35,30 @@ export interface PdfExtraction {
    */
   likelyScanned: boolean;
   charsPerPage: number;
+  /** Page-level evidence used to decide where an OCR fallback is worthwhile. */
+  pageStats: PdfPageStat[];
+}
+
+export interface PdfPageStat {
+  page: number;
+  chars: number;
+  images: number;
+  /** Thin text plus at least one raster image: likely an image of a page. */
+  needsOcr: boolean;
 }
 
 /** Below this, a page is not carrying real text. */
 const SCANNED_CHARS_PER_PAGE = 100;
+
+const IMAGE_OPERATORS = new Set<number>([
+  OPS.paintImageMaskXObject,
+  OPS.paintImageMaskXObjectGroup,
+  OPS.paintImageXObject,
+  OPS.paintInlineImageXObject,
+  OPS.paintInlineImageXObjectGroup,
+  OPS.paintImageXObjectRepeat,
+  OPS.paintImageMaskXObjectRepeat,
+]);
 
 /**
  * Where pdf.js should find the Foxit substitutes for the 14 standard PDF fonts,
@@ -99,14 +119,24 @@ export async function extractPdf(bytes: Uint8Array): Promise<PdfExtraction> {
 
   try {
     const pageTexts: string[] = [];
+    const pageStats: PdfPageStat[] = [];
     for (let page = 1; page <= doc.numPages; page++) {
-      const content = await (await doc.getPage(page)).getTextContent();
+      const pdfPage = await doc.getPage(page);
+      const [content, operators] = await Promise.all([pdfPage.getTextContent(), pdfPage.getOperatorList()]);
       // `hasEOL` is pdf.js's own line-break signal and reconstructs lines far
       // better than guessing from item coordinates.
       const text = content.items
         .map((item) => ('str' in item ? item.str + (item.hasEOL ? '\n' : '') : ''))
         .join('');
       pageTexts.push(text);
+      const chars = text.replace(/\s/g, '').length;
+      const images = operators.fnArray.filter((operator) => IMAGE_OPERATORS.has(operator)).length;
+      pageStats.push({
+        page,
+        chars,
+        images,
+        needsOcr: chars < SCANNED_CHARS_PER_PAGE && images > 0,
+      });
     }
 
     const fields: Record<string, string> = {};
@@ -122,14 +152,19 @@ export async function extractPdf(bytes: Uint8Array): Promise<PdfExtraction> {
     }
 
     const text = pageTexts.join('\n\n');
-    const density = text.replace(/\s/g, '').length / Math.max(1, doc.numPages);
+    const totalChars = pageStats.reduce((sum, page) => sum + page.chars, 0);
+    const density = totalChars / Math.max(1, doc.numPages);
 
     return {
       pages: doc.numPages,
       text,
       fields,
-      likelyScanned: density < SCANNED_CHARS_PER_PAGE && Object.keys(fields).length === 0,
+      // Unlike a document-wide average, this catches a scanned body behind a
+      // digital cover page. Blank pages do not trip it because they have no
+      // raster image to OCR.
+      likelyScanned: pageStats.some((page) => page.needsOcr),
       charsPerPage: Math.round(density),
+      pageStats,
     };
   } finally {
     await doc.destroy();

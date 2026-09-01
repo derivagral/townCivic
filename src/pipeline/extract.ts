@@ -6,7 +6,7 @@ import { config } from '../config.ts';
 import { getDocuments } from '../documents/index.ts';
 import { keyFor } from '../documents/store.ts';
 import { extractPdf, looksLikePdf } from '../extract/pdf.ts';
-import type { PdfExtraction } from '../extract/pdf.ts';
+import type { PdfExtraction, PdfPageStat } from '../extract/pdf.ts';
 import { parseMeetingNotice, summarizeAgenda } from '../extract/meeting-notice.ts';
 import type { MeetingNotice } from '../extract/meeting-notice.ts';
 import { extractSubjects, stripHtml, truncate } from '../util/text.ts';
@@ -40,8 +40,24 @@ export interface ExtractReport {
   subjects: string[];
   pages: number;
   likelyScanned: boolean;
+  quality?: ExtractionQuality;
   skipped?: 'no-document' | 'already-extracted' | 'not-a-document';
   error?: string;
+  failureCode?: ExtractionFailureCode;
+  retryAfter?: string;
+}
+
+export type ExtractionQuality = 'structured' | 'text' | 'mixed' | 'scanned' | 'empty' | 'html';
+export type ExtractionFailureCode =
+  'http_not_found' | 'http_error' | 'network_error' | 'parse_error' | 'storage_error';
+
+class ExtractionError extends Error {
+  readonly code: ExtractionFailureCode;
+
+  constructor(code: ExtractionFailureCode, message: string) {
+    super(message);
+    this.code = code;
+  }
 }
 
 export interface ExtractOptions {
@@ -90,7 +106,17 @@ function selectCandidates(db: Db, options: ExtractOptions): Candidate[] {
     conditions.push('jurisdiction = ?');
     params.push(options.jurisdiction);
   }
-  if (!options.force) conditions.push('extracted_at IS NULL');
+  if (!options.force) {
+    conditions.push('extracted_at IS NULL');
+    // A failed document stays pending, but a hot 404 or broken PDF should not
+    // consume the front of every limited refresh until its backoff expires.
+    conditions.push(
+      `NOT EXISTS (SELECT 1 FROM attachments a
+                    WHERE a.event_id = events.id AND a.url = events.document_url
+                      AND a.error IS NOT NULL
+                      AND a.retry_after > strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+    );
+  }
   if (options.eventIds?.length) {
     conditions.push(`id IN (${options.eventIds.map(() => '?').join(',')})`);
     params.push(...options.eventIds);
@@ -146,21 +172,34 @@ export async function extractDocuments(db: Db, options: ExtractOptions = {}): Pr
       likelyScanned: false,
     };
 
+    let phase: ExtractionFailureCode = 'network_error';
     try {
-      const response = await doFetch(url, {
-        headers: { 'user-agent': config.userAgent },
-        redirect: 'follow',
-        signal: AbortSignal.timeout(config.requestTimeoutMs),
-      });
+      let response: Response;
+      try {
+        response = await doFetch(url, {
+          headers: { 'user-agent': config.userAgent },
+          redirect: 'follow',
+          signal: AbortSignal.timeout(config.requestTimeoutMs),
+        });
+      } catch (error) {
+        throw new ExtractionError('network_error', error instanceof Error ? error.message : String(error));
+      }
 
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) {
+        throw new ExtractionError(
+          response.status === 404 || response.status === 410 ? 'http_not_found' : 'http_error',
+          `HTTP ${response.status}`,
+        );
+      }
 
       const contentType = response.headers.get('content-type');
       const bytes = new Uint8Array(await response.arrayBuffer());
+      phase = 'parse_error';
 
       if (!looksLikePdf(bytes)) {
         // Not a PDF — usually the HTML view. Keep its text so search still works.
         const text = stripHtml(Buffer.from(bytes).toString('utf8'));
+        phase = 'storage_error';
         await applyExtraction(db, candidate, profile, {
           url,
           text,
@@ -169,11 +208,13 @@ export async function extractDocuments(db: Db, options: ExtractOptions = {}): Pr
           pages: 0,
           charsPerPage: text.length,
           likelyScanned: false,
+          pageStats: [{ page: 1, chars: text.replace(/\s/g, '').length, images: 0, needsOcr: false }],
           fields: {},
           notice: null,
         });
         report.ok = true;
         report.skipped = 'not-a-document';
+        report.quality = text.trim() ? 'html' : 'empty';
         reports.push(report);
         options.onProgress?.(report);
         await new Promise((resolve) => setTimeout(resolve, config.perHostDelayMs));
@@ -182,15 +223,20 @@ export async function extractDocuments(db: Db, options: ExtractOptions = {}): Pr
 
       const extraction: PdfExtraction = await extractPdf(bytes);
       const notice = parseMeetingNotice(extraction, profile);
+      const extractedText = [Object.values(extraction.fields).join('\n'), extraction.text]
+        .filter(Boolean)
+        .join('\n\n');
 
+      phase = 'storage_error';
       await applyExtraction(db, candidate, profile, {
         url,
-        text: [Object.values(extraction.fields).join('\n'), extraction.text].filter(Boolean).join('\n\n'),
+        text: extractedText,
         contentType,
         bytes,
         pages: extraction.pages,
         charsPerPage: extraction.charsPerPage,
         likelyScanned: extraction.likelyScanned,
+        pageStats: extraction.pageStats,
         fields: extraction.fields,
         notice,
       });
@@ -201,23 +247,37 @@ export async function extractDocuments(db: Db, options: ExtractOptions = {}): Pr
       report.subjects = notice.subjects;
       report.pages = extraction.pages;
       report.likelyScanned = extraction.likelyScanned;
+      report.quality = qualityOf({
+        text: extractedText,
+        pages: extraction.pages,
+        pageStats: extraction.pageStats,
+        structured: notice.structured,
+        html: false,
+      });
     } catch (error) {
       report.error = error instanceof Error ? error.message : String(error);
+      report.failureCode = error instanceof ExtractionError ? error.code : phase;
+      const retryMs = report.failureCode === 'http_not_found' ? 7 * 86_400_000 : 6 * 3_600_000;
+      report.retryAfter = new Date(Date.now() + retryMs).toISOString();
       db.prepare(
-        `INSERT INTO attachments (id, event_id, url, bytes, extracted_at, error)
-         VALUES (?,?,?,0,?,?)
-         ON CONFLICT(id) DO UPDATE SET error = excluded.error, extracted_at = excluded.extracted_at`,
+        `INSERT INTO attachments
+           (id, event_id, url, bytes, quality, extracted_at, error, failure_code, retry_after, attempts)
+         VALUES (?,?,?,0,'error',?,?,?,?,1)
+         ON CONFLICT(id) DO UPDATE SET
+           error = excluded.error, failure_code = excluded.failure_code,
+           retry_after = excluded.retry_after, extracted_at = excluded.extracted_at,
+           attempts = attachments.attempts + 1`,
       ).run(
         createHash('sha256').update(`error:${candidate.id}:${url}`).digest('hex'),
         candidate.id,
-        url,
+        // Keep the exact listing URL here so a corrected document_url bypasses
+        // this row's backoff immediately. Successful attachments record the
+        // preferred/downloaded URL instead.
+        candidate.document_url,
         new Date().toISOString(),
         report.error,
-      );
-      // Mark it attempted so a failing document does not block every later run.
-      db.prepare('UPDATE events SET extracted_at = ? WHERE id = ?').run(
-        new Date().toISOString(),
-        candidate.id,
+        report.failureCode,
+        report.retryAfter,
       );
     }
 
@@ -237,8 +297,24 @@ interface Applied {
   pages: number;
   charsPerPage: number;
   likelyScanned: boolean;
+  pageStats: PdfPageStat[];
   fields: Record<string, string>;
   notice: MeetingNotice | null;
+}
+
+function qualityOf(input: {
+  text: string;
+  pages: number;
+  pageStats: PdfPageStat[];
+  structured: boolean;
+  html: boolean;
+}): ExtractionQuality {
+  if (!input.text.trim()) return 'empty';
+  if (input.html) return 'html';
+  const ocrPages = input.pageStats.filter((page) => page.needsOcr).length;
+  if (ocrPages && ocrPages === input.pages) return 'scanned';
+  if (ocrPages) return 'mixed';
+  return input.structured ? 'structured' : 'text';
 }
 
 /**
@@ -256,23 +332,41 @@ async function applyExtraction(
 ): Promise<void> {
   const now = new Date().toISOString();
   const extension = applied.pages > 0 ? 'pdf' : 'html';
+  const documents = getDocuments();
   // `attachments/` keeps the documents a reader could open separate from the
   // listing pages they were found on, in whichever backend holds them.
-  const stored = await getDocuments().put(
+  const stored = await documents.put(
     keyFor(createHash('sha256').update(applied.bytes).digest('hex'), extension, 'attachments/'),
     applied.bytes,
     applied.contentType,
   );
 
+  const textBytes = new TextEncoder().encode(applied.text);
+  const textHash = createHash('sha256').update(textBytes).digest('hex');
+  const storedText = applied.text
+    ? await documents.put(keyFor(textHash, 'txt', 'extracted/'), textBytes, 'text/plain; charset=utf-8')
+    : null;
+  const quality = qualityOf({
+    text: applied.text,
+    pages: applied.pages,
+    pageStats: applied.pageStats,
+    structured: Boolean(applied.notice?.structured),
+    html: applied.pages === 0,
+  });
+
   db.prepare(
-    `INSERT INTO attachments (id, event_id, url, content_type, bytes, path, pages,
-                              chars_per_page, likely_scanned, fields, notice, extracted_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    `INSERT INTO attachments (id, event_id, url, content_type, bytes, path, text_path, text_chars,
+                              pages, chars_per_page, likely_scanned, page_stats, quality,
+                              fields, notice, extracted_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(id) DO UPDATE SET
        event_id = excluded.event_id, url = excluded.url, pages = excluded.pages,
+       text_path = excluded.text_path, text_chars = excluded.text_chars,
        chars_per_page = excluded.chars_per_page, likely_scanned = excluded.likely_scanned,
+       page_stats = excluded.page_stats, quality = excluded.quality,
        fields = excluded.fields, notice = excluded.notice,
-       extracted_at = excluded.extracted_at, error = NULL`,
+       extracted_at = excluded.extracted_at, error = NULL, failure_code = NULL,
+       retry_after = NULL, attempts = 0`,
   ).run(
     stored.id,
     candidate.id,
@@ -280,9 +374,13 @@ async function applyExtraction(
     applied.contentType,
     applied.bytes.length,
     stored.key,
+    storedText?.key ?? null,
+    applied.text.length,
     applied.pages,
     applied.charsPerPage,
     applied.likelyScanned ? 1 : 0,
+    JSON.stringify(applied.pageStats),
+    quality,
     JSON.stringify(applied.fields),
     applied.notice ? JSON.stringify(applied.notice) : null,
     now,
@@ -306,6 +404,8 @@ async function applyExtraction(
 
   const tags = new Set(parseJsonArray(candidate.tags));
   if (notice?.structured) tags.add('structured');
+  else tags.delete('structured');
+  tags.delete('scanned');
   if (applied.likelyScanned) tags.add('scanned');
 
   db.prepare(
@@ -320,7 +420,10 @@ async function applyExtraction(
             extracted_at = ?
       WHERE id = ?`,
   ).run(
-    truncate(applied.text, 20_000),
+    // Keep the complete extracted record. The lossless copy in the document
+    // store preserves provenance; this copy is what makes every page searchable
+    // and prevents interpretation from silently seeing only the first 20k.
+    applied.text,
     summary,
     JSON.stringify(subjects),
     JSON.stringify([...tags].sort()),

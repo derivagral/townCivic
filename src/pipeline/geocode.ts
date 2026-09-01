@@ -8,6 +8,15 @@ import type { Boundary } from '../geo/boundary.ts';
 import { getProfile } from '../registry/index.ts';
 
 /**
+ * Bump when query construction, response parsing or boundary acceptance changes
+ * in a way that can make a previous definite miss succeed. Good coordinates do
+ * not expire; only failed rows from an older version are retried.
+ */
+export const GEOCODER_CACHE_VERSION = 2;
+
+export type GeocodeFailureCode = 'no_match' | 'outside_boundary' | 'provider_error';
+
+/**
  * Resolve address matters to coordinates, once each, and remember the answer.
  *
  * This is the only stage that talks to anyone other than the town, so it is
@@ -57,6 +66,7 @@ export interface GeocodeReport {
   lon?: number;
   matched?: string;
   error?: string;
+  failureCode?: GeocodeFailureCode;
 }
 
 interface Candidate {
@@ -83,8 +93,13 @@ function selectCandidates(db: Db, options: GeocodeOptions): Candidate[] {
   }
   if (!options.force) {
     conditions.push(
-      `NOT EXISTS (SELECT 1 FROM geocodes g WHERE g.jurisdiction = m.jurisdiction AND g.key = m.key)`,
+      `NOT EXISTS (
+         SELECT 1 FROM geocodes g
+          WHERE g.jurisdiction = m.jurisdiction AND g.key = m.key
+            AND (g.lat IS NOT NULL OR g.provider = 'manual' OR g.cache_version >= ?)
+       )`,
     );
+    params.push(GEOCODER_CACHE_VERSION);
   }
 
   // Busiest first: if a run is cut short, the properties the town is actually
@@ -105,6 +120,24 @@ interface Answer {
   lon: number | null;
   matched: string | null;
   failure: string | null;
+  failureCode: Exclude<GeocodeFailureCode, 'provider_error'> | null;
+}
+
+/**
+ * The display label is usually the best Census query, but a unit letter or
+ * spelling variation can be exactly why it misses. The matter key is the
+ * conservative, deterministic address normalization already used for linking,
+ * so it is a safe second attempt and not a fuzzy guess.
+ */
+export function geocodeQueries(candidate: Pick<Candidate, 'label' | 'key'>): string[] {
+  const comparable = (value: string) =>
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+  return [candidate.label, candidate.key].filter(
+    (query, index, all) => all.findIndex((other) => comparable(other) === comparable(query)) === index,
+  );
 }
 
 /**
@@ -114,35 +147,74 @@ interface Answer {
  * address and outlives every rebuild of the matters; `places` is where that
  * answer lands for the matter that happens to be asking today.
  */
-function record(db: Db, candidate: Candidate, answer: Answer): void {
+function record(db: Db, candidate: Candidate, answer: Answer, query: string): void {
   const now = new Date().toISOString();
   const provider = answer.lat === null ? 'none' : 'census';
 
   db.prepare(
-    `INSERT INTO geocodes (jurisdiction, key, query, provider, lat, lon, matched, failure, retrieved_at)
-     VALUES (?,?,?,?,?,?,?,?,?)
+    `INSERT INTO geocodes
+       (jurisdiction, key, query, provider, lat, lon, matched, failure, failure_code, cache_version, retrieved_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(jurisdiction, key, provider) DO UPDATE SET
        query = excluded.query, lat = excluded.lat, lon = excluded.lon, matched = excluded.matched,
-       failure = excluded.failure, retrieved_at = excluded.retrieved_at`,
+       failure = excluded.failure, failure_code = excluded.failure_code,
+       cache_version = excluded.cache_version, retrieved_at = excluded.retrieved_at`,
   ).run(
     candidate.jurisdiction,
     candidate.key,
-    candidate.label,
+    query,
     provider,
     answer.lat,
     answer.lon,
     answer.matched,
     answer.failure,
+    answer.failureCode,
+    GEOCODER_CACHE_VERSION,
     now,
   );
 
+  // Project the best cached answer rather than blindly projecting this attempt.
+  // A manual override wins; a known good point beats a later failed `--force`.
+  const best = db
+    .prepare(
+      `SELECT lat, lon, matched, provider, failure, failure_code, retrieved_at
+         FROM geocodes
+        WHERE jurisdiction = ? AND key = ?
+        ORDER BY CASE
+                   WHEN provider = 'manual' AND lat IS NOT NULL THEN 0
+                   WHEN lat IS NOT NULL THEN 1
+                   ELSE 2
+                 END,
+                 cache_version DESC, retrieved_at DESC
+        LIMIT 1`,
+    )
+    .get(candidate.jurisdiction, candidate.key) as {
+    lat: number | null;
+    lon: number | null;
+    matched: string | null;
+    provider: string;
+    failure: string | null;
+    failure_code: string | null;
+    retrieved_at: string;
+  };
+
   db.prepare(
-    `INSERT INTO places (matter_id, lat, lon, matched, provider, failure, geocoded_at)
-     VALUES (?,?,?,?,?,?,?)
+    `INSERT INTO places (matter_id, lat, lon, matched, provider, failure, failure_code, geocoded_at)
+     VALUES (?,?,?,?,?,?,?,?)
      ON CONFLICT(matter_id) DO UPDATE SET
        lat = excluded.lat, lon = excluded.lon, matched = excluded.matched,
-       provider = excluded.provider, failure = excluded.failure, geocoded_at = excluded.geocoded_at`,
-  ).run(candidate.id, answer.lat, answer.lon, answer.matched, provider, answer.failure, now);
+       provider = excluded.provider, failure = excluded.failure,
+       failure_code = excluded.failure_code, geocoded_at = excluded.geocoded_at`,
+  ).run(
+    candidate.id,
+    best.lat,
+    best.lon,
+    best.matched,
+    best.provider,
+    best.failure,
+    best.failure_code,
+    best.retrieved_at,
+  );
 }
 
 /**
@@ -158,14 +230,28 @@ export function placeFromCache(db: Db, jurisdiction?: string): number {
   const before = (db.prepare('SELECT count(*) AS n FROM places').get() as { n: number }).n;
 
   db.prepare(
-    `INSERT INTO places (matter_id, lat, lon, matched, provider, failure, geocoded_at)
-     SELECT m.id, g.lat, g.lon, g.matched, g.provider, g.failure, g.retrieved_at
+    `WITH ranked AS (
+       SELECT g.*,
+              row_number() OVER (
+                PARTITION BY g.jurisdiction, g.key
+                ORDER BY CASE
+                           WHEN g.provider = 'manual' AND g.lat IS NOT NULL THEN 0
+                           WHEN g.lat IS NOT NULL THEN 1
+                           ELSE 2
+                         END,
+                         g.cache_version DESC, g.retrieved_at DESC
+              ) AS choice
+         FROM geocodes g
+     )
+     INSERT INTO places (matter_id, lat, lon, matched, provider, failure, failure_code, geocoded_at)
+     SELECT m.id, g.lat, g.lon, g.matched, g.provider, g.failure, g.failure_code, g.retrieved_at
        FROM matters m
-       JOIN geocodes g ON g.jurisdiction = m.jurisdiction AND g.key = m.key
+       JOIN ranked g ON g.jurisdiction = m.jurisdiction AND g.key = m.key AND g.choice = 1
       WHERE m.kind = 'address' ${where}
      ON CONFLICT(matter_id) DO UPDATE SET
        lat = excluded.lat, lon = excluded.lon, matched = excluded.matched,
-       provider = excluded.provider, failure = excluded.failure, geocoded_at = excluded.geocoded_at`,
+       provider = excluded.provider, failure = excluded.failure,
+       failure_code = excluded.failure_code, geocoded_at = excluded.geocoded_at`,
   ).run(...params);
 
   return (db.prepare('SELECT count(*) AS n FROM places').get() as { n: number }).n - before;
@@ -208,6 +294,7 @@ export async function geocodeMatters(db: Db, options: GeocodeOptions = {}): Prom
 
   for (const candidate of selectCandidates(db, options)) {
     const report: GeocodeReport = { matterId: candidate.id, label: candidate.label, ok: false };
+    const delay = options.delayMs ?? config.perHostDelayMs;
     const {
       town,
       state,
@@ -215,16 +302,35 @@ export async function geocodeMatters(db: Db, options: GeocodeOptions = {}): Prom
     } = fenceFor(candidate.jurisdiction || options.jurisdiction || config.defaultJurisdiction);
 
     try {
-      const response = await doFetch(censusUrl(candidate.label, town, state), {
-        headers: { 'user-agent': config.userAgent },
-        signal: AbortSignal.timeout(config.requestTimeoutMs),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      let match = null;
+      let query = candidate.label;
+      for (const [index, variant] of geocodeQueries(candidate).entries()) {
+        if (index > 0 && delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+        query = variant;
+        const response = await doFetch(censusUrl(variant, town, state), {
+          headers: { 'user-agent': config.userAgent },
+          signal: AbortSignal.timeout(config.requestTimeoutMs),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        match = parseCensusResponse(await response.text());
+        if (match) break;
+      }
 
-      const match = parseCensusResponse(await response.text());
       if (!match) {
         report.error = 'no match';
-        record(db, candidate, { lat: null, lon: null, matched: null, failure: 'no match' });
+        report.failureCode = 'no_match';
+        record(
+          db,
+          candidate,
+          {
+            lat: null,
+            lon: null,
+            matched: null,
+            failure: 'no match',
+            failureCode: 'no_match',
+          },
+          query,
+        );
       } else if (!insideTown(match)) {
         // Two different mistakes this catches. There is a Milton in Vermont,
         // New Hampshire and Florida, so a geocoder can answer confidently about
@@ -233,19 +339,32 @@ export async function geocodeMatters(db: Db, options: GeocodeOptions = {}): Prom
         // continues over the line can resolve to a house that is not in this
         // town. Only the outline catches the second.
         report.error = `outside ${town} (${match.lat.toFixed(4)}, ${match.lon.toFixed(4)})`;
-        record(db, candidate, {
-          lat: null,
-          lon: null,
-          matched: match.matchedAddress,
-          failure: report.error,
-        });
+        report.failureCode = 'outside_boundary';
+        record(
+          db,
+          candidate,
+          {
+            lat: null,
+            lon: null,
+            matched: match.matchedAddress,
+            failure: report.error,
+            failureCode: 'outside_boundary',
+          },
+          query,
+        );
       } else {
-        record(db, candidate, {
-          lat: match.lat,
-          lon: match.lon,
-          matched: match.matchedAddress,
-          failure: null,
-        });
+        record(
+          db,
+          candidate,
+          {
+            lat: match.lat,
+            lon: match.lon,
+            matched: match.matchedAddress,
+            failure: null,
+            failureCode: null,
+          },
+          query,
+        );
         Object.assign(report, {
           ok: true,
           lat: match.lat,
@@ -257,11 +376,11 @@ export async function geocodeMatters(db: Db, options: GeocodeOptions = {}): Prom
       // A transient failure is *not* cached — only a definite "no such address"
       // is, so an outage does not permanently blank half the map.
       report.error = error instanceof Error ? error.message : String(error);
+      report.failureCode = 'provider_error';
     }
 
     reports.push(report);
     options.onProgress?.(report);
-    const delay = options.delayMs ?? config.perHostDelayMs;
     if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
   }
 

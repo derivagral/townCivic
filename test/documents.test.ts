@@ -334,6 +334,29 @@ describe('backfill', () => {
     expect(await store.get(key)).toEqual(bytes('%PDF body'));
   });
 
+  it('covers extracted-text artifacts as well as source attachments', async () => {
+    const sourceKey = keyFor('d'.repeat(64), 'pdf', 'attachments/');
+    const textKey = keyFor('e'.repeat(64), 'txt', 'extracted/');
+    await local.put(sourceKey, bytes('%PDF body'), 'application/pdf');
+    await local.put(textKey, bytes('readable minutes'), 'text/plain');
+    db.prepare(
+      `INSERT INTO events (id, jurisdiction, source_id, level, agency, channel, event_type, priority,
+                           title, url, first_seen_at, last_seen_at, content_hash)
+       VALUES ('e2','milton-ma','src','municipal','Town','government','meeting_minutes','high',
+               'Minutes','https://x','2026-01-01','2026-01-01','h2')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO attachments (id, event_id, url, bytes, path, text_path, text_chars, extracted_at)
+       VALUES (?, 'e2', 'https://x/doc.pdf', 9, ?, ?, 16, '2026-01-01')`,
+    ).run('d'.repeat(64), sourceKey, textKey);
+
+    const store = build();
+    const report = await backfillDocuments(db, { from: local, to: store });
+    expect(report.uploaded).toBe(2);
+    expect(await store.get(sourceKey)).toEqual(bytes('%PDF body'));
+    expect(await store.get(textKey)).toEqual(bytes('readable minutes'));
+  });
+
   function build(): DocumentStore {
     return createS3Documents({
       bucket: FAKE_S3_CREDENTIALS.bucket,

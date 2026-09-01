@@ -40,19 +40,31 @@ export interface AttachmentRow {
   content_type: string | null;
   bytes: number;
   path: string | null;
+  text_path: string | null;
+  text_chars: number | null;
   pages: number | null;
   chars_per_page: number | null;
   likely_scanned: number;
+  page_stats: string;
+  quality: string;
   fields: string;
   notice: string | null;
   extracted_at: string;
   error: string | null;
+  failure_code: string | null;
+  retry_after: string | null;
+  attempts: number;
 }
 
 export function getAttachment(db: Db, eventId: string): AttachmentRow | undefined {
-  return db
-    .prepare('SELECT * FROM attachments WHERE event_id = ? ORDER BY extracted_at DESC LIMIT 1')
-    .get(eventId) as unknown as AttachmentRow | undefined;
+  return (
+    db
+      // A failed forced refresh must not hide the last good extraction.
+      .prepare(
+        'SELECT * FROM attachments WHERE event_id = ? ORDER BY (error IS NULL) DESC, extracted_at DESC LIMIT 1',
+      )
+      .get(eventId) as unknown as AttachmentRow | undefined
+  );
 }
 
 export interface SourceRow {
@@ -853,10 +865,10 @@ export function listPlacedMatters(
 export function listUnplacedMatters(
   db: Db,
   jurisdiction?: string,
-): { id: string; label: string; failure: string | null }[] {
+): { id: string; label: string; failure: string | null; failureCode: string | null }[] {
   const rows = db
     .prepare(
-      `SELECT m.id, m.label, p.failure
+      `SELECT m.id, m.label, p.failure, p.failure_code AS failureCode
          FROM matters m
          LEFT JOIN places p ON p.matter_id = m.id
         WHERE m.kind = 'address' AND (p.matter_id IS NULL OR p.lat IS NULL)
@@ -864,7 +876,12 @@ export function listUnplacedMatters(
         ORDER BY m.event_count DESC, m.label ASC`,
     )
     .all(...((jurisdiction ? [jurisdiction] : []) as never[]));
-  return rows as unknown as { id: string; label: string; failure: string | null }[];
+  return rows as unknown as {
+    id: string;
+    label: string;
+    failure: string | null;
+    failureCode: string | null;
+  }[];
 }
 
 export function getPlace(

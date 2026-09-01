@@ -2,10 +2,11 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { openDb } from '../src/db/index.ts';
 import type { Db } from '../src/db/index.ts';
 import { listPlacedMatters, listUnplacedMatters } from '../src/db/repo.ts';
-import { geocodeMatters } from '../src/pipeline/geocode.ts';
+import { GEOCODER_CACHE_VERSION, geocodeMatters, geocodeQueries } from '../src/pipeline/geocode.ts';
 import { censusUrl, parseCensusResponse } from '../src/geo/census.ts';
 import { fitBox, project, scaleBar, viewportFor, withinBox } from '../src/geo/project.ts';
 import { miltonProfile } from '../src/registry/index.ts';
+import { normalizeAddress } from '../src/matters/key.ts';
 
 /** The town's declared fence, which now lives on its profile rather than in geo/. */
 const MILTON_BBOX = miltonProfile.bbox;
@@ -115,7 +116,7 @@ function matter(id: string, label: string, kind = 'address', eventCount = 2): vo
   db.prepare(
     `INSERT INTO matters (id, jurisdiction, kind, key, label, event_count, channels, updated_at)
      VALUES (?,'milton-ma',?,?,?,?,'["land-use"]','2026-01-01T00:00:00.000Z')`,
-  ).run(id, kind, label.toLowerCase(), label, eventCount);
+  ).run(id, kind, kind === 'address' ? normalizeAddress(label) : label.toLowerCase(), label, eventCount);
 }
 
 function respond(body: unknown, ok = true): typeof fetch {
@@ -134,6 +135,34 @@ beforeEach(() => {
 });
 
 describe('geocoding matters', () => {
+  it('falls back to the normalized matter key when a display spelling misses', async () => {
+    expect(geocodeQueries({ label: '39A Frothingham Street', key: '39 frothingham street' })).toEqual([
+      '39A Frothingham Street',
+      '39 frothingham street',
+    ]);
+    matter('m1', '39A Frothingham Street');
+    const asked: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      asked.push(url.searchParams.get('address')!);
+      return new Response(
+        JSON.stringify(asked.length === 1 ? { result: { addressMatches: [] } } : match(42.25, -71.06)),
+      );
+    }) as typeof fetch;
+
+    const reports = await geocodeMatters(db, {
+      jurisdiction: 'milton-ma',
+      delayMs: 0,
+      fetchImpl,
+    });
+
+    expect(reports[0]!.ok).toBe(true);
+    expect(asked).toEqual(['39A Frothingham Street, Milton, MA', '39 frothingham street, Milton, MA']);
+    expect(db.prepare('SELECT query FROM geocodes WHERE lat IS NOT NULL').get()).toEqual({
+      query: '39 frothingham street',
+    });
+  });
+
   it('stores a match and puts it on the map', async () => {
     matter('m1', '271 Pleasant Street');
     const reports = await geocodeMatters(db, {
@@ -175,6 +204,36 @@ describe('geocoding matters', () => {
     await geocodeMatters(db, { jurisdiction: 'milton-ma', delayMs: 0, fetchImpl: counting });
     await geocodeMatters(db, { jurisdiction: 'milton-ma', delayMs: 0, fetchImpl: counting });
     expect(calls).toBe(1);
+    expect(listUnplacedMatters(db, 'milton-ma')[0]!.failureCode).toBe('no_match');
+  });
+
+  it('retries an old-version miss but keeps successful coordinates forever', async () => {
+    matter('miss', '271 Pleasant Street');
+    matter('hit', '10 Main Street');
+    db.prepare(
+      `INSERT INTO geocodes
+         (jurisdiction, key, query, provider, lat, lon, failure, failure_code, cache_version, retrieved_at)
+       VALUES
+         ('milton-ma','271 pleasant street','271 Pleasant Street','none',NULL,NULL,
+          'no match','no_match',?,'2026-01-01'),
+         ('milton-ma','10 main street','10 Main Street','census',42.25,-71.06,
+          NULL,NULL,1,'2026-01-01')`,
+    ).run(GEOCODER_CACHE_VERSION - 1);
+    const asked: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request) => {
+      asked.push(String(input instanceof Request ? input.url : input));
+      return new Response(JSON.stringify(match(42.2494, -71.0812)));
+    }) as typeof fetch;
+
+    const reports = await geocodeMatters(db, {
+      jurisdiction: 'milton-ma',
+      delayMs: 0,
+      fetchImpl,
+    });
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0]!.label).toBe('271 Pleasant Street');
+    expect(asked[0]).toContain('271+Pleasant+Street');
   });
 
   it('does not cache a transient failure, so an outage is not permanent', async () => {
@@ -192,6 +251,25 @@ describe('geocoding matters', () => {
       fetchImpl: respond(match(42.2494, -71.0812)),
     });
     expect(reports[0]!.ok).toBe(true);
+  });
+
+  it('does not let a failed forced lookup replace a known good point', async () => {
+    matter('m1', '271 Pleasant Street');
+    await geocodeMatters(db, {
+      jurisdiction: 'milton-ma',
+      delayMs: 0,
+      fetchImpl: respond(match(42.2494, -71.0812)),
+    });
+
+    const reports = await geocodeMatters(db, {
+      jurisdiction: 'milton-ma',
+      delayMs: 0,
+      force: true,
+      fetchImpl: respond({ result: { addressMatches: [] } }),
+    });
+
+    expect(reports[0]).toMatchObject({ ok: false, failureCode: 'no_match' });
+    expect(listPlacedMatters(db, 'milton-ma')).toHaveLength(1);
   });
 
   it('only geocodes address matters', async () => {
