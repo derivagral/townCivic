@@ -187,4 +187,30 @@ describe('the deployment files', () => {
     // And the refresh job, which reaches out to town websites, must not hold it.
     expect(read('.github', 'workflows', 'refresh.yml')).not.toMatch(/FLY_API_TOKEN/);
   });
+
+  it('does not give the web machine the archive credentials it never uses', () => {
+    const setup = read('scripts', 'setup-fly.sh');
+    const toml = read('fly.toml');
+    expect(setup).not.toMatch(/^\s+S3_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|BUCKET|ENDPOINT)$/m);
+    expect(toml).not.toMatch(/^\s+TOWNCIVIC_DOCUMENTS\s*=/m);
+    expect(toml).not.toMatch(/^\s+S3_REGION\s*=/m);
+  });
+
+  it('keeps interpretation manual and deploys its published snapshot', () => {
+    const refresh = read('.github', 'workflows', 'refresh.yml');
+    const interpret = read('.github', 'workflows', 'interpret.yml');
+    const deploy = read('.github', 'workflows', 'deploy.yml');
+
+    expect(refresh).not.toMatch(/npm run interpret/);
+    expect(interpret).toMatch(/^\s*workflow_dispatch:/m);
+    expect(interpret).toMatch(/npm run interpret/);
+    expect(interpret).toMatch(/npm run --silent snapshot/);
+    expect(deploy).toMatch(/workflows: \['Refresh', 'Interpret'\]/);
+  });
+
+  it('caches the derived database rather than copying the R2 archive through Actions', () => {
+    const refresh = read('.github', 'workflows', 'refresh.yml');
+    expect(refresh).toMatch(/path: data\/towncivic\.db/g);
+    expect(refresh).not.toMatch(/^\s+path: data$/m);
+  });
 });

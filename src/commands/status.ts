@@ -56,8 +56,10 @@ export interface StatusReport {
   /** Source rows in the database that this town's registry entry no longer lists. */
   orphanSources: string[];
   sources: SourceStatus[];
-  /** Anything an operator should look at. Empty means healthy. */
+  /** Anything that means the refresh itself is unhealthy. Empty means publishable. */
   problems: string[];
+  /** Data-quality signals worth inspecting, but not reasons to freeze a good snapshot. */
+  warnings: string[];
   ok: boolean;
 }
 
@@ -118,6 +120,7 @@ export function status(db: Db, jurisdiction: string, now = new Date()): StatusRe
   });
 
   const problems: string[] = [];
+  const warnings: string[] = [];
 
   /**
    * Whether this town is supposed to be producing anything yet.
@@ -152,8 +155,8 @@ export function status(db: Db, jurisdiction: string, now = new Date()): StatusRe
       }
       if (!source.lastFetchAt) problems.push(`${source.sourceId}: never fetched`);
       else if (source.events === 0) {
-        problems.push(`${source.sourceId}: answered but has produced no records`);
-      } else if (source.stale) problems.push(`${source.sourceId}: nothing new in ${source.staleDays} days`);
+        warnings.push(`${source.sourceId}: answered but has produced no records`);
+      } else if (source.stale) warnings.push(`${source.sourceId}: nothing new in ${source.staleDays} days`);
     }
   }
 
@@ -246,6 +249,7 @@ export function status(db: Db, jurisdiction: string, now = new Date()): StatusRe
     orphanSources: orphanSources.map((source) => source.sourceId),
     sources,
     problems,
+    warnings,
     ok: problems.length === 0,
   };
 }

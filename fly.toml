@@ -52,11 +52,9 @@ primary_region = "ewr"
   # over plain HTTP is never sent and signing in silently does nothing.
   TOWNCIVIC_SECURE_COOKIES = "1"
   TOWNCIVIC_ACCOUNTS = "supabase"
-  # The archive is not read at serve time. This is set so that if a pipeline
-  # command is ever run on the machine, it writes to the bucket rather than to a
-  # filesystem that is about to disappear.
-  TOWNCIVIC_DOCUMENTS = "s3"
-  S3_REGION = "auto"
+  # No document-store configuration here. The web tier serves the database
+  # baked into its image and never reads R2, so giving it an archive credential
+  # would only widen the impact of a compromised machine.
 
 [http_service]
   internal_port = 8080

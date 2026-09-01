@@ -96,7 +96,9 @@ describe('status', () => {
     const [entry] = report.sources;
     expect(entry!.stale).toBe(true);
     expect(entry!.staleDays).toBe(184);
-    expect(report.problems[0]).toContain('nothing new in 184 days');
+    expect(report.warnings[0]).toContain('nothing new in 184 days');
+    expect(report.problems).toEqual([]);
+    expect(report.ok).toBe(true);
   });
 
   it('does not call a monthly board stale over its summer recess', () => {
@@ -121,9 +123,10 @@ describe('status', () => {
     event('ok', '2026-08-30T00:00:00.000Z');
     source('empty', { lastFetchAt: '2026-08-31T00:00:00.000Z', lastStatus: 200 });
 
-    expect(status(db, 'milton-ma', NOW).problems.join('\n')).toContain(
-      `${id('empty')}: answered but has produced no records`,
-    );
+    const report = status(db, 'milton-ma', NOW);
+    expect(report.warnings.join('\n')).toContain(`${id('empty')}: answered but has produced no records`);
+    expect(report.problems).toEqual([]);
+    expect(report.ok).toBe(true);
   });
 
   it('does not complain about a source that is deliberately off', () => {

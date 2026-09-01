@@ -1,6 +1,6 @@
 name: Refresh
 
-# The ingest → analyse cycle, run on a schedule.
+# The ingest → extract → link cycle, run on a schedule.
 #
 # Twice a day, deliberately. These towns post meeting notices under a 48-hour
 # clock, so a 12-hour worst case still leaves a day and a half of notice — and
@@ -43,7 +43,9 @@ on:
         default: false
 
 concurrency:
-  group: refresh
+  # Shared with the manual Interpret workflow: both replace the published
+  # database snapshot, so they must never race each other to the fixed key.
+  group: database-publish
   cancel-in-progress: false
 
 permissions:
@@ -93,7 +95,9 @@ jobs:
       - name: Restore the previous database
         uses: actions/cache/restore@v4
         with:
-          path: data
+          # R2 owns the raw archive. Restoring data/documents here used to move
+          # more than 400 MB through the cache on every run for no benefit.
+          path: data/towncivic.db
           key: towncivic-db-${{ github.run_id }}
           restore-keys: |
             towncivic-db-
@@ -111,9 +115,6 @@ jobs:
       - name: Link records into timelines
         run: npm run link -- --jurisdiction all
 
-      - name: Read minutes
-        run: npm run interpret -- --jurisdiction all
-
       # The only step that talks to anyone other than the town.
       - name: Geocode new addresses
         run: npm run geocode -- --jurisdiction all --limit 50
@@ -123,12 +124,12 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: data
+          path: data/towncivic.db
           key: towncivic-db-${{ github.run_id }}
 
       # Runs even when a step above failed, so a broken run still reports what
-      # state it left things in. The exit code is the alarm: a red job here
-      # means a source is failing or has gone quiet.
+      # state it left things in. Stale or legitimately empty sources are
+      # warnings; fetch failures remain problems and stop publication.
       - name: Status
         if: always()
         run: npm run status -- --jurisdiction all

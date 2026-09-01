@@ -516,10 +516,14 @@ async function main(): Promise<number> {
           );
         }
 
+        if (report.warnings.length) {
+          console.log(`\n[33m${report.warnings.length} warning(s):[0m`);
+          for (const warning of report.warnings) console.log(`  ${warning}`);
+        }
         if (report.problems.length) {
-          console.log(`\n[33m${report.problems.length} thing(s) to look at:[0m`);
+          console.log(`\n[31m${report.problems.length} problem(s):[0m`);
           for (const problem of report.problems) console.log(`  ${problem}`);
-        } else {
+        } else if (!report.warnings.length) {
           console.log(`\n[32mNothing to look at.[0m`);
         }
         return report.ok ? 0 : 1;

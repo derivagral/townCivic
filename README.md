@@ -615,11 +615,11 @@ carries the intent; there is no sender. The honest description of alerts today i
 Full detail in **[docs/operations.md](docs/operations.md)** — the four
 deployment shapes, a systemd unit, and what to watch.
 
-The short version: `.github/workflows/refresh.yml` runs the cycle twice a day,
-restores the previous database from the Actions cache, and publishes it as an
-artifact. Twice a day is deliberate — meeting notices run on a 48-hour clock, so
-a 12-hour worst case still leaves a day and a half, and these are small
-municipal servers.
+The short version: `.github/workflows/refresh.yml` runs ingest, extraction,
+linking and geocoding twice a day, restores the previous database from the
+Actions cache, and publishes it for deployment. Interpretation is deliberately
+manual: run it locally, or dispatch `.github/workflows/interpret.yml`, which
+publishes its updated snapshot and triggers the same Fly deploy path.
 
 `status` is the whole monitoring story:
 
@@ -627,6 +627,7 @@ municipal servers.
 npm run status                                     # the default town
 npm run status -- --jurisdiction all               # every town; worst exit code wins
 npm run status -- --json | jq .problems            # exits non-zero on a problem
+npm run status -- --json | jq .warnings            # visible, but still publishable
 ```
 
 A town registered with nothing enabled yet reports its counts and no problems: a
@@ -639,6 +640,9 @@ crawler that keeps returning 200 while the town silently stops publishing looks
 exactly like a quiet week. So `status` reports when each source last produced
 something **new**, not just whether the last fetch succeeded — with a 60-day
 threshold, because boards meet monthly and take August off.
+
+An empty or stale source is a warning rather than a failed refresh. It remains
+visible without freezing good new records from every other source and town.
 
 ## Feeds
 
@@ -882,6 +886,10 @@ AG decides within 90`. The AG Municipal Law Unit source is registered and
 
 `.github/workflows/refresh.yml` runs the live cycle on a schedule — see
 [Operations](#operations).
+
+`.github/workflows/interpret.yml` is manual-only. It runs either the rules or
+Anthropic provider against the published database, republishes that snapshot,
+and triggers Deploy only after a successful run.
 
 Both jobs are fully offline, so CI never touches the town's servers and a red
 build is a real regression rather than someone else's outage.

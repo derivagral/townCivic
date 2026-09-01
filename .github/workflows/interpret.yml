@@ -1,0 +1,107 @@
+name: Interpret
+
+# Derived readings are deliberately outside the scheduled refresh. Their
+# requirements are less settled than ingestion, and one provider is metered, so
+# running them must be a conscious action. A successful run replaces the
+# published database snapshot; Deploy listens for this workflow just as it does
+# for Refresh.
+
+on:
+  workflow_dispatch:
+    inputs:
+      jurisdiction:
+        description: 'Town id, or all'
+        type: string
+        default: 'all'
+        required: true
+      provider:
+        description: 'Interpreter'
+        type: choice
+        options:
+          - rules
+          - anthropic
+        default: rules
+        required: true
+      limit:
+        description: 'Maximum documents to read (blank uses the provider default)'
+        type: string
+        default: ''
+        required: false
+      since:
+        description: 'Only documents on or after this date (optional, YYYY-MM-DD)'
+        type: string
+        default: ''
+        required: false
+      force:
+        description: 'Re-read documents whose current reading is already stored'
+        type: boolean
+        default: false
+
+concurrency:
+  # Refresh publishes to the same fixed snapshot key.
+  group: database-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  interpret:
+    name: interpret and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      TOWNCIVIC_DOCUMENTS: ${{ vars.S3_BUCKET && 's3' || 'local' }}
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+      S3_ENDPOINT: ${{ vars.S3_ENDPOINT }}
+      S3_REGION: ${{ vars.S3_REGION || 'auto' }}
+      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      INTERPRET_JURISDICTION: ${{ inputs.jurisdiction }}
+      INTERPRET_PROVIDER: ${{ inputs.provider }}
+      INTERPRET_LIMIT: ${{ inputs.limit }}
+      INTERPRET_SINCE: ${{ inputs.since }}
+      INTERPRET_FORCE: ${{ inputs.force }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # The model SDK stays out of the default install. Bring one pinned version
+      # into this disposable runner only when the metered provider was selected.
+      - name: Install the Anthropic provider
+        if: inputs.provider == 'anthropic'
+        run: npm install --no-save --ignore-scripts @anthropic-ai/sdk@0.121.0
+
+      - name: Check the snapshot store
+        run: npm run documents
+
+      - name: Fetch the published database
+        run: npm run --silent snapshot -- --pull
+
+      - name: Interpret minutes
+        run: |
+          args=(--jurisdiction "$INTERPRET_JURISDICTION" --provider "$INTERPRET_PROVIDER")
+          if [ -n "$INTERPRET_LIMIT" ]; then args+=(--limit "$INTERPRET_LIMIT"); fi
+          if [ -n "$INTERPRET_SINCE" ]; then args+=(--since "$INTERPRET_SINCE"); fi
+          if [ "$INTERPRET_FORCE" = "true" ]; then args+=(--force); fi
+          npm run interpret -- "${args[@]}"
+
+      - name: Publish the updated database
+        run: npm run --silent snapshot
+
+      - name: Publish the database as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: towncivic-db-interpreted
+          path: data/towncivic.db
+          retention-days: 14
+          if-no-files-found: error
