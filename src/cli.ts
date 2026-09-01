@@ -290,9 +290,9 @@ async function main(): Promise<number> {
             if (values.json) return;
             const detail = report.ok
               ? `${String(report.pages).padStart(2)}p  ${String(report.agendaItems).padStart(2)} items  ` +
-                `${report.structured ? '\u001b[32mstructured\u001b[0m' : dim('text only ')}` +
+                `${report.structured ? '\u001b[32mstructured\u001b[0m' : dim((report.quality ?? 'text').padEnd(10))}` +
                 (report.subjects.length ? `  ${dim(report.subjects.slice(0, 3).join(', '))}` : '')
-              : `\u001b[31m${report.error ?? 'failed'}\u001b[0m`;
+              : `\u001b[31m${report.failureCode ? `[${report.failureCode}] ` : ''}${report.error ?? 'failed'}\u001b[0m`;
             console.log(`${check(report.ok)}  ${report.title.slice(0, 46).padEnd(46)} ${detail}`);
           },
         });
@@ -392,7 +392,7 @@ async function main(): Promise<number> {
               `${check(report.ok)}  ${report.label.slice(0, 40).padEnd(40)} ` +
                 (report.ok
                   ? `${report.lat!.toFixed(5)}, ${report.lon!.toFixed(5)}  ${dim(report.matched ?? '')}`
-                  : `[33m${report.error ?? 'no match'}[0m`),
+                  : `[33m${report.failureCode ? `[${report.failureCode}] ` : ''}${report.error ?? 'no match'}[0m`),
             );
           },
         });

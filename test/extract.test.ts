@@ -36,7 +36,9 @@ describe('pdf extraction', () => {
   });
 
   it('does not flag a text PDF as scanned', async () => {
-    expect((await extractPdf(readNotice())).likelyScanned).toBe(false);
+    const extraction = await extractPdf(readNotice());
+    expect(extraction.likelyScanned).toBe(false);
+    expect(extraction.pageStats).toEqual([expect.objectContaining({ page: 1, needsOcr: false })]);
   });
 
   it('finds the font and cmap assets pdf.js needs', () => {
@@ -98,6 +100,7 @@ describe('meeting notice', () => {
         fields: {},
         likelyScanned: false,
         charsPerPage: 500,
+        pageStats: [],
       },
       miltonProfile,
     );

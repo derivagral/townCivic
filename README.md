@@ -305,8 +305,21 @@ already answer exactly.
 
 If a town _did_ scan its minutes, the honest additions are `tesseract.js`
 (Apache-2.0, WASM, no native dep) or system Tesseract. townCivic does not
-silently pretend a scan is empty — the extractor flags `likelyScanned` when the
-text layer is too thin, so the gap is visible rather than invisible.
+silently pretend a scan is empty. Extraction records text and raster-image
+counts **per page** and marks a page as needing OCR when it has an image but too
+little text. That catches a scanned body behind a digital cover page without
+calling an ordinary blank page a scan.
+
+The complete extracted text is kept in two places for two different jobs: the
+SQLite `doc_text` is the searchable projection, and a content-addressed `.txt`
+object beside the source attachment preserves the lossless input for later OCR
+or interpretation work. Neither is truncated at the former 20,000-character
+boundary, so the end of long minutes no longer disappears from search.
+
+Downloads and parses that fail remain pending. Their attachment row records a
+machine-readable failure code, attempt count and `retry_after`; unattended
+refreshes retry after backoff instead of marking the event extracted forever,
+while also avoiding a broken URL consuming the front of every limited run.
 
 ### What it actually gets
 
@@ -429,9 +442,9 @@ asks anything of a service other than the town.
 | --------- | ----------------------------------------------------------------------------------------------------------- |
 | Geocoder  | [US Census Bureau](https://geocoding.geo.census.gov/) — public, free, **no API key**, results public domain |
 | Outline   | MassGIS Census 2020 Towns — the state's own GIS, no key, committed to the repo                              |
-| Caching   | Permanent. A street address does not move, and a definite miss is cached too                                |
+| Caching   | Successful points are permanent; misses retry when the resolver changes                                     |
 | Rendering | Server-rendered SVG. No tiles, no JavaScript, no external requests                                          |
-| Failures  | Named on the page, not dropped — an address missing from a map is a gap in it                               |
+| Failures  | Named with a stable reason code, not dropped — an address missing from a map is a gap in it                 |
 
 ### The town outline earns its place twice
 
@@ -492,7 +505,15 @@ geocodes(jurisdiction, key, provider) → lat, lon, matched, failure, retrieved_
 `key` is the normalized address, the same value as `matters.key`, and
 `jurisdiction` is part of the key because 10 Main Street in Hull is a different
 house from 10 Main Street in Milton. Misses are cached too, so an address the
-geocoder cannot parse is asked about once rather than on every run.
+geocoder cannot parse is not asked about on every run. A miss carries a resolver
+version, however: improving query construction, response parsing or boundary
+acceptance bumps that version and retries old failures once. Successful
+coordinates remain permanent.
+
+The display spelling is tried first. If that gets no answer, `geocode` tries the
+same conservative normalized key that joins matters — useful for `39A` versus
+`39`, or an expanded street suffix — before recording `no_match`. This is not a
+fuzzy search and cannot merge neighbouring house numbers.
 
 This is not an optimization; it fixes a real bug. `link` is a full rebuild — it
 deletes a town's matters and re-inserts them — and `places.matter_id` cascades,

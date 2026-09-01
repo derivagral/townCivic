@@ -33,6 +33,18 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'events', column: 'precedence', definition: 'INTEGER NOT NULL DEFAULT 50' },
   { table: 'events', column: 'doc_text', definition: 'TEXT' },
   { table: 'events', column: 'extracted_at', definition: 'TEXT' },
+  { table: 'attachments', column: 'text_path', definition: 'TEXT' },
+  { table: 'attachments', column: 'text_chars', definition: 'INTEGER' },
+  { table: 'attachments', column: 'page_stats', definition: "TEXT NOT NULL DEFAULT '[]'" },
+  { table: 'attachments', column: 'quality', definition: "TEXT NOT NULL DEFAULT 'unknown'" },
+  { table: 'attachments', column: 'failure_code', definition: 'TEXT' },
+  { table: 'attachments', column: 'retry_after', definition: 'TEXT' },
+  { table: 'attachments', column: 'attempts', definition: 'INTEGER NOT NULL DEFAULT 0' },
+  { table: 'geocodes', column: 'failure_code', definition: 'TEXT' },
+  // Existing misses are version 1 and therefore get one retry under the new
+  // resolver. Fresh databases use version 2 from schema.sql.
+  { table: 'geocodes', column: 'cache_version', definition: 'INTEGER NOT NULL DEFAULT 1' },
+  { table: 'places', column: 'failure_code', definition: 'TEXT' },
 ];
 
 /** Columns the FTS index is expected to carry, in order. */

@@ -445,6 +445,48 @@ describe('migrating a database written before there were towns', () => {
     openDb(file).close();
     expect(() => openDb(file).close()).not.toThrow();
   });
+
+  it('adds extraction and geocode quality columns to a current production database', () => {
+    const file = path.join(dir, 'quality-columns.db');
+    const legacy = openDb(file);
+    for (const column of [
+      'text_path',
+      'text_chars',
+      'page_stats',
+      'quality',
+      'failure_code',
+      'retry_after',
+      'attempts',
+    ]) {
+      legacy.exec(`ALTER TABLE attachments DROP COLUMN ${column}`);
+    }
+    legacy.exec('ALTER TABLE geocodes DROP COLUMN failure_code');
+    legacy.exec('ALTER TABLE geocodes DROP COLUMN cache_version');
+    legacy.exec('ALTER TABLE places DROP COLUMN failure_code');
+    // This is the deployed schema version; additive migrations must still run
+    // even when no numbered migration is pending.
+    legacy.exec('PRAGMA user_version = 4');
+    legacy.close();
+
+    const upgraded = openDb(file);
+    const names = (table: string) =>
+      (upgraded.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map(
+        (column) => column.name,
+      );
+    expect(names('attachments')).toEqual(
+      expect.arrayContaining([
+        'text_path',
+        'page_stats',
+        'quality',
+        'failure_code',
+        'retry_after',
+        'attempts',
+      ]),
+    );
+    expect(names('geocodes')).toEqual(expect.arrayContaining(['failure_code', 'cache_version']));
+    expect(names('places')).toContain('failure_code');
+    upgraded.close();
+  });
 });
 
 /* -------------------------------------------------------------------- clear */
@@ -600,7 +642,7 @@ describe('the geocode cache', () => {
     expect(getPlace(db, hull)).toBeUndefined();
   });
 
-  it('stops geocode asking again about an address it has an answer for', () => {
+  it('stops geocode asking again about an address it has an answer for', async () => {
     matter('milton-ma', '39 Frothingham Street');
     cache('milton-ma', '39 frothingham street');
 
@@ -608,7 +650,7 @@ describe('the geocode cache', () => {
     const refuse: typeof fetch = () => {
       throw new Error('the geocoder was asked about a cached address');
     };
-    expect(geocodeMatters(db, { jurisdiction: 'milton-ma', fetchImpl: refuse })).resolves.toEqual([]);
+    await expect(geocodeMatters(db, { jurisdiction: 'milton-ma', fetchImpl: refuse })).resolves.toEqual([]);
   });
 
   it('caches a miss, so an unparseable address is asked about once', () => {

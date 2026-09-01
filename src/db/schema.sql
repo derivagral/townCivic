@@ -372,6 +372,12 @@ CREATE TABLE IF NOT EXISTS geocodes (
   -- Set when the lookup ran but produced nothing usable, or produced a point
   -- outside the town. A recorded miss is the reason to ask only once.
   failure      TEXT,
+  -- Stable machine-readable reason; `failure` remains the useful explanation.
+  failure_code TEXT,
+  -- Successful coordinates stay valid indefinitely. Failed lookups are retried
+  -- when the resolver version advances, so an improved query/fence does not
+  -- leave an address permanently absent from the map.
+  cache_version INTEGER NOT NULL DEFAULT 2,
   retrieved_at TEXT NOT NULL,
   PRIMARY KEY (jurisdiction, key, provider)
 );
@@ -390,6 +396,7 @@ CREATE TABLE IF NOT EXISTS places (
   provider       TEXT NOT NULL,
   -- Set when the lookup ran but produced nothing usable.
   failure        TEXT,
+  failure_code   TEXT,
   geocoded_at    TEXT NOT NULL
 );
 
@@ -402,15 +409,29 @@ CREATE TABLE IF NOT EXISTS attachments (
   content_type   TEXT,
   bytes          INTEGER NOT NULL,
   path           TEXT,                      -- relative path in the document store
+  -- Full extracted text, content-addressed separately from the source bytes.
+  -- `events.doc_text` remains the searchable projection; this is the lossless
+  -- input for later OCR/interpretation work.
+  text_path      TEXT,
+  text_chars     INTEGER,
   pages          INTEGER,
   chars_per_page INTEGER,
   likely_scanned INTEGER NOT NULL DEFAULT 0,
+  -- Per-page character/image counts and whether that page likely needs OCR.
+  page_stats     TEXT NOT NULL DEFAULT '[]',
+  -- structured | text | mixed | scanned | empty | html | error
+  quality        TEXT NOT NULL DEFAULT 'unknown',
   -- AcroForm field values, verbatim. The structured payload of a notice.
   fields         TEXT NOT NULL DEFAULT '{}',
   -- Parsed meeting notice, when the document is one.
   notice         TEXT,
   extracted_at   TEXT NOT NULL,
-  error          TEXT
+  error          TEXT,
+  failure_code   TEXT,
+  -- Failed downloads/parses remain pending, but wait until this time before an
+  -- unattended refresh tries them again.
+  retry_after    TEXT,
+  attempts       INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_attachments_event ON attachments(event_id);
