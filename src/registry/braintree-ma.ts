@@ -11,63 +11,91 @@ import type { AgendaCategory, CivicPlusModules } from './civicplus.ts';
  * statewide rules already know `town council`, `mayor` and `ordinance` — nothing
  * here needed a new rule for the form of government.
  *
- * **Registered, nothing enabled.** The install is CivicPlus CivicEngage — the
- * Agenda Center, `Calendar.aspx`, `Archive.aspx` and the `/NNN/Board-Name` page
- * ids are all the product's own URL shapes — but no URL below has been fetched
- * from the live site by this build, because the environment it was written in
- * has no egress to `braintreema.gov`. So every source ships `unverified` and
- * off, which is the rule the registry has always kept: an unverified claim does
- * not get to make requests.
+ * The fullest install of the seven, and the first where every module the
+ * platform offers is not only published but populated. `discover` found 39
+ * Agenda Center categories and eight RSS modules.
  *
- * What that means for whoever picks this up:
- *
- *   1. `discover --jurisdiction braintree-ma` for the real category list. It
- *      will confirm or correct the four ids below and print the rest.
- *   2. `verify --jurisdiction braintree-ma --all`, then promote what answered.
- *   3. `boundary --jurisdiction braintree-ma` and commit the outline.
- *
- * Two things `verify` settles that guessing cannot:
- *
- *   - **Which host answers.** Both `braintreema.gov` and `www.braintreema.gov`
- *     appear as live URLs, and the apex is used here. Weymouth is the precedent
- *     for why this is not a formality: there the www host does not resolve at
- *     all, so the whole town would have failed on a coin flip.
- *   - **Whether there is a bids module.** Unknown. Milton and Hull publish
- *     `/bids.aspx`; Weymouth and Scituate 404 on it. Not registered until
- *     someone has seen it answer.
+ * The thing that makes this town's record shaped differently from the others:
+ * **the Town Council does its work in twelve standing committees**, each with
+ * its own Agenda Center category — Ways & Means, Ordinance & Rules, Public
+ * Works, a Zoning Work Group. Under a town-meeting government most of that
+ * happens in a warrant committee and a floor debate that produce one record
+ * between them. Here it produces twelve streams, and the two that decide things
+ * — Ways & Means for money, Ordinance & Rules for by-laws — are curated below
+ * while the rest come in through the site-wide index.
  */
 
 export const BRAINTREE_BASE = 'https://www.braintreema.gov';
 
 /**
- * Unread rather than absent. Braintree's `/rss.aspx` has not been fetched, so
- * unlike Weymouth's and Scituate's empty objects — which record "we looked and
- * there were none" — this one records that nobody has looked yet. `discover`
- * reads it in one request.
+ * Read off `/rss.aspx`, not guessed. The numbering matches Milton's and Hull's,
+ * which is the platform's default and still not something to rely on — Weymouth
+ * and Scituate publish no modules at all.
+ *
+ *    ModID=1   News Flash        ModID=63  Alert Center
+ *    ModID=51  Blog              ModID=65  Agenda Center
+ *    ModID=53  Photo Gallery     ModID=66  Jobs
+ *    ModID=58  Calendar          ModID=76  Pages
  */
-export const MODULES: CivicPlusModules = {};
+export const MODULES: CivicPlusModules = {
+  newsFlash: 1,
+  blog: 51,
+  calendar: 58,
+  alertCenter: 63,
+  agendaCenter: 65,
+  jobs: 66,
+  pages: 76,
+};
 
 /**
- * A starting slice, not the curated set.
+ * The boards worth following first, out of the 39 categories `discover` found.
  *
- * These four ids were read off Agenda Center URLs the site publishes rather than
- * inferred from the platform's numbering, so they are the site's own — but they
- * are still second-hand, which is exactly what `discover` exists to fix. The
- * bodies that carry this town's institutional life and are certainly missing
- * here: the School Committee, the Board of Health, the Board of License
- * Commissioners, the Historical Commission, and whatever Braintree calls its
- * finance committee under a mayor.
+ * Two notes on the curation:
+ *
+ *   - **No School Committee.** Braintree's schools publish their agendas on a
+ *     district site outside this domain, so the `schools` channel here carries
+ *     the School Building Committee and the Council's Education & Library
+ *     Committee and not the committee itself. A gap in coverage, not in the
+ *     town — the same shape as Scituate's.
+ *   - **Public Meeting Notices** (cid 21) is a category the other six installs
+ *     do not have: the clerk posts open-meeting notices into it directly. Worth
+ *     following for the same reason Hull's posted-meetings calendar would be if
+ *     it had anything in it.
+ *
+ * `verify` fetched and parsed every one of these (Sep 2026). Two answered with
+ * nothing in them — the Board of Assessors and the Retirement Board, whose
+ * listings hold roughly a year and who have posted nothing in that year. Left
+ * enabled rather than dropped: an empty listing is a fact about this year, not
+ * about the URL, and it costs one conditional request.
  */
 export const AGENDA_CATEGORIES: readonly AgendaCategory[] = [
   { slug: 'Town-Council', cid: 6, body: 'Town Council' },
-  // The site's own slug carries a typo — `/AgendaCenter/Plannng-Board-7` — while
-  // the page it serves is titled "Planning Board". Kept verbatim for the same
-  // reason Hull's "School Commitee" is: the registry says what the site says,
-  // and the alias table below says what a reader expects. `discover` is what
-  // will show whether the category has since been renamed.
-  { slug: 'Plannng-Board', cid: 7, body: 'Planning Board' },
+  { slug: 'Planning-Board', cid: 7, body: 'Planning Board' },
   { slug: 'Zoning-Board-of-Appeals', cid: 3, body: 'Zoning Board of Appeals' },
   { slug: 'Conservation-Commission', cid: 4, body: 'Conservation Commission' },
+  { slug: 'Board-of-Health', cid: 14, body: 'Board of Health' },
+  { slug: 'Town-Council-Ways-Means-Committee', cid: 23, body: 'Town Council - Ways & Means Committee' },
+  {
+    slug: 'Town-Council-Ordinance-Rules-Committee',
+    cid: 24,
+    body: 'Town Council - Ordinance & Rules Committee',
+  },
+  {
+    slug: 'Town-Council-Zoning-Work-Group-Agendas',
+    cid: 38,
+    body: 'Town Council - Zoning Work Group Agendas',
+  },
+  { slug: 'Community-Preservation-Committee', cid: 2, body: 'Community Preservation Committee' },
+  { slug: 'Board-of-Assessors', cid: 17, body: 'Board of Assessors' },
+  { slug: 'Retirement-Board', cid: 10, body: 'Retirement Board' },
+  { slug: 'Charter-Review-Committee', cid: 39, body: 'Charter Review Committee' },
+  { slug: 'Historical-Commission', cid: 5, body: 'Historical Commission' },
+  { slug: 'Master-Plan-Steering-Committee', cid: 41, body: 'Master Plan Steering Committee' },
+  { slug: 'School-Building-Committee', cid: 40, body: 'School Building Committee' },
+  { slug: 'Board-of-Registrars', cid: 18, body: 'Board of Registrars' },
+  { slug: 'Board-of-License-Commissioners', cid: 35, body: 'Board of License Commissioners' },
+  { slug: 'Tri-Town-Board-of-Water-Commissioners', cid: 36, body: 'Tri-Town Board of Water Commissioners' },
+  { slug: 'Public-Meeting-Notices', cid: 21, body: 'Public Meeting Notices' },
 ];
 
 export const braintreeProfile = defineJurisdiction({
@@ -75,18 +103,25 @@ export const braintreeProfile = defineJurisdiction({
   name: 'Braintree',
   boundary: { provider: 'massgis', townName: 'BRAINTREE' },
   baseUrl: BRAINTREE_BASE,
-  // Provisional, and only ever the fence `geocode` uses until the MassGIS
-  // outline is committed. Padded outwards on purpose — it exists to reject an
-  // answer in Quincy or Randolph, not to draw the border with them.
+  // Superseded by the committed MassGIS outline. Padded outwards — it exists to
+  // reject an answer in Quincy or Randolph, not to draw the border with them.
   bbox: { south: 42.16, west: -71.07, north: 42.27, east: -70.92 },
   bodyAliases: {
     'braintree town council': 'Town Council',
     'office of the mayor': 'Mayor',
-    // See the note on the category above: the misspelling is the site's, and it
-    // can reach `normalize` through the Agenda Center index as well as through
-    // the category listing, so it is fixed here rather than at one call site.
-    'plannng board': 'Planning Board',
+    // Two names for one body — the site carries both categories, and the
+    // Licensing Board (cid 13) is the older of them.
+    'licensing board': 'Board of License Commissioners',
   },
+  bodyRules: [
+    /**
+     * Ways & Means is this Council's finance committee, the way Hull's is an
+     * Advisory Board and Scituate's an Advisory Committee. Without this it
+     * files as a routine meeting, because the statewide money rule looks for
+     * "warrant committee", "financ" and "budget" and the name says none of them.
+     */
+    { pattern: /ways (&|and) means/i, channel: 'money', priority: 'high' },
+  ],
   // Town Hall, where the Council sits — Cahill Auditorium and Johnson Chambers
   // are both rooms in it, and the address is printed on the notice template. The
   // four spellings are the ones the town's own documents use interchangeably;
@@ -98,16 +133,50 @@ export const braintreeProfile = defineJurisdiction({
     'One JFK Memorial Drive',
   ],
   notes:
-    'CivicPlus CivicEngage, registered from published URL shapes and not yet fetched: run `discover`, then `verify`, before enabling anything.',
+    'The fullest CivicPlus install of the seven: 39 Agenda Center categories, every RSS module populated, and a Town Council that works through twelve standing committees.',
 });
 
 braintreeProfile.sources = civicPlusSources(braintreeProfile, {
   modules: MODULES,
   agendaCategories: AGENDA_CATEGORIES,
-  // Unknown, so unregistered. A source pointing at a page the town does not
-  // serve is a source that fails forever, and `discover` costs one request.
-  bids: false,
-  feeds: [],
-  confidence: 'unverified',
-  enabled: false,
+  bids: true,
+  feeds: [
+    {
+      key: 'news',
+      label: 'Town news flash',
+      modId: MODULES.newsFlash!,
+      cid: 'All-newsflash.xml',
+      channel: 'meetings',
+      eventType: 'news_notice',
+      confidence: 'verified',
+      enabled: true,
+    },
+    {
+      key: 'alerts',
+      label: 'Town emergency alerts',
+      modId: MODULES.alertCenter!,
+      cid: 'Town-Emergency-Alerts-6',
+      channel: 'public-safety',
+      eventType: 'alert',
+      priority: 'high',
+      precedence: 10,
+      confidence: 'verified',
+      enabled: false,
+      notes: 'Live and correctly addressed, but publishes no items (checked Sep 2026).',
+    },
+    {
+      key: 'calendar',
+      label: 'Town calendar',
+      modId: MODULES.calendar!,
+      cid: 'All-calendar.xml',
+      channel: 'meetings',
+      eventType: 'meeting_notice',
+      precedence: 40,
+      confidence: 'verified',
+      enabled: true,
+      options: { bodyFromTitlePrefix: true },
+    },
+  ],
+  confidence: 'verified',
+  enabled: true,
 });
