@@ -8,15 +8,28 @@ import { miltonProfile } from './milton-ma.ts';
 import { weymouthProfile } from './weymouth-ma.ts';
 import { hullProfile } from './hull-ma.ts';
 import { scituateProfile } from './scituate-ma.ts';
+import { braintreeProfile } from './braintree-ma.ts';
+import { rocklandProfile } from './rockland-ma.ts';
+import { walthamProfile } from './waltham-ma.ts';
 
 /**
  * Every jurisdiction the build knows about. Adding a town is a file plus a line
  * here — nothing else in the codebase names a town.
  *
- * Order is display order: the town with real data first, then the ones waiting
- * on a `discover` run.
+ * Order is display order: the towns with real data first, then the ones waiting
+ * on a `discover` run. Braintree, Rockland and Waltham are in that second group
+ * — every one of their sources is registered and off, so they cost the schedule
+ * nothing until someone has verified them.
  */
-const REGISTRY: JurisdictionProfile[] = [miltonProfile, weymouthProfile, hullProfile, scituateProfile];
+const REGISTRY: JurisdictionProfile[] = [
+  miltonProfile,
+  weymouthProfile,
+  hullProfile,
+  scituateProfile,
+  braintreeProfile,
+  rocklandProfile,
+  walthamProfile,
+];
 
 const BY_ID = new Map(REGISTRY.map((profile) => [profile.id, profile]));
 
@@ -122,5 +135,13 @@ export function orphanJurisdictions(db: Db): { jurisdiction: string; events: num
     .sort((a, b) => b.events - a.events);
 }
 
-export { miltonProfile, weymouthProfile, hullProfile, scituateProfile };
+export {
+  miltonProfile,
+  weymouthProfile,
+  hullProfile,
+  scituateProfile,
+  braintreeProfile,
+  rocklandProfile,
+  walthamProfile,
+};
 export type { JurisdictionProfile };

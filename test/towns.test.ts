@@ -16,7 +16,15 @@ import {
   syncSources,
 } from '../src/registry/index.ts';
 import { canonicalBody, classifyBody, isVenueAddress } from '../src/registry/profile.ts';
-import { miltonProfile, weymouthProfile, hullProfile, scituateProfile } from '../src/registry/index.ts';
+import {
+  miltonProfile,
+  weymouthProfile,
+  hullProfile,
+  scituateProfile,
+  braintreeProfile,
+  rocklandProfile,
+  walthamProfile,
+} from '../src/registry/index.ts';
 import { clearJurisdiction, clearOrphans } from '../src/commands/clear.ts';
 import { countEvents, facetCounts, getPlace, personalFeed, queryEvents } from '../src/db/repo.ts';
 import { geocodeMatters, placeFromCache } from '../src/pipeline/geocode.ts';
@@ -235,6 +243,92 @@ describe('Hull and Scituate', () => {
     expect(classifyBody(hullProfile, 'Light Board').channel).toBe('public-safety');
     expect(classifyBody(hullProfile, 'Stormwater Authority').channel).toBe('public-safety');
     expect(classifyBody(scituateProfile, 'Coastal Advisory Commission').channel).toBe('land-use');
+  });
+});
+
+describe('Braintree, Rockland and Waltham', () => {
+  const pending = [braintreeProfile, rocklandProfile, walthamProfile];
+
+  it('registers every source off, because none has been fetched', () => {
+    // The state the README calls "registered, nothing enabled". It is the whole
+    // safety property of adding a town from published URL shapes rather than
+    // from a `discover` run: the scheduled refresh iterates `--jurisdiction
+    // all`, and a town with no enabled source makes no requests at all.
+    for (const profile of pending) {
+      expect(profile.sources.length, `${profile.id} has no sources`).toBeGreaterThan(0);
+      for (const source of profile.sources) {
+        expect(source.enabled, `${source.id} is enabled`).toBe(false);
+        expect(source.confidence, `${source.id} claims confidence`).toBe('unverified');
+      }
+    }
+  });
+
+  it('registers the Agenda Center index for each, which is what discover reads', () => {
+    // `/AgendaCenter` is a platform path rather than a per-install id, so it is
+    // the one source that can be written down before anyone has probed the
+    // site. For Waltham it is the only one there is.
+    for (const profile of pending) {
+      expect(profile.sources.map((s) => s.id)).toContain(`${profile.id}:agenda:index`);
+    }
+    expect(walthamProfile.sources.filter((s) => s.adapter === 'civicplus-agenda-center')).toHaveLength(1);
+  });
+
+  it('registers no page these installs have not been seen to serve', () => {
+    // Weymouth's lesson: a source pointing at a page the town does not publish
+    // is a source that fails forever. Nobody has confirmed a bids module or an
+    // RSS module on any of the three, so neither is registered on any of them.
+    for (const profile of pending) {
+      expect(
+        profile.sources.some((s) => s.id.endsWith(':bids')),
+        `${profile.id} guessed a bids page`,
+      ).toBe(false);
+      expect(
+        profile.sources.some((s) => s.adapter === 'rss'),
+        `${profile.id} guessed a feed`,
+      ).toBe(false);
+    }
+  });
+
+  it('keeps each site’s own spelling in the registry and fixes it in the alias table', () => {
+    // Braintree publishes `/AgendaCenter/Plannng-Board-7` — the typo is the
+    // site's. Same treatment as Hull's "School Commitee": the URL stays what
+    // answers, and the filter rail says what a reader expects.
+    const planning = braintreeProfile.sources.find((s) => s.id === 'braintree-ma:agenda:plannng-board');
+    expect(planning?.url).toBe('https://www.braintreema.gov/AgendaCenter/Plannng-Board-7');
+    expect(canonicalBody(braintreeProfile, 'Plannng Board')).toBe('Planning Board');
+
+    // Rockland's slug still says "Board of Selectmen" after the rename; the
+    // statewide alias table already collapses that spelling.
+    expect(canonicalBody(rocklandProfile, 'Board of Selectmen')).toBe('Select Board');
+  });
+
+  it('classifies the bodies no statewide rule would recognise', () => {
+    // Waltham's planning board is the Board of Survey and Planning, and
+    // /planning board/ does not match it — the same trap Weymouth's "Planning &
+    // Community Development" sprang.
+    expect(classifyBody(walthamProfile, 'Board of Survey and Planning').channel).toBe('land-use');
+    expect(classifyBody(miltonProfile, 'Board of Survey and Planning').channel).toBe('meetings');
+
+    // Rockland regulates its manufactured-home park rents. A housing body whose
+    // name contains neither "housing" nor "affordable".
+    expect(classifyBody(rocklandProfile, 'Rent Control Board').channel).toBe('land-use');
+    expect(classifyBody(miltonProfile, 'Rent Control Board').channel).toBe('meetings');
+
+    // And a city's council still lands where Weymouth's does.
+    expect(classifyBody(walthamProfile, 'City Council').channel).toBe('meetings');
+  });
+
+  it('points every municipal source at its own town’s host', () => {
+    const hosts: Record<string, string> = {
+      'braintree-ma': 'https://www.braintreema.gov/',
+      'rockland-ma': 'https://www.rockland-ma.gov/',
+      'waltham-ma': 'https://www.city.waltham.ma.us/',
+    };
+    for (const profile of pending) {
+      for (const source of profile.sources) {
+        if (source.level === 'municipal') expect(source.url.startsWith(hosts[profile.id]!)).toBe(true);
+      }
+    }
   });
 });
 
