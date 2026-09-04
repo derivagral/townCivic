@@ -433,12 +433,14 @@ regular expressions in `src/matters/stages.ts`. Two things keep it honest:
 
 Nothing here is a legal determination. The linked primary source is.
 
-## Map
+## Nearby
 
-`/map` plots every property the town has a record about, sized by how many
-records mention it and coloured by channel. Addresses become coordinates in
-their own stage — `geocode` — because it is the only part of the pipeline that
-asks anything of a service other than the town.
+`/nearby` pairs a map of every property the town has a record about with a list
+of each property's latest activity and a link to its timeline. Pins are sized
+by how many records mention the property and coloured by channel. The old
+`/map` URL redirects here. Addresses become coordinates in their own stage —
+`geocode` — because it is the only part of the pipeline that asks anything of a
+service other than the town.
 
 |           |                                                                                                             |
 | --------- | ----------------------------------------------------------------------------------------------------------- |

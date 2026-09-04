@@ -440,13 +440,14 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
         `${REST}/subscriptions?select=${SUBSCRIPTION_COLUMNS}&order=jurisdiction,kind,label`,
         { token: identity.credential },
       );
-      return response.ok ? (response.body ?? []).map(toSubscription) : [];
+      if (!response.ok) throw new Error('Could not load your follows. Please try again.');
+      return (response.body ?? []).map(toSubscription);
     },
 
     async addSubscription(identity, input) {
       // An upsert, to match the local backend's `ON CONFLICT ... DO UPDATE`:
       // following the same board twice edits the label rather than failing.
-      await request(`${REST}/subscriptions?on_conflict=user_id,jurisdiction,kind,value`, {
+      const response = await request(`${REST}/subscriptions?on_conflict=user_id,jurisdiction,kind,value`, {
         method: 'POST',
         token: identity.credential,
         headers: { prefer: 'resolution=merge-duplicates,return=minimal' },
@@ -459,6 +460,7 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
           alerts: input.alerts ?? 'none',
         },
       });
+      if (!response.ok) throw new Error('Could not save this follow. Please try again.');
     },
 
     async removeSubscription(identity, kind, value, jurisdiction) {
@@ -468,11 +470,12 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
         eq('value', value),
         ...(jurisdiction ? [eq('jurisdiction', jurisdiction)] : []),
       ];
-      await request(`${REST}/subscriptions?${filters.join('&')}`, {
+      const response = await request(`${REST}/subscriptions?${filters.join('&')}`, {
         method: 'DELETE',
         token: identity.credential,
         headers: { prefer: 'return=minimal' },
       });
+      if (!response.ok) throw new Error('Could not remove this follow. Please try again.');
     },
 
     async isWatching(identity, kind, value, jurisdiction) {

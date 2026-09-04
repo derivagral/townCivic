@@ -15,6 +15,7 @@ import {
   latestEventTimestamp,
   listJurisdictionRows,
   listMatters,
+  listNearbyMatters,
   listPlacedMatters,
   listSourceRows,
   listUnplacedMatters,
@@ -23,11 +24,13 @@ import {
   mattersForEvent,
   personalFeed,
   queryEvents,
+  searchEvidenceForEvents,
 } from '../db/repo.ts';
 import type { EventQuery } from '../db/repo.ts';
 import { hasSampleData } from '../commands/seed.ts';
 import { CHANNEL_DESCRIPTIONS, CHANNEL_LABELS, isChannel } from '../taxonomy.ts';
 import { MATTER_KINDS } from '../matters/key.ts';
+import { isStage } from '../matters/stages.ts';
 import { getProfile, hasJurisdiction, listJurisdictions, loadSources } from '../registry/index.ts';
 import {
   ALL_JURISDICTIONS,
@@ -57,9 +60,10 @@ import {
   withTown,
 } from './views.ts';
 import type { Filters, NoticeView, TownView } from './views.ts';
-import { renderMapBody } from './map.ts';
+import { renderNearbyBody } from './map.ts';
 import { loadBoundary } from '../geo/boundary.ts';
 import { feedTitle, renderAtom, renderJsonFeed } from './feeds.ts';
+import { registerAwareness } from './awareness.ts';
 
 const PAGE_SIZE = 60;
 const FEED_SIZE = 50;
@@ -219,6 +223,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
   };
 
   const nameFor = (identity: Identity | null) => (identity ? readerName(identity.reader) : null);
+  registerAwareness(app, db, accounts, currentUser, townFor, secureCookies);
 
   app.get('/styles.css', (c) => c.body(STYLES, 200, { 'content-type': 'text/css; charset=utf-8' }));
   app.get('/healthz', (c) =>
@@ -250,6 +255,14 @@ export function createApp(db: Db, options: AppOptions = {}) {
           offset: (filters.page - 1) * PAGE_SIZE,
         })
       : [];
+    const evidence = Object.fromEntries(
+      searchEvidenceForEvents(
+        db,
+        [...upcoming, ...past].map((row) => row.id),
+        filters.q ?? '',
+        filters.derived,
+      ).map((item) => [item.eventId, item]),
+    );
 
     return c.html(
       renderIndex({
@@ -270,6 +283,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
         pageSize: PAGE_SIZE,
         feedUrl: withTown(`/feeds/${filters.channel ?? 'all'}.atom`, town),
         hasDerived: countInterpretations(db, town.id) > 0,
+        evidence,
         townDormant: !loadSources(town.id).some((source) => source.enabled),
         account: nameFor(current),
       }),
@@ -319,6 +333,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
     // Single-record matters are real, but they are not timelines — they would
     // bury the handful of sequences worth reading, so they are off by default.
     const includeSingletons = url.searchParams.get('all') === '1';
+    const sort = url.searchParams.get('sort') === 'documented' ? 'documented' : 'recent';
 
     const query = {
       jurisdiction: town.id,
@@ -329,12 +344,13 @@ export function createApp(db: Db, options: AppOptions = {}) {
 
     return c.html(
       renderMatters({
-        matters: listMatters(db, { ...query, limit: 200 }),
+        matters: listMatters(db, { ...query, order: sort, limit: 200 }),
         total: countMatters(db, query),
         kinds: matterKindCounts(db, query),
         ...(kind ? { kind } : {}),
         ...(q ? { q } : {}),
         includeSingletons,
+        sort,
         linked: countMatters(db, { jurisdiction: town.id }) > 0,
         sampleData: hasSampleData(db, town.id),
         town,
@@ -366,13 +382,37 @@ export function createApp(db: Db, options: AppOptions = {}) {
     );
   });
 
-  app.get('/map', async (c) => {
-    const town = townFor(c);
-    const highlight = new URL(c.req.url).searchParams.get('matter')?.trim();
-    const placed = listPlacedMatters(db, town.id);
-    const unplaced = listUnplacedMatters(db, town.id);
+  app.get('/map', (c) => {
+    const url = new URL(c.req.url);
+    return c.redirect(`/nearby${url.search}`);
+  });
 
-    const body = renderMapBody({
+  app.get('/nearby', async (c) => {
+    const url = new URL(c.req.url);
+    const town = townFor(c);
+    const filters = readFilters(url, town);
+    const highlight = url.searchParams.get('matter')?.trim();
+    const statusParam = url.searchParams.get('status')?.trim();
+    const status = statusParam && isStage(statusParam) ? statusParam : undefined;
+    const placed = listNearbyMatters(db, {
+      jurisdiction: town.id,
+      ...(filters.channel ? { channel: filters.channel } : {}),
+      ...(filters.q ? { q: filters.q } : {}),
+      ...(status ? { status } : {}),
+    });
+    const allPlaced = listPlacedMatters(db, town.id);
+    const unplaced = listUnplacedMatters(db, town.id);
+    const nearbyHref = (matter: string) => {
+      const params = new URLSearchParams();
+      if (town.options.length > 1) params.set('town', town.id);
+      if (filters.channel) params.set('channel', filters.channel);
+      if (filters.q) params.set('q', filters.q);
+      if (status) params.set('status', status);
+      params.set('matter', matter);
+      return `/nearby?${params.toString()}`;
+    };
+
+    const body = renderNearbyBody({
       points: placed.map((row) => ({
         matterId: row.id,
         label: row.label,
@@ -382,22 +422,32 @@ export function createApp(db: Db, options: AppOptions = {}) {
         status: row.status,
         channel: row.channel,
         matched: row.matched,
+        href: nearbyHref(row.id),
+        latestEventId: row.latest_event_id,
+        latestEventTitle: row.latest_event_title,
+        latestEventAt: row.latest_event_at,
+        latestStage: row.latest_stage,
       })),
       unplaced: unplaced.map((row) => ({ matterId: row.id, label: row.label, reason: row.failure })),
-      totalAddresses: placed.length + unplaced.length,
-      geocoded: placed.length > 0,
+      totalAddresses: allPlaced.length + unplaced.length,
+      geocoded: allPlaced.length > 0,
       boundary: boundaryFor(town.id),
       box: getProfile(town.id).bbox,
+      ...(filters.q ? { q: filters.q } : {}),
+      ...(filters.channel ? { channel: filters.channel } : {}),
+      ...(status ? { status } : {}),
+      ...(town.options.length > 1 ? { town: town.id } : {}),
       ...(highlight ? { highlight } : {}),
     });
 
     return c.html(
       layout({
-        title: `Map — ${town.label} — townCivic`,
+        title: `Nearby — ${town.label} — townCivic`,
         town,
-        filters: EMPTY_FILTERS,
+        filters,
         sampleData: hasSampleData(db, town.id),
         body,
+        activeView: 'nearby',
         account: nameFor(await currentUser(c)),
       }),
     );
@@ -522,6 +572,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
   });
 
   app.get('/my', async (c) => {
+    c.header('cache-control', 'private, no-store');
     const current = await currentUser(c);
     if (!current) return c.redirect('/login?next=%2Fmy', 302);
     const town = townFor(c);
