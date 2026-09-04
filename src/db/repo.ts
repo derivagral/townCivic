@@ -658,7 +658,7 @@ export interface FeedSubscription {
 export function personalFeed(
   db: Db,
   subscriptions: FeedSubscription[],
-  options: { jurisdiction?: string; limit?: number; includeAdmin?: boolean } = {},
+  options: { jurisdiction?: string; limit?: number; includeAdmin?: boolean; eventIds?: string[] } = {},
 ): EventRow[] {
   if (!subscriptions.length) return [];
 
@@ -703,6 +703,11 @@ export function personalFeed(
   if (!clauses.length) return [];
 
   const conds = [`(${clauses.join(' OR ')})`];
+  if (options.eventIds) {
+    if (!options.eventIds.length) return [];
+    conds.push(`e.id IN (${options.eventIds.map(() => '?').join(',')})`);
+    params.push(...options.eventIds);
+  }
   if (options.jurisdiction) {
     conds.push('e.jurisdiction = ?');
     params.push(options.jurisdiction);

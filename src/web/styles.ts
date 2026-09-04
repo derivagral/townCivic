@@ -315,6 +315,12 @@ form.inline button, .detail .actions button {
 }
 
 /* accounts */
+.interest-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.interest-choice { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); text-decoration: none; }
+.interest-choice:hover, .interest-choice:focus-visible { border-color: var(--accent); background: var(--accent-soft); }
+.match-reason { margin: 20px 0 5px; color: var(--accent); font-size: 12px; overflow-wrap: anywhere; }
+main { min-width: 0; }
+form.search select { max-width: 100%; }
 .authform { max-width: 380px; }
 .authform label { display: block; font-size: 12.5px; color: var(--muted); margin: 14px 0 4px; }
 .authform input {

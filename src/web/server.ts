@@ -63,6 +63,7 @@ import type { Filters, NoticeView, TownView } from './views.ts';
 import { renderNearbyBody } from './map.ts';
 import { loadBoundary } from '../geo/boundary.ts';
 import { feedTitle, renderAtom, renderJsonFeed } from './feeds.ts';
+import { registerAwareness } from './awareness.ts';
 
 const PAGE_SIZE = 60;
 const FEED_SIZE = 50;
@@ -222,6 +223,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
   };
 
   const nameFor = (identity: Identity | null) => (identity ? readerName(identity.reader) : null);
+  registerAwareness(app, db, accounts, currentUser, townFor, secureCookies);
 
   app.get('/styles.css', (c) => c.body(STYLES, 200, { 'content-type': 'text/css; charset=utf-8' }));
   app.get('/healthz', (c) =>
@@ -570,6 +572,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
   });
 
   app.get('/my', async (c) => {
+    c.header('cache-control', 'private, no-store');
     const current = await currentUser(c);
     if (!current) return c.redirect('/login?next=%2Fmy', 302);
     const town = townFor(c);

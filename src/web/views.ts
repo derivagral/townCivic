@@ -116,7 +116,7 @@ export interface LayoutOptions {
   /** Display name of the signed-in reader, when there is one. */
   account?: string | null;
   /** The reader job this page belongs to in the primary navigation. */
-  activeView?: 'activity' | 'nearby' | 'timelines';
+  activeView?: 'activity' | 'nearby' | 'timelines' | 'for-me';
 }
 
 export function layout(options: LayoutOptions): string {
@@ -133,6 +133,7 @@ export function layout(options: LayoutOptions): string {
     })
     .join('');
   const primary = [
+    { value: 'for-me', label: 'For me', path: '/for-me' },
     { value: 'activity', label: 'Activity', path: '/' },
     { value: 'nearby', label: 'Nearby', path: '/nearby' },
     { value: 'timelines', label: 'Timelines', path: '/matters' },
@@ -177,7 +178,7 @@ ${options.feedUrl ? `<link rel="alternate" type="application/atom+xml" title="${
 <header class="site">
   <div class="wrap">
     <div class="brand">
-      <h1><a href="${escapeHtml(withTown('/', town))}">townCivic</a></h1>
+      <h1><a href="${escapeHtml(withTown('/start', town))}">townCivic</a></h1>
       <span class="tag">${escapeHtml(town.label)} · primary-source civic record</span>
       <span class="spacer"></span>
       <span class="util"><a href="${escapeHtml(withTown('/sources', town))}">Sources</a><a href="${escapeHtml(withTown('/feeds', town))}">Feeds</a>${
@@ -219,7 +220,7 @@ function evidenceHtml(evidence?: SearchEvidence): string {
   return `<p class="search-evidence"><span>${escapeHtml(label)}</span>${safe}</p>`;
 }
 
-function eventCard(row: EventRow, filters: Filters, evidence?: SearchEvidence): string {
+export function eventCard(row: EventRow, filters: Filters, evidence?: SearchEvidence): string {
   const subjects = parseJsonArray(row.subjects)
     .slice(0, 4)
     .map((s) => `<span class="badge subject">${escapeHtml(s)}</span>`)
@@ -912,14 +913,6 @@ export function renderProfile(model: ProfileViewModel): string {
     )
     .join('');
 
-  const bodyOptions = model.bodies
-    .map((facet) => `<option value="${escapeHtml(facet.value)}">${escapeHtml(facet.value)}</option>`)
-    .join('');
-
-  const channelOptions = CHANNELS.map(
-    (channel) => `<option value="${escapeHtml(channel)}">${escapeHtml(CHANNEL_LABELS[channel])}</option>`,
-  ).join('');
-
   const body = `<div class="detail">
   <h1>${escapeHtml(model.displayName || model.email)}</h1>
   <p class="count">${escapeHtml(model.email)}</p>
@@ -940,32 +933,10 @@ export function renderProfile(model: ProfileViewModel): string {
   </section>
 
   <section class="agenda">
-    <h2>Follow something</h2>
-    <form method="post" action="/my/subscribe" class="search" style="align-items:center">
-      <input type="hidden" name="csrf" value="${escapeHtml(model.csrfToken)}">
-      <input type="hidden" name="town" value="${escapeHtml(model.town.id)}">
-      <select name="kind" aria-label="What to follow">
-        <option value="body">A board or department</option>
-        <option value="channel">A channel</option>
-        <option value="search">A search</option>
-      </select>
-      <input type="text" name="value" placeholder="Name, channel or search terms" aria-label="What to follow" required
-             list="follow-options">
-      <datalist id="follow-options">${bodyOptions}${channelOptions}</datalist>
-      <button type="submit">Follow</button>
-    </form>
-    <p class="count" style="margin-top:4px">For a channel, use its id — ${CHANNELS.slice(0, 4)
-      .map((c) => `<code>${escapeHtml(c)}</code>`)
-      .join(', ')} and so on. Whatever you follow is followed
-      <strong>in ${escapeHtml(model.town.label)}</strong>: a board's name means a different board in
-      each town, so switch towns first to follow one there.</p>
-  </section>
-
-  <section class="agenda">
-    <h2>Alerts</h2>
-    <p class="count">Not built. Subscriptions are recorded and the feed is live, but nothing sends mail or a
-       push yet — so the honest description of alerts today is “an Atom feed you can point anything at”.
-       The database column that would carry a digest preference exists; the sender does not.</p>
+    <h2>Your local interests</h2>
+    <p><a href="${escapeHtml(withTown('/interests', model.town))}">Choose topics, boards, or searches</a> and preview records before following.</p>
+    <p><a href="/for-me">Open For me</a> to browse matches and choose your starting view.</p>
+    <p>Following saves items in the app and your Atom feed. Email and push notifications are not enabled.</p>
   </section>
 </div>
 
