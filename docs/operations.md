@@ -247,6 +247,57 @@ the archive lives. It carries only `data/towncivic.db`; R2 carries the raw
 documents. Losing the cache means the towns get asked for everything again,
 which is slow and impolite; it no longer means anything is gone.
 
+##### The knobs, and what they are sized for
+
+Four numbers in `refresh.yml` decide how long a run takes, and all four were
+chosen when there were fewer towns than there are now. They are worth re-reading
+whenever a town is added.
+
+| Where             | Setting                 | Note                                      |
+| ----------------- | ----------------------- | ----------------------------------------- |
+| `refresh.yml:37`  | `cron: '10 7,19 * * *'` | twice a day; see **Being a good citizen** |
+| `refresh.yml:58`  | `timeout-minutes: 45`   | the whole job                             |
+| `refresh.yml:113` | `extract … --limit 150` | **per town** — so 150 × however many      |
+| `refresh.yml:120` | `geocode … --limit 50`  | **per town** as well                      |
+
+`ingest` is not on that list because it scales differently: it is one
+conditional GET per enabled source, a few dozen per town, and an unchanged
+listing costs a 304. Adding a town adds seconds to it.
+
+**`extract` is the one that can hit the timeout**, because it opens PDFs. A town
+joining the registry arrives with its whole Agenda Center backlog unread, so the
+first run after adding one can have several hundred documents queued per town at
+once. Two things keep that from being a problem, and it is worth knowing both
+before reaching for the timeout:
+
+- **It takes the newest first.** The selection is ordered by meeting date
+  descending, so run one gets this month's agendas and the 2019 backlog drains
+  behind it. The feed is useful immediately; only completeness is deferred.
+- **It is capped rather than resumed.** Nothing is lost by running out of budget
+  — the unread documents are simply still unread, and the next run takes the
+  next 150. A backlog of _n_ documents per town clears in about _n_/300 days at
+  the current schedule.
+
+So the honest advice on adding towns is to leave the numbers alone and let the
+next few runs catch up. Raise `timeout-minutes` before raising `--limit`: a run
+that is killed at 45 minutes loses the `Publish the database` step, which is the
+one that matters, while a run that merely does less extraction has cost nothing.
+
+To fill a new town in faster, dispatch the workflow by hand a few times rather
+than widening the cap — **Actions → Refresh → Run workflow**. Each dispatch
+takes the next slice, shares the same cache, and stays inside the politeness
+delay.
+
+One thing that does _not_ work, and is worth writing down because it looks like
+it should: running `ingest`/`extract` on a laptop does not spare the scheduled
+job the work. `extract` decides what to open by looking for records with no
+attachment row **in its own database**, and the scheduled job's database is the
+Actions cache, which a local run cannot write to. Local work fills the R2
+archive and a local database; Actions still starts from what its cache knows. If
+you want local runs to count, the missing piece is a `snapshot --pull` step
+ahead of the restore in `refresh.yml`, so the job starts from the published
+database rather than from the cache.
+
 #### Interpretation, when wanted
 
 **Actions → Interpret → Run workflow** pulls the last published database, runs
@@ -544,6 +595,45 @@ Two things that _would_ work, and are different from each other:
 Publishing a subfolder to Pages alongside a real server elsewhere is fine — but
 `TOWNCIVIC_BASE_URL` must point at the server, not at the Pages site, or every
 feed's `self` link and every personal-feed URL resolves to a 404.
+
+## Every host the pipeline talks to
+
+Needed by anyone running this behind an egress allowlist — a corporate proxy, a
+locked-down runner, a sandboxed agent. There is no wildcard: the registry is the
+complete list of who gets asked anything, which is the point of the registry
+being a reviewed artifact.
+
+**The towns** — one host each, the `baseUrl` in `src/registry/<id>-ma.ts`:
+
+```
+www.miltonma.gov          www.scituatema.gov        www.rockland-ma.gov
+weymouth.ma.us            www.braintreema.gov       www.city.waltham.ma.us
+www.town.hull.ma.us
+```
+
+Note `weymouth.ma.us` has no `www` — that host does not resolve, which is why
+the profile spells it bare. If you are allowlisting for a town not yet added,
+allow both forms until `verify` says which one answers.
+
+**The two services**, both public and keyless:
+
+| Host                            | Used by    | For                      |
+| ------------------------------- | ---------- | ------------------------ |
+| `geocoding.geo.census.gov`      | `geocode`  | address → coordinates    |
+| `arcgisserver.digital.mass.gov` | `boundary` | the MassGIS town outline |
+
+`boundary` is a maintenance command run by hand, so its host is only needed when
+adding a town or refreshing an outline — not by the scheduled refresh.
+
+**Registered but disabled**, and listed so nobody is surprised by a denial when
+they turn the tier-2 sources on: `massaqo.onbaseonline.com` (the AG's Municipal
+Law Unit) and `www.commbuys.com`. Both need form-driving adapters that do not
+exist yet, so both ship off in every town and `verify --all` reports them as
+failures wherever egress is filtered. That is expected, not a regression.
+
+**Your own infrastructure**, if configured: whatever `S3_ENDPOINT` names, and
+`<project-ref>.supabase.co` for the serve tier. Neither is reached by the
+pipeline's default path.
 
 ## Being a good citizen
 
