@@ -16,7 +16,15 @@ import {
   syncSources,
 } from '../src/registry/index.ts';
 import { canonicalBody, classifyBody, isVenueAddress } from '../src/registry/profile.ts';
-import { miltonProfile, weymouthProfile, hullProfile, scituateProfile } from '../src/registry/index.ts';
+import {
+  miltonProfile,
+  weymouthProfile,
+  hullProfile,
+  scituateProfile,
+  braintreeProfile,
+  rocklandProfile,
+  walthamProfile,
+} from '../src/registry/index.ts';
 import { clearJurisdiction, clearOrphans } from '../src/commands/clear.ts';
 import { countEvents, facetCounts, getPlace, personalFeed, queryEvents } from '../src/db/repo.ts';
 import { geocodeMatters, placeFromCache } from '../src/pipeline/geocode.ts';
@@ -235,6 +243,110 @@ describe('Hull and Scituate', () => {
     expect(classifyBody(hullProfile, 'Light Board').channel).toBe('public-safety');
     expect(classifyBody(hullProfile, 'Stormwater Authority').channel).toBe('public-safety');
     expect(classifyBody(scituateProfile, 'Coastal Advisory Commission').channel).toBe('land-use');
+  });
+});
+
+describe('Braintree, Rockland and Waltham', () => {
+  const added = [braintreeProfile, rocklandProfile, walthamProfile];
+
+  it('registers the Agenda Center index for each, which is what discover reads', () => {
+    for (const profile of added) {
+      expect(profile.sources.map((s) => s.id)).toContain(`${profile.id}:agenda:index`);
+    }
+  });
+
+  it('registers the bids page and the RSS modules each install actually publishes', () => {
+    // All three serve `/bids.aspx` and a populated `/rss.aspx` — unlike Weymouth
+    // and Scituate, where both 404 and neither is registered.
+    for (const profile of added) {
+      expect(
+        profile.sources.some((s) => s.id.endsWith(':bids')),
+        `${profile.id} has no bids source`,
+      ).toBe(true);
+      expect(
+        profile.sources.some((s) => s.adapter === 'rss'),
+        `${profile.id} has no feeds`,
+      ).toBe(true);
+    }
+    // Waltham publishes no Blog and no Photo Gallery, so its module list is
+    // shorter than Braintree's. Recorded as ids that were read, not guessed.
+    expect(walthamProfile.sources.some((s) => s.id === 'waltham-ma:news')).toBe(true);
+  });
+
+  it('leaves a feed that answered with nothing registered and off', () => {
+    // Every alert feed on all three, and Rockland's news flash, is correctly
+    // addressed and empty. Milton's and Hull's get the same treatment: the URL
+    // is a fact worth keeping, and an empty feed does not get to make requests.
+    const empty = ['braintree-ma:alerts', 'rockland-ma:alerts', 'rockland-ma:news', 'waltham-ma:alerts'];
+    for (const id of empty) {
+      const source = loadSources().find((s) => s.id === id);
+      expect(source, `${id} is not registered`).toBeDefined();
+      expect(source!.enabled, `${id} is enabled`).toBe(false);
+      expect(source!.confidence).toBe('verified');
+    }
+  });
+
+  it('collapses each site’s own spellings into the name the filter rail shows', () => {
+    // Rockland namespaces its own boards, and carries two typos in its Agenda
+    // Center. The registry says what the site says; the alias table says what a
+    // reader expects — Hull's "School Commitee" precedent.
+    expect(canonicalBody(rocklandProfile, 'Rockland School Committee')).toBe('School Committee');
+    expect(canonicalBody(rocklandProfile, 'Community Preservation Act (CPA)')).toBe(
+      'Community Preservation Committee',
+    );
+    expect(canonicalBody(rocklandProfile, 'ADA Commisson - AMERICAN DISABILITIES ACT')).toBe(
+      'ADA Commission',
+    );
+    // Braintree carries two categories for one body.
+    expect(canonicalBody(braintreeProfile, 'Licensing Board')).toBe('Board of License Commissioners');
+  });
+
+  it('classifies the bodies no statewide rule would recognise', () => {
+    // Waltham names most of its bodies after departments rather than statutes,
+    // which is why it needs five rules where every other town needs none or two.
+    // Each of these would otherwise land in `meetings`.
+    expect(classifyBody(walthamProfile, 'Board of Survey and Planning').channel).toBe('land-use');
+    expect(classifyBody(walthamProfile, 'Planning Department').channel).toBe('land-use');
+    expect(classifyBody(walthamProfile, 'Economic & Community Development').channel).toBe('land-use');
+    expect(classifyBody(walthamProfile, 'Long Term Debt Committee').channel).toBe('money');
+    expect(classifyBody(walthamProfile, 'Health Department').channel).toBe('public-safety');
+    for (const body of ['Board of Survey and Planning', 'Long Term Debt Committee', 'Health Department']) {
+      expect(classifyBody(miltonProfile, body).channel, `${body} leaked into every town`).toBe('meetings');
+    }
+
+    // Braintree's Council does its money in a Ways & Means Committee, the way
+    // Hull's does in an Advisory Board and Scituate's in an Advisory Committee.
+    expect(classifyBody(braintreeProfile, 'Town Council - Ways & Means Committee').channel).toBe('money');
+    expect(classifyBody(miltonProfile, 'Town Council - Ways & Means Committee').channel).toBe('meetings');
+
+    // Rockland regulates its manufactured-home park rents. A housing body whose
+    // name contains neither "housing" nor "affordable".
+    expect(classifyBody(rocklandProfile, 'Rent Control Board').channel).toBe('land-use');
+    expect(classifyBody(miltonProfile, 'Rent Control Board').channel).toBe('meetings');
+
+    // The former South Weymouth Naval Air Station. Ahead of the statewide money
+    // rule, which would otherwise catch "advisory board" and file the largest
+    // land-use question in town as a budget meeting.
+    expect(classifyBody(rocklandProfile, 'Former NAS Restoration Advisory Board (RAB)').channel).toBe(
+      'land-use',
+    );
+    expect(classifyBody(rocklandProfile, 'Finance Committee').channel).toBe('money');
+
+    // And a city's council still lands where Weymouth's does.
+    expect(classifyBody(walthamProfile, 'City Council').channel).toBe('meetings');
+  });
+
+  it('points every municipal source at its own town’s host', () => {
+    const hosts: Record<string, string> = {
+      'braintree-ma': 'https://www.braintreema.gov/',
+      'rockland-ma': 'https://www.rockland-ma.gov/',
+      'waltham-ma': 'https://www.city.waltham.ma.us/',
+    };
+    for (const profile of added) {
+      for (const source of profile.sources) {
+        if (source.level === 'municipal') expect(source.url.startsWith(hosts[profile.id]!)).toBe(true);
+      }
+    }
   });
 });
 

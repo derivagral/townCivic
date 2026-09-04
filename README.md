@@ -6,8 +6,9 @@ A primary-source feed of what a town's government actually did this week. It
 records what was published, by whom, and when. It does not summarize, editorialize,
 or decide what is newsworthy.
 
-Covering **Milton**, **Weymouth**, **Hull** and **Scituate, Massachusetts**. One
-database, one schema, one row per town — see [Towns](#towns).
+Covering **Milton**, **Weymouth**, **Hull**, **Scituate**, **Braintree**,
+**Rockland** and **Waltham, Massachusetts**. One database, one schema, one row
+per town — see [Towns](#towns).
 
 The system answers four questions, and only these four:
 
@@ -97,13 +98,14 @@ degrades ingestion to "found nothing" rather than to plausible garbage.
 
 A live Milton run currently yields **~718 records back to 2017** across 14 curated
 boards, plus the site-wide index, bid postings and the news flash. First runs
-elsewhere: Hull ~446, Scituate ~427, Weymouth ~295, each from its Agenda Center.
+elsewhere: Hull ~446, Scituate ~427, Rockland ~361, Weymouth ~295, Waltham ~265,
+Braintree ~249, each from its Agenda Center.
 
 ### Source tiers
 
 | Tier | What                                                                 | Status                                            |
 | ---- | -------------------------------------------------------------------- | ------------------------------------------------- |
-| 1    | The town itself — Agenda Center, bids, news flash                    | **Live** in four towns                            |
+| 1    | The town itself — Agenda Center, bids, news flash                    | **Live** in seven towns                           |
 | 2    | State systems queried for the town — AG Municipal Law Unit, COMMBUYS | Registered, disabled, needs form-driving adapters |
 | 3    | Federal actions resolving to the municipality                        | Not started                                       |
 | 4    | Town-controlled social accounts                                      | Not started; discovery only, never canonical      |
@@ -692,17 +694,38 @@ committee in Weymouth is one account either way. Cross-town questions stay one
 query rather than a fan-out. And adding or dropping a town is writing rows, which
 is what `clear` does.
 
-| Town     | Boards | What this install publishes                                              |
-| -------- | ------ | ------------------------------------------------------------------------ |
-| Milton   | 14     | Agenda Center, bids, news flash; calendar and alert feeds live but empty |
-| Weymouth | 14     | Agenda Center only — no `/rss.aspx`, no `/bids.aspx`                     |
-| Hull     | 18     | Agenda Center, bids, and every RSS module — all of the feeds empty       |
-| Scituate | 16     | Agenda Center only; no School Committee category                         |
+| Town      | Boards | What this install publishes                                                  |
+| --------- | ------ | ---------------------------------------------------------------------------- |
+| Milton    | 14     | Agenda Center, bids, news flash; calendar and alert feeds live but empty     |
+| Weymouth  | 14     | Agenda Center only — no `/rss.aspx`, no `/bids.aspx`                         |
+| Hull      | 18     | Agenda Center, bids, and every RSS module — all of the feeds empty           |
+| Scituate  | 16     | Agenda Center only; no School Committee category                             |
+| Braintree | 19     | The fullest install here — 39 categories, every module populated; no schools |
+| Rockland  | 19     | Agenda Center, news flash, calendar; a quarter of its categories regional    |
+| Waltham   | 19     | Agenda Center, bids, news flash; migrated onto CivicPlus during 2025         |
 
 `npm run towns` prints that table with real counts, and `/towns` is the same
 thing in the browser. A town listed as _registered, nothing enabled_ has its URL
 shapes written down and nothing confirmed against the live site — an unverified
 claim does not get to make requests.
+
+First runs for the three most recent: **Braintree ~249 records, Rockland ~361,
+Waltham ~265**, each from its Agenda Center plus whatever its feeds carry. Every
+one of their sources was `discover`ed for its ids and then `verify`ed one at a
+time. The handful of listings that answered with nothing in them are named in
+each town's own file and left enabled anyway, because an empty listing is a fact
+about this year rather than about the URL; the feeds that answered empty are
+registered and off, which is the treatment Milton's and Hull's get.
+
+#### Towns that were looked at and not registered
+
+| Town     | Platform                          | Why not                                                                                                                                                                                                                                                             |
+| -------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Abington | Apptegy, with meetings in OpenGov | No CivicPlus surface at all — no `/AgendaCenter`, no `/DocumentCenter`, no `/RSSFeed.aspx`. Its pages are `/page/…`, `/article/<id>`, `/live_feeds/<id>`, and its agendas live in a separate OpenGov portal. Covering it needs a new adapter, not a registry entry. |
+
+Worth writing down rather than rediscovering: "the town is not on the platform"
+is a finding, and a town whose records are real but unreachable by the existing
+adapters is a different backlog item from a town nobody has tried.
 
 ### What a town is, in code
 
