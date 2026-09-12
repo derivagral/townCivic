@@ -131,6 +131,28 @@ const milton: JurisdictionProfile = defineJurisdiction({
 
 const verified = { confidence: 'verified', enabled: true } as const;
 
+/** Public RSS includes complete content:encoded transcripts; no YouTube credentials. */
+export const MATV_TRANSCRIPTS: SourceInput = {
+  id: 'milton-ma:transcripts:matv',
+  jurisdiction: JURISDICTION,
+  label: 'Milton Access TV meeting transcripts',
+  adapter: 'matv-transcripts',
+  url: 'https://miltonaccesstv.org/category/transcript/feed/',
+  level: 'municipal',
+  agency: 'Milton Access TV',
+  channel: 'meetings',
+  eventType: 'meeting_transcript',
+  priority: 'medium',
+  tier: 4,
+  precedence: 90,
+  ...verified,
+  // Public feed captured successfully, but the crawler received a bot challenge.
+  // Explicit --source runs work while deployment-network access is verified.
+  enabled: false,
+  notes:
+    'Full automatic transcripts with board, meeting date, and timestamped video links. Verified September 12, 2026: 10 recent publications, including older meetings. This is a rolling feed, not a complete archive. Speaker labels are unverified; attendance is not inferred. Disabled for scheduled refresh until crawler access is verified; this environment received a bot challenge.',
+};
+
 const tier1: SourceInput[] = [
   ...AGENDA_CATEGORIES.map((category) => agendaCenterSource(milton, category, MODULES, verified)),
 
@@ -227,6 +249,6 @@ const tier1: SourceInput[] = [
   }),
 ];
 
-milton.sources = [...tier1, ...stateSources(milton)];
+milton.sources = [...tier1, MATV_TRANSCRIPTS, ...stateSources(milton)];
 
 export const miltonProfile = milton;

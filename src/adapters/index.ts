@@ -1,11 +1,13 @@
 import type { Adapter, AdapterContext, AdapterName, RawItem, SourceDef } from '../types.ts';
 import { rssAdapter } from './rss.ts';
+import { matvTranscriptsAdapter } from './matv-transcripts.ts';
 import { civicPlusAgendaCenterAdapter } from './civicplus-agenda-center.ts';
 import { civicPlusBidsAdapter } from './civicplus-bids.ts';
 import { htmlLinksAdapter } from './html-links.ts';
 
 export const adapters: Record<AdapterName, Adapter> = {
   rss: rssAdapter,
+  'matv-transcripts': matvTranscriptsAdapter,
   'civicplus-agenda-center': civicPlusAgendaCenterAdapter,
   'civicplus-bids': civicPlusBidsAdapter,
   'html-links': htmlLinksAdapter,

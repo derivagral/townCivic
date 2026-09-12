@@ -240,18 +240,26 @@ export function getConditionalHeaders(db: Db, sourceId: string): { etag?: string
 export function updateSourceFetchState(
   db: Db,
   sourceId: string,
-  state: { etag?: string | null; lastModified?: string | null; status?: number; error?: string | null },
+  state: {
+    etag?: string | null;
+    lastModified?: string | null;
+    status?: number;
+    error?: string | null;
+    clearValidators?: boolean;
+  },
 ): void {
   db.prepare(
     `UPDATE sources
-        SET etag = coalesce(?, etag),
-            last_modified = coalesce(?, last_modified),
+        SET etag = CASE WHEN ? THEN NULL ELSE coalesce(?, etag) END,
+            last_modified = CASE WHEN ? THEN NULL ELSE coalesce(?, last_modified) END,
             last_fetch_at = ?,
             last_status = ?,
             last_error = ?
       WHERE id = ?`,
   ).run(
+    Number(state.clearValidators ?? false),
     state.etag ?? null,
+    Number(state.clearValidators ?? false),
     state.lastModified ?? null,
     nowIso(),
     state.status ?? null,
@@ -344,8 +352,8 @@ export function upsertEvent(db: Db, event: NormalizedEvent): UpsertOutcome {
     db.prepare(
       `INSERT INTO events (id, jurisdiction, source_id, level, agency, body, channel, event_type,
                            priority, title, summary, url, document_url, occurred_at, published_at,
-                           first_seen_at, last_seen_at, subjects, tags, precedence, content_hash, raw)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                           first_seen_at, last_seen_at, subjects, tags, precedence, content_hash, raw, doc_text, extracted_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       event.id,
       event.jurisdiction,
@@ -369,6 +377,8 @@ export function upsertEvent(db: Db, event: NormalizedEvent): UpsertOutcome {
       event.precedence,
       event.contentHash,
       JSON.stringify(event.raw),
+      event.docText ?? null,
+      event.docText !== undefined ? ts : null,
     );
     return 'new';
   }
@@ -389,6 +399,7 @@ export function upsertEvent(db: Db, event: NormalizedEvent): UpsertOutcome {
         SET source_id = ?, agency = ?, level = ?, title = ?, summary = ?, url = ?, document_url = ?,
             occurred_at = ?, published_at = ?, channel = ?, event_type = ?, priority = ?, body = ?,
             subjects = ?, tags = ?, precedence = ?, content_hash = ?, raw = ?,
+            doc_text = coalesce(?, doc_text), extracted_at = coalesce(?, extracted_at),
             last_seen_at = ?, revised_at = ?, revision = revision + 1
       WHERE id = ?`,
   ).run(
@@ -410,6 +421,8 @@ export function upsertEvent(db: Db, event: NormalizedEvent): UpsertOutcome {
     event.precedence,
     event.contentHash,
     JSON.stringify(event.raw),
+    event.docText ?? null,
+    event.docText !== undefined ? ts : null,
     ts,
     ts,
     event.id,

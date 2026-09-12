@@ -139,8 +139,9 @@ export async function ingest(db: Db, options: IngestOptions = {}): Promise<Inges
     }
 
     updateSourceFetchState(db, source.id, {
-      etag: result.etag,
-      lastModified: result.lastModified,
+      clearValidators: !report.ok,
+      etag: report.ok ? result.etag : null,
+      lastModified: report.ok ? result.lastModified : null,
       status: result.status,
       error: report.error ?? null,
     });

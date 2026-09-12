@@ -1,0 +1,157 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { sourceSchema } from '../src/types.ts';
+import { MATV_TRANSCRIPTS } from '../src/registry/milton-ma.ts';
+import { parseWithSource } from '../src/adapters/index.ts';
+import { normalize } from '../src/pipeline/normalize.ts';
+import { ingest, ingestBody } from '../src/pipeline/ingest.ts';
+import { linkMatters } from '../src/pipeline/link.ts';
+import { openDb } from '../src/db/index.ts';
+import type { Db } from '../src/db/index.ts';
+import { getConditionalHeaders, queryEvents, upsertEvent, upsertSource } from '../src/db/repo.ts';
+import { transcriptFromRaw } from '../src/transcripts.ts';
+import { renderEvent } from '../src/web/views.ts';
+import { createLocalDocuments, setDocuments } from '../src/documents/index.ts';
+import { ROOT } from '../src/config.ts';
+
+const source = sourceSchema.parse(MATV_TRANSCRIPTS);
+const xml = fs.readFileSync(path.join(ROOT, 'fixtures/milton-ma/matv-transcripts.xml'), 'utf8');
+const parse = (body = xml) => parseWithSource(source, body);
+let db: Db;
+beforeEach(() => {
+  db = openDb(':memory:');
+  upsertSource(db, source);
+});
+afterEach(() => {
+  db.close();
+  vi.restoreAllMocks();
+});
+
+describe('MATV public transcripts', () => {
+  it('reads full content, correct board/date and case-sensitive video ID without identifying speakers', () => {
+    const [item] = parse();
+    const event = normalize(source, item!);
+    expect(event.title).toContain('– Transcript');
+    expect(event.body).toBe('Board of Appeals');
+    expect(event.channel).toBe('land-use');
+    expect(event.eventType).toBe('meeting_transcript');
+    expect(event.occurredAt).toBe('2026-07-21T12:00:00.000Z');
+    expect(event.publishedAt).toBe('2026-09-12T10:14:07.000Z');
+    expect(event.docText).toContain('damn culvert');
+    expect(event.docText).toContain('attention & repair');
+    expect(event.docText).not.toContain('deliberately incomplete');
+    expect(event.docText).not.toContain('width: 25%');
+    expect(item!.transcript).toMatchObject({
+      videoId: 'AbC_dEf1234',
+      segments: [
+        { speakerLabel: 'Speaker 1', startSeconds: 53, endSeconds: 66 },
+        { speakerLabel: 'Speaker 2', startSeconds: 3602, endSeconds: 3645 },
+        { speakerLabel: 'Speaker 1', startSeconds: 3660, endSeconds: 3660 },
+      ],
+    });
+    expect(event.raw).not.toHaveProperty('attendees');
+    expect(event.subjects).toEqual([]);
+  });
+
+  it('indexes every passage immediately and keeps repeat ingestion idempotent', () => {
+    expect(ingestBody(db, source, xml)).toMatchObject({ created: 1 });
+    expect(ingestBody(db, source, xml)).toMatchObject({ unchanged: 1, created: 0 });
+    const [row] = queryEvents(db, { q: 'stormwater' });
+    expect(row?.revision).toBe(1);
+    expect(row?.extracted_at).toBeTruthy();
+    expect(row?.document_url).toBeNull();
+    expect(transcriptFromRaw(row!.raw)?.segments).toHaveLength(3);
+    expect(linkMatters(db).matters).toBe(0);
+  });
+
+  it('refreshes FTS and records a revision when only late transcript text changes', () => {
+    ingestBody(db, source, xml);
+    const revised = xml.replace('stormwater', 'groundwater');
+    expect(ingestBody(db, source, revised)).toMatchObject({ revised: 1 });
+    expect(queryEvents(db, { q: 'stormwater' })).toHaveLength(0);
+    expect(queryEvents(db, { q: 'groundwater' })[0]?.revision).toBe(2);
+  });
+
+  it('preserves text beyond the PDF projection limit', () => {
+    const long = xml.replace('stormwater', `${'discussion '.repeat(15000)}tailword`);
+    ingestBody(db, source, long);
+    expect(queryEvents(db, { q: 'tailword' })).toHaveLength(1);
+    expect(queryEvents(db)[0]!.doc_text!.length).toBeGreaterThan(150000);
+  });
+
+  it('does not write transcript text or events during dry-run', () => {
+    expect(ingestBody(db, source, xml, { dryRun: true })).toMatchObject({ items: 1, created: 0 });
+    expect(queryEvents(db)).toHaveLength(0);
+  });
+
+  it('retains existing PDF extraction when revising an ordinary event', () => {
+    const original = normalize(source, { title: 'Agenda', url: 'https://example.test/agenda' });
+    upsertEvent(db, original);
+    db.prepare('UPDATE events SET doc_text = ? WHERE id = ?').run('Previously extracted PDF', original.id);
+    upsertEvent(db, normalize(source, { title: 'Amended agenda', url: 'https://example.test/agenda' }));
+    expect(queryEvents(db)[0]?.doc_text).toBe('Previously extracted PDF');
+  });
+
+  it.each([
+    ['HTML challenge', '<html><body>Checking your browser</body></html>'],
+    ['excerpt only', xml.replace(/<content:encoded>[\s\S]*?<\/content:encoded>/, '')],
+    ['missing board', xml.replace('<strong>Board:</strong>', '<strong>Other:</strong>')],
+    ['invalid date', xml.replace('2026-07-21</p>', '2026-02-30</p>')],
+    ['invalid timestamp', xml.replace('–01:06)', '–00:52)')],
+    ['unsafe embed', xml.replace('https://www.youtube.com/embed/', 'https://untrusted.test/embed/')],
+    ['unexpected heading', xml.replace('Speaker 2 (', 'Unknown (')],
+  ])('fails visibly on %s rather than silently dropping speech', (_, body) => {
+    expect(() => ingestBody(db, source, body)).toThrow();
+    expect(queryEvents(db)).toHaveLength(0);
+  });
+
+  it('accepts a valid empty RSS channel', () => {
+    expect(parse(xml.replace(/<item>[\s\S]*?<\/item>/, ''))).toEqual([]);
+  });
+
+  it('renders escaped passages with time links and publisher attribution', () => {
+    ingestBody(db, source, xml);
+    const html = renderEvent({
+      row: queryEvents(db)[0]!,
+      sampleData: false,
+      town: { id: 'milton-ma', label: 'Milton', options: [], path: '/' },
+    });
+    expect(html).toContain('v=AbC_dEf1234&amp;t=3602s');
+    expect(html).toContain('1:00:02–1:00:45');
+    expect(html).toContain('Published by MATV');
+    expect(html).toContain('Speaker 2');
+    expect(html).toContain('That damn culvert');
+    expect(html).toContain('&lt;script&gt;');
+    expect(html).not.toContain("<script>alert('quoted text')</script>");
+    expect(html).not.toContain('Posted by clerk');
+    expect(html).not.toContain('No agenda items');
+    expect(html).not.toContain('npm run extract');
+  });
+
+  it('archives the feed, handles conditional requests, and retries a failed parse without validators', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'towncivic-transcript-'));
+    setDocuments(createLocalDocuments(dir));
+    try {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response(xml, { headers: { 'content-type': 'application/rss+xml', etag: 'valid' } }),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 304, headers: { etag: 'valid' } }))
+        .mockResolvedValueOnce(new Response('<html>challenge</html>', { headers: { etag: 'blocked' } }));
+      const options = { jurisdiction: 'milton-ma', sourceIds: [source.id], fetchImpl };
+      expect((await ingest(db, options))[0]).toMatchObject({ ok: true, created: 1 });
+      expect(db.prepare('SELECT count(*) AS n FROM documents').get()).toMatchObject({ n: 1 });
+      expect((await ingest(db, options))[0]).toMatchObject({ ok: true, notModified: true });
+      expect(fetchImpl.mock.calls[1]![1]?.headers).toMatchObject({ 'if-none-match': 'valid' });
+      expect((await ingest(db, options))[0]).toMatchObject({ ok: false });
+      expect(getConditionalHeaders(db, source.id)).toEqual({});
+      expect(queryEvents(db, { q: 'stormwater' })).toHaveLength(1);
+    } finally {
+      setDocuments(undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

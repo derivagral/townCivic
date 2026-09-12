@@ -1,8 +1,15 @@
 import { z } from 'zod';
+import type { TranscriptArtifact } from './transcripts.ts';
 import { CHANNELS, EVENT_TYPES, LEVELS, PRIORITIES, TIERS } from './taxonomy.ts';
 import type { Channel, EventType, Level, Priority, Tier } from './taxonomy.ts';
 
-export const ADAPTERS = ['rss', 'civicplus-agenda-center', 'civicplus-bids', 'html-links'] as const;
+export const ADAPTERS = [
+  'rss',
+  'civicplus-agenda-center',
+  'civicplus-bids',
+  'html-links',
+  'matv-transcripts',
+] as const;
 export type AdapterName = (typeof ADAPTERS)[number];
 
 /**
@@ -59,6 +66,8 @@ export interface RawItem {
   externalId?: string;
   title: string;
   summary?: string;
+  /** Publisher-provided transcript; labels are not verified speaker identities. */
+  transcript?: TranscriptArtifact;
   /** Canonical human-facing page for this item. */
   url: string;
   /** The underlying artifact (usually a PDF) when the listing links one. */
@@ -88,6 +97,8 @@ export interface NormalizedEvent {
   priority: Priority;
   title: string;
   summary: string | null;
+  /** Inline source text already available at ingestion, without a second fetch. */
+  docText?: string;
   url: string;
   documentUrl: string | null;
   occurredAt: string | null;

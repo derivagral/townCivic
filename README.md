@@ -1010,3 +1010,9 @@ These are small municipal servers serving public records. The defaults reflect t
 one request per host per second, conditional GETs so unchanged pages cost nothing,
 bounded retries with exponential backoff, and a user agent with a contact URL.
 Please don't lower them.
+
+### Meeting transcripts
+
+Milton Access TV’s public transcript feed is supported without YouTube credentials.
+See [Milton transcript ingestion](docs/transcripts.md) for commands, stored metadata,
+and the rolling feed’s coverage limits.

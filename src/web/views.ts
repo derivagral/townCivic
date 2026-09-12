@@ -1,3 +1,4 @@
+import { formatTimestamp, transcriptFromRaw, transcriptVideoUrl } from '../transcripts.ts';
 import type { EventRow, MatterRow, SearchEvidence, SourceRow, TimelineRow } from '../db/repo.ts';
 import { CHANNELS, CHANNEL_DESCRIPTIONS, CHANNEL_LABELS, EVENT_TYPE_LABELS } from '../taxonomy.ts';
 import type { Channel } from '../taxonomy.ts';
@@ -458,6 +459,7 @@ export interface EventViewModel {
 export function renderEvent(model: EventViewModel): string {
   const { row, sampleData, town } = model;
   const notice = model.notice ?? null;
+  const transcript = row.event_type === 'meeting_transcript' ? transcriptFromRaw(row.raw) : null;
   const subjects = parseJsonArray(row.subjects);
   const tags = parseJsonArray(row.tags);
   const kind = EVENT_TYPE_LABELS[row.event_type as keyof typeof EVENT_TYPE_LABELS] ?? row.event_type;
@@ -478,7 +480,10 @@ export function renderEvent(model: EventViewModel): string {
       ) || '—',
     ],
     ...(notice?.location ? ([['Location', notice.location]] as [string, string][]) : []),
-    ['Posted by clerk', formatDate(row.published_at, { hour: 'numeric', minute: '2-digit' }) || '—'],
+    [
+      transcript ? 'Published by MATV' : 'Posted by clerk',
+      formatDate(row.published_at, { hour: 'numeric', minute: '2-digit' }) || '—',
+    ],
     ...(notice?.postingAuthority
       ? ([['Posting authority', notice.postingAuthority]] as [string, string][])
       : []),
@@ -490,16 +495,35 @@ export function renderEvent(model: EventViewModel): string {
     ['Tags', tags.length ? tags.join(', ') : '—'],
   ];
 
-  // The agenda is the point: it is what the meeting is actually about, and it
-  // exists only inside the notice PDF.
-  const agenda = notice?.agendaItems?.length
-    ? `<section class="agenda">
+  // Show publisher transcript passages when available; otherwise show the
+  // agenda extracted from the notice PDF.
+  const transcriptView = transcript
+    ? `<section class="agenda"><h2>Transcript</h2>
+         <p class="count">Automatic transcript published by Milton Access TV. Speaker numbers are source labels; identities and attendance have not been verified.</p>
+         ${transcript.segments
+           .map(
+             (segment, index) => `<div id="passage-${index + 1}">
+           <h3><a href="${escapeHtml(transcriptVideoUrl(transcript.videoId, segment.startSeconds))}" rel="noopener noreferrer">${formatTimestamp(segment.startSeconds)}–${formatTimestamp(segment.endSeconds)}</a> · ${escapeHtml(segment.speakerLabel)}</h3>
+           ${segment.text
+             .split('\n\n')
+             .map((text) => `<p>${escapeHtml(text)}</p>`)
+             .join('')}
+         </div>`,
+           )
+           .join('')}
+       </section>`
+    : '';
+
+  const agenda = transcript
+    ? transcriptView
+    : notice?.agendaItems?.length
+      ? `<section class="agenda">
          <h2>Agenda <span class="pill">read from the notice</span></h2>
          <ol>${notice.agendaItems.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ol>
        </section>`
-    : row.extracted_at
-      ? `<p class="count" style="margin-top:18px">No agenda items were listed in the document.</p>`
-      : `<p class="count" style="margin-top:18px">Document not read yet — run <code>npm run extract</code>.</p>`;
+      : row.extracted_at
+        ? `<p class="count" style="margin-top:18px">No agenda items were listed in the document.</p>`
+        : `<p class="count" style="margin-top:18px">Document not read yet — run <code>npm run extract</code>.</p>`;
 
   // Where this record sits in a longer story. The chip carries the stage, so a
   // reader sees "continued" without opening the timeline.
