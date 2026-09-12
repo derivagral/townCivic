@@ -538,6 +538,53 @@ export function queryEvents(db: Db, query: EventQuery = {}): EventRow[] {
   return rows as unknown as EventRow[];
 }
 
+export interface SearchEvidence {
+  eventId: string;
+  text: string;
+  source: 'record' | 'derived';
+  kind: string | null;
+}
+
+/**
+ * Explain why each search result matched. The FTS tables remain the source of
+ * truth; this is a read model for the UI, not another copy of searchable text.
+ */
+export function searchEvidenceForEvents(
+  db: Db,
+  eventIds: string[],
+  q: string,
+  includeDerived = false,
+): SearchEvidence[] {
+  if (!eventIds.length || !q.trim()) return [];
+  const ids = eventIds.map(() => '?').join(',');
+  const match = toMatchQuery(q);
+  const official = db
+    .prepare(
+      `SELECT e.id AS eventId,
+              snippet(events_fts, -1, '[[', ']]', ' … ', 28) AS text,
+              'record' AS source, NULL AS kind
+         FROM events_fts
+         JOIN events e ON e.rowid = events_fts.rowid
+        WHERE events_fts MATCH ? AND e.id IN (${ids})`,
+    )
+    .all(match, ...(eventIds as never[])) as unknown as SearchEvidence[];
+
+  if (!includeDerived) return official;
+  const found = new Set(official.map((item) => item.eventId));
+  const derived = db
+    .prepare(
+      `SELECT i.event_id AS eventId,
+              snippet(interpretations_fts, 0, '[[', ']]', ' … ', 28) AS text,
+              'derived' AS source, i.kind AS kind
+         FROM interpretations_fts
+         JOIN interpretations i ON i.rowid = interpretations_fts.rowid
+        WHERE interpretations_fts MATCH ? AND i.event_id IN (${ids})
+        ORDER BY i.created_at DESC`,
+    )
+    .all(match, ...(eventIds as never[])) as unknown as SearchEvidence[];
+  return [...official, ...derived.filter((item) => !found.has(item.eventId))];
+}
+
 export function countEvents(db: Db, query: EventQuery = {}): number {
   const { clause, params } = buildWhere(query);
   const row = db.prepare(`SELECT count(*) AS n FROM events e ${clause}`).get(...(params as never[])) as {
@@ -611,7 +658,7 @@ export interface FeedSubscription {
 export function personalFeed(
   db: Db,
   subscriptions: FeedSubscription[],
-  options: { jurisdiction?: string; limit?: number; includeAdmin?: boolean } = {},
+  options: { jurisdiction?: string; limit?: number; includeAdmin?: boolean; eventIds?: string[] } = {},
 ): EventRow[] {
   if (!subscriptions.length) return [];
 
@@ -656,6 +703,11 @@ export function personalFeed(
   if (!clauses.length) return [];
 
   const conds = [`(${clauses.join(' OR ')})`];
+  if (options.eventIds) {
+    if (!options.eventIds.length) return [];
+    conds.push(`e.id IN (${options.eventIds.map(() => '?').join(',')})`);
+    params.push(...options.eventIds);
+  }
   if (options.jurisdiction) {
     conds.push('e.jurisdiction = ?');
     params.push(options.jurisdiction);
@@ -753,6 +805,8 @@ export interface MatterQuery {
   q?: string;
   /** Only matters touched on or after this ISO date. */
   since?: string;
+  /** Recently touched matters, or the longest/most documented timelines. */
+  order?: 'recent' | 'documented';
   limit?: number;
   offset?: number;
 }
@@ -786,11 +840,15 @@ function matterWhere(query: MatterQuery): { clause: string; params: unknown[] } 
 
 export function listMatters(db: Db, query: MatterQuery = {}): MatterRow[] {
   const { clause, params } = matterWhere(query);
+  const order =
+    query.order === 'recent'
+      ? 'm.last_at DESC, m.event_count DESC, m.label ASC'
+      : 'm.event_count DESC, m.last_at DESC, m.label ASC';
   const rows = db
     .prepare(
       `SELECT m.* FROM matters m
         ${clause}
-        ORDER BY m.event_count DESC, m.last_at DESC, m.label ASC
+        ORDER BY ${order}
         LIMIT ? OFFSET ?`,
     )
     .all(...(params as never[]), Math.min(query.limit ?? 100, 500), query.offset ?? 0);
@@ -841,6 +899,70 @@ export interface PlacedMatterRow extends MatterRow {
   lat: number;
   lon: number;
   matched: string | null;
+}
+
+export interface NearbyMatterQuery {
+  jurisdiction?: string;
+  channel?: string;
+  status?: string;
+  q?: string;
+  limit?: number;
+}
+
+export interface NearbyMatterRow extends PlacedMatterRow {
+  channel: string | null;
+  latest_event_id: string | null;
+  latest_event_title: string | null;
+  latest_event_at: string | null;
+  latest_stage: string | null;
+}
+
+/** Address matters for the Nearby map/list, paired with their latest record. */
+export function listNearbyMatters(db: Db, query: NearbyMatterQuery = {}): NearbyMatterRow[] {
+  const conds = ['p.lat IS NOT NULL', "m.kind = 'address'"];
+  const params: unknown[] = [];
+  if (query.jurisdiction) {
+    conds.push('m.jurisdiction = ?');
+    params.push(query.jurisdiction);
+  }
+  if (query.channel) {
+    conds.push('EXISTS (SELECT 1 FROM json_each(m.channels) WHERE value = ?)');
+    params.push(query.channel);
+  }
+  if (query.status) {
+    conds.push('m.status = ?');
+    params.push(query.status);
+  }
+  if (query.q?.trim()) {
+    conds.push('lower(m.label) LIKE ?');
+    params.push(`%${query.q.trim().toLowerCase()}%`);
+  }
+
+  const rows = db
+    .prepare(
+      `WITH latest AS (
+         SELECT me.matter_id, e.id, e.title,
+                coalesce(e.occurred_at, e.published_at, e.first_seen_at) AS at,
+                me.stage,
+                row_number() OVER (
+                  PARTITION BY me.matter_id
+                  ORDER BY coalesce(e.occurred_at, e.published_at, e.first_seen_at) DESC, e.id
+                ) AS rn
+           FROM matter_events me JOIN events e ON e.id = me.event_id
+       )
+       SELECT m.*, p.lat, p.lon, p.matched,
+              (SELECT value FROM json_each(m.channels) LIMIT 1) AS channel,
+              latest.id AS latest_event_id, latest.title AS latest_event_title,
+              latest.at AS latest_event_at, latest.stage AS latest_stage
+         FROM matters m
+         JOIN places p ON p.matter_id = m.id
+         LEFT JOIN latest ON latest.matter_id = m.id AND latest.rn = 1
+        WHERE ${conds.join(' AND ')}
+        ORDER BY m.last_at DESC, m.event_count DESC, m.label ASC
+        LIMIT ?`,
+    )
+    .all(...(params as never[]), Math.min(query.limit ?? 250, 500));
+  return rows as unknown as NearbyMatterRow[];
 }
 
 /** Address matters that resolved to a point, with the channel to colour them by. */
