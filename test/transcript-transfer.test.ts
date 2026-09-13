@@ -101,6 +101,7 @@ describe('local transcript handoff', () => {
       spawnSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', command, '--source', source.id], {
         cwd: ROOT,
         encoding: 'utf8',
+        timeout: 5_000,
         env: {
           ...process.env,
           TOWNCIVIC_DATA_DIR: dir,
@@ -122,7 +123,8 @@ describe('local transcript handoff', () => {
       overwrite: true,
     });
     expect(run('transcripts-import', 'target.db').status).toBe(1);
-  });
+    // Three cold CLI launches exceed Vitest's 5s default on shared CI runners.
+  }, 20_000);
 
   it.each(['local', 's3'])(
     'uploads and upserts through %s, retaining other records and skipping replay after restart',
