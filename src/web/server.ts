@@ -61,6 +61,7 @@ import {
 } from './views.ts';
 import type { Filters, NoticeView, TownView } from './views.ts';
 import { renderNearbyBody } from './map.ts';
+import { accessLog, logErrors, type LogSink } from './logging.ts';
 import { loadBoundary } from '../geo/boundary.ts';
 import { feedTitle, renderAtom, renderJsonFeed } from './feeds.ts';
 import { registerAwareness } from './awareness.ts';
@@ -129,6 +130,11 @@ export interface AppOptions {
    * cookie is never sent and signing in would appear to fail silently.
    */
   secureCookies?: boolean;
+  /**
+   * Where the access log goes. `false` silences it; a function captures it,
+   * which is what the tests do. Defaults to `TOWNCIVIC_ACCESS_LOG`.
+   */
+  accessLog?: false | LogSink;
 }
 
 export function createApp(db: Db, options: AppOptions = {}) {
@@ -136,6 +142,21 @@ export function createApp(db: Db, options: AppOptions = {}) {
   const baseUrl = options.baseUrl ?? config.baseUrl;
   const secureCookies = options.secureCookies ?? config.secureCookies;
   const accounts = options.accounts ?? createAccounts(db);
+
+  // First, and before the routes are registered, because a request that never
+  // reaches a handler — a 404, a throw in a middleware below — is exactly the
+  // one worth having a line about.
+  const logging = options.accessLog ?? (config.accessLog === 'off' ? false : undefined);
+  if (logging !== false) {
+    app.use(
+      '*',
+      accessLog({
+        ...(typeof logging === 'function' ? { write: logging } : {}),
+        ...(config.accessLog === 'all' ? { verbose: true } : {}),
+      }),
+    );
+    app.onError(logErrors(typeof logging === 'function' ? logging : undefined));
+  }
 
   /**
    * The towns this instance serves, and the one a bare URL means.

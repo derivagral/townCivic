@@ -35,6 +35,18 @@ export const config = {
   secureCookies: process.env.TOWNCIVIC_SECURE_COOKIES === '1',
 
   /**
+   * One line per request on stdout: `off` to silence it, `all` to include the
+   * health check and the stylesheet, anything else for the default.
+   *
+   * On by default, because the alternative is what this was written after: a
+   * sign-up failing in production against a completely empty `fly logs`, which
+   * reads like the request never arrived. The default skips `/healthz` and
+   * `/styles.css` while they succeed — a health check every 30 seconds would
+   * otherwise be most of the log. See `src/web/logging.ts`.
+   */
+  accessLog: process.env.TOWNCIVIC_ACCESS_LOG ?? 'on',
+
+  /**
    * Where readers live: `sqlite` (the tables in `data/towncivic.db`) or
    * `supabase` (GoTrue and Postgres at a hosted endpoint).
    *

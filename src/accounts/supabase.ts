@@ -208,9 +208,37 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
     );
   }
 
+  /**
+   * Whether a failed call is the project's problem rather than the caller's.
+   *
+   * The distinction is the whole reason this function exists. A 400 from GoTrue
+   * is an answer — that password is too short, that address is already taken —
+   * and belongs on the page in front of the reader. A 0, a 429 or a 5xx is not
+   * an answer at all: it is the hosted project failing to have an opinion, and
+   * rendering it as though the reader typed something wrong sends them off to
+   * fix a form that was fine.
+   *
+   * A 504 is the case that prompted this. Supabase's gateway gives up on a
+   * GoTrue request that has not answered in about five seconds and returns
+   * `{"message":"Gateway timeout"}`; before this, the sign-up page printed those
+   * two words under the email field and called it a rejected form.
+   */
+  const isUpstreamFailure = (status: number): boolean => status === 0 || status === 429 || status >= 500;
+
   async function request<T>(
     path: string,
-    init: { method?: string; token?: string; body?: unknown; headers?: Record<string, string> } = {},
+    init: {
+      method?: string;
+      token?: string;
+      body?: unknown;
+      headers?: Record<string, string>;
+      /**
+       * Do not log a failure. For `check()`, which probes endpoints it expects
+       * to be refused by — a logged warning for a project that is correctly
+       * locked down would be a lie.
+       */
+      quiet?: boolean;
+    } = {},
   ): Promise<Response_<T>> {
     // The reader's own token when signed in. Postgres reads `auth.uid()` out of
     // it, and that is what every policy in supabase/migrations/ is written
@@ -225,16 +253,25 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
       ...init.headers,
     };
 
+    const method = init.method ?? 'GET';
+    const started = performance.now();
+    // The path without its query string. Enough to say which endpoint failed,
+    // and it cannot carry a filter value — a reader's own search text — into a
+    // log line.
+    const where = `${method} ${path.split('?')[0]}`;
+    const elapsed = () => `${Math.round(performance.now() - started)}ms`;
+
     let response: Response;
     try {
       response = await doFetch(`${baseUrl}${path}`, {
-        method: init.method ?? 'GET',
+        method,
         headers,
         ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
         signal: AbortSignal.timeout(config.requestTimeoutMs),
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
+      if (!init.quiet) console.error(`[accounts] ${where} unreachable after ${elapsed()}: ${detail}`);
       return { status: 0, ok: false, body: undefined as T, error: `could not reach Supabase: ${detail}` };
     }
 
@@ -256,12 +293,17 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
         (candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0,
       ) ?? null;
 
-    return {
-      status: response.status,
-      ok: response.ok,
-      body: parsed as T,
-      error: response.ok ? null : (message ?? `HTTP ${response.status}`),
-    };
+    const error = response.ok ? null : (message ?? `HTTP ${response.status}`);
+
+    // Only the project's own failures, never a 4xx. A stale cookie produces a
+    // 401 on every page a signed-out reader loads, and an expected 403 is how
+    // `check()` confirms row-level security is on; logging those would cost the
+    // log its meaning. What is left is the set of things an operator can act on.
+    if (error !== null && isUpstreamFailure(response.status) && !init.quiet) {
+      console.error(`[accounts] ${where} → ${response.status} after ${elapsed()}: ${error}`);
+    }
+
+    return { status: response.status, ok: response.ok, body: parsed as T, error };
   }
 
   const envelopeFrom = (tokens: TokenResponse): Envelope | null =>
@@ -350,6 +392,14 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
           data: { display_name: input.displayName?.trim() || null },
         },
       });
+      // Same split as `signIn` below, for the same reason: a rejection is the
+      // reader's to act on and an outage is not. The common outage here is the
+      // gateway giving up on GoTrue while it waits on the mailer — sign-up is
+      // the one request on this site that sends an email, so it is the one that
+      // times out — and a reader retyping their password cannot fix that.
+      if (!response.ok && isUpstreamFailure(response.status)) {
+        throw new AccountsUnavailableError(response.error ?? `sign-up failed with HTTP ${response.status}`);
+      }
       if (!response.ok) return { ok: false, error: response.error ?? 'Could not create that account.' };
 
       const envelope = envelopeFrom(response.body ?? {});
@@ -552,7 +602,7 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
         external?: Record<string, boolean>;
         disable_signup?: boolean;
         mailer_autoconfirm?: boolean;
-      }>(`${AUTH}/settings`);
+      }>(`${AUTH}/settings`, { quiet: true });
       findings.push({
         label: 'auth',
         ok: settings.ok,
@@ -578,7 +628,9 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
       // The first version of this check treated anything non-2xx as a failure,
       // which called a correctly locked-down project broken — and, worse, called
       // a project with RLS *disabled* healthy.
-      const readers = await request<ReaderRow[]>(`${REST}/readers?select=user_id&limit=1`);
+      const readers = await request<ReaderRow[]>(`${REST}/readers?select=user_id&limit=1`, {
+        quiet: true,
+      });
       const denied =
         readers.status === 401 || readers.status === 403 || /permission denied/i.test(readers.error ?? '');
       const rows = Array.isArray(readers.body) ? readers.body.length : 0;
@@ -604,6 +656,7 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
       const rpc = await request<unknown[]>(`${REST}/rpc/feed_for_token`, {
         method: 'POST',
         body: { token: 'accounts-check-probe-not-a-real-token' },
+        quiet: true,
       });
       findings.push({
         label: 'feed rpc',
