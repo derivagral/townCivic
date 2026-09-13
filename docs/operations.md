@@ -595,17 +595,27 @@ not their doing; the status underneath it is what actually went wrong:
 | `500`                 | Usually the trigger in `supabase/migrations/` — check the Postgres logs                                                          |
 | `unreachable`         | `SUPABASE_URL` is wrong, or the project is paused                                                                                |
 
-For the first two, the fix is in the dashboard rather than in this repo: **Auth →
-Emails**. Supabase's built-in sender is for development — it is rate limited to a
-handful of messages an hour and will only deliver to project members — so any
-project that expects sign-ups from the public needs its own SMTP credentials
-(Resend, Postmark, SES; anything that speaks SMTP). The alternative, if
-confirmation is not wanted at all, is to turn **Confirm email** off, which makes
-sign-up issue a session directly and never touch a mailer.
+For the first two, the fix is in the dashboard rather than in this repo, and the
+ordering constraint is the part worth internalising: **a project needs its own
+SMTP before it turns email confirmation on.** Supabase's built-in sender is for
+development — rate limited to a handful of messages an hour, and it only
+delivers to members of the project — so a public sign-up form backed by it is
+a form that times out.
+
+Two settings, both under **Authentication**:
+
+- **Emails → SMTP Settings.** A real sender: Resend, Postmark, SES, anything
+  that speaks SMTP. This is the one that has to come first.
+- **Confirm email.** Off until the above exists. Sign-up then issues a session
+  directly, exactly as the local backend does, and never touches a mailer. The
+  cost is that nothing proves an address is real, which for a site whose whole
+  content is public records is a small thing to defer.
 
 `npm run accounts` reports which of those a project is configured for, in the
 `auth` line. It cannot test the mailer without sending mail, so a project that
-passes every check can still time out on the first real sign-up.
+passes every check can still time out on the first real sign-up — which is
+exactly what happened the first time, and why the ordering above is stated as a
+rule rather than a preference.
 
 ### Not a shape: GitHub Pages
 
