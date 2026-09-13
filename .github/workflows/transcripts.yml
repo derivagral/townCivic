@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      TOWNCIVIC_DATA_DIR: ${{ runner.temp }}/matv-api-check
+      TOWNCIVIC_DATA_DIR: ${{ github.workspace }}/data/matv-api-check
       TOWNCIVIC_DOCUMENTS: local
       TOWNCIVIC_ACCOUNTS: sqlite
       TOWNCIVIC_HOST_DELAY_MS: '1500'
@@ -72,6 +72,6 @@ jobs:
         if: always()
         with:
           name: matv-api-check-${{ github.run_id }}
-          path: ${{ runner.temp }}/matv-api-check
+          path: ${{ env.TOWNCIVIC_DATA_DIR }}
           retention-days: 7
           if-no-files-found: warn
