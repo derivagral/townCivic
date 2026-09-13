@@ -6,7 +6,8 @@ import type { IngestOptions, IngestReport } from './ingest.ts';
 import { fetchSource } from '../fetch/http.ts';
 import { getDocuments } from '../documents/index.ts';
 import { extensionFor, keyFor } from '../documents/store.ts';
-import { recordFetch, updateSourceFetchState, upsertDocument, upsertEvent } from '../db/repo.ts';
+import { recordFetch, updateSourceFetchState, upsertDocument } from '../db/repo.ts';
+import { upsertWordpressTranscript } from './transcript-upsert.ts';
 import { makeContext } from '../adapters/index.ts';
 import { parseWordpressPosts, wordpressTranscriptItem } from '../adapters/wordpress-transcripts.ts';
 import { normalize } from './normalize.ts';
@@ -246,7 +247,7 @@ export async function syncWordpressTranscripts(
         db.exec('BEGIN');
         try {
           for (const { event } of posts) {
-            const outcome = upsertEvent(db, event);
+            const outcome = upsertWordpressTranscript(db, event);
             if (outcome === 'new') counts.created++;
             else if (outcome === 'revised') counts.revised++;
             else if (outcome === 'duplicate') counts.duplicate++;

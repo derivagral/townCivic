@@ -105,6 +105,14 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_id, last_seen_at DESC);
 
+-- Atomic receipts for replaying local transcript uploads into the publishing DB.
+CREATE TABLE IF NOT EXISTS transcript_imports (
+  source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  document_id TEXT NOT NULL REFERENCES documents(id),
+  imported_at TEXT NOT NULL,
+  PRIMARY KEY (source_id, document_id)
+);
+
 CREATE TABLE IF NOT EXISTS events (
   id            TEXT PRIMARY KEY,          -- stable hash: source + external id
   jurisdiction  TEXT NOT NULL,

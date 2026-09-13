@@ -14,6 +14,8 @@
     "towncivic": "tsx src/cli.ts",
     "seed": "tsx src/cli.ts seed",
     "ingest": "tsx src/cli.ts ingest",
+    "transcripts:upload": "tsx src/cli.ts transcripts-upload",
+    "transcripts:import": "tsx src/cli.ts transcripts-import",
     "extract": "tsx src/cli.ts extract",
     "link": "tsx src/cli.ts link",
     "interpret": "tsx src/cli.ts interpret",

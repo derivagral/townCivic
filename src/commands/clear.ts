@@ -97,6 +97,11 @@ function plan(scope: ClearScope): { table: string; count: string; delete: string
   const records = [
     ...derived,
     {
+      table: 'transcript_imports',
+      count: `SELECT count(*) AS n FROM transcript_imports WHERE source_id IN (SELECT id FROM sources WHERE jurisdiction = ?)`,
+      delete: `DELETE FROM transcript_imports WHERE source_id IN (SELECT id FROM sources WHERE jurisdiction = ?)`,
+    },
+    {
       table: 'transcript_sync',
       count: `SELECT count(*) AS n FROM transcript_sync WHERE source_id IN (SELECT id FROM sources WHERE jurisdiction = ?)`,
       delete: `DELETE FROM transcript_sync WHERE source_id IN (SELECT id FROM sources WHERE jurisdiction = ?)`,

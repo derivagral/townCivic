@@ -29,6 +29,7 @@ import { checkAccounts, formatAccounts } from './commands/accounts.ts';
 import { backfillDocuments, checkDocuments, formatDocuments } from './commands/documents.ts';
 import { formatPreflight, preflight } from './commands/preflight.ts';
 import { formatSnapshot, pullSnapshot, pushSnapshot } from './commands/snapshot.ts';
+import { uploadTranscripts, importTranscripts } from './commands/transcript-transfer.ts';
 import { createAccounts } from './accounts/index.ts';
 import { createApp } from './web/server.ts';
 import { countEvents, listJurisdictionRows, queryEvents } from './db/repo.ts';
@@ -53,6 +54,8 @@ Commands
   documents            Report where the document archive lives, probe it, and copy it
   preflight            Probe every external dependency at once; exit 1 if any is not ready
   snapshot             Publish the built database to the object store, or --pull it back
+  transcripts-upload   Upload locally fetched transcript pages to the configured document store
+  transcripts-import   Upsert uploaded transcripts into this database (no publisher requests)
   towns                List every registered town and what the database holds for it
   sources              Print the source registry
   events               Print recent records as JSON
@@ -242,6 +245,31 @@ async function main(): Promise<number> {
         console.log(dim('These are synthetic fixtures, not real records. Run `ingest` for the live site.'));
         return 0;
       });
+    }
+
+    case 'transcripts-upload':
+    case 'transcripts-import': {
+      if (command === 'transcripts-upload' && values['dry-run'])
+        throw new Error(
+          'transcripts-upload does not support --dry-run; use transcripts-import --dry-run to preview imports',
+        );
+      const db = getDb();
+      const sources = targets
+        .flatMap((town) => syncSources(db, town))
+        .filter((source) => source.adapter === 'wordpress-transcripts')
+        .filter((source) => !sourceIds.length || sourceIds.includes(source.id));
+      if (sourceIds.some((id) => !sources.some((source) => source.id === id)))
+        throw new Error('Select a registered WordPress transcript source in the requested jurisdiction');
+      const reports = [];
+      for (const source of sources) {
+        reports.push(
+          command === 'transcripts-upload'
+            ? await uploadTranscripts(db, source)
+            : await importTranscripts(db, source, undefined, { dryRun: values['dry-run'] }),
+        );
+      }
+      console.log(JSON.stringify(reports, null, 2));
+      return 0;
     }
 
     case 'ingest': {

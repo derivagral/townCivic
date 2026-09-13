@@ -141,31 +141,73 @@ unverified source labels; no names or attendance are inferred. Matter linking sk
 speech until passage-level evidence is supported. Board/date metadata is available
 for later notice/minutes matching; records are not merged on those fields.
 
-## Moving local results to the hosted site
+## Upload and upsert into the hosted site
 
-Local ingestion and preview work independently of signup or Supabase availability.
-They do not automatically update the live site. The snapshot command replaces the
-**whole database**; it does not merge transcripts into the existing town records.
-Do not publish this isolated transcript database over the production snapshot.
+After a local ingestion run, keep the same `TOWNCIVIC_DATA_DIR` and `TOWNCIVIC_DB`
+settings above. With your existing R2/S3 configuration in `.env`, upload:
 
-There is also an existing pipeline limitation: Refresh restores its own Actions
-database cache, while Interpret starts from the published snapshot. Uploading a
-locally enriched snapshot alone would leave Refresh able to overwrite it with a
-database that lacks those transcripts. See [operations](operations.md) for the
-same limitation on local extraction.
+```sh
+TOWNCIVIC_DOCUMENTS=s3 npm run transcripts:upload -- --jurisdiction milton-ma --source milton-ma:transcripts:matv
+```
 
-Before production handoff, choose a single database writer or add an explicit
-transcript import stage to the publishing workflow. A snapshot-based handoff needs
-Refresh to start from the latest published database, and local enrichment must
-coordinate with Refresh and Interpret so no writer publishes a stale copy.
-Alternatively, let the local fetcher upload a transcript bundle and have the existing
-workflow import it into its database. The latter keeps snapshot publishing within
-the workflow's existing concurrency group; that bundle importer is not implemented.
+This uses the existing `S3_BUCKET`, `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY_ID`,
+and `S3_SECRET_ACCESS_KEY` settings. The command reads raw pages from your local
+archive and uploads them to the configured store. If local ingestion already wrote
+its raw pages directly into that same R2 store, it can read them there instead.
+No extra credentials or service are required.
 
-Raw files can already be copied from the local archive to a configured R2 store with
-`TOWNCIVIC_DOCUMENTS=s3 npm run documents -- --backfill`. That copies documents only;
-it does not import events, sync checkpoints, or publish a database. Preserve the
-local database until a deliberate handoff is implemented and verified.
+**After this PR is merged**, the next successful Refresh imports the upload before
+its normal ingest/extract/link/publish steps. To run it immediately:
+
+```sh
+gh workflow run refresh.yml
+```
+
+Refresh reads the manifest, upserts transcript records into its existing database,
+and uses the existing snapshot/deploy workflow. It never requests MATV to import
+these pages. Direct MATV polling remains disabled; import deliberately includes
+registered transcript sources even when their network polling is disabled. An
+absent manifest is a no-op, so towns without uploads keep working as before.
+
+Repeat **local ingest → upload** for later batches or corrections. Uploads can
+contain a partial backfill; each complete validated page is independently usable.
+The report's `uploaded` counts newly registered raw pages, and `documents` is the
+cumulative page count, not the number of meetings. Successful inventory requests,
+bot checks, and failed content requests are excluded. A valid content page fetched
+with ingest's `--dry-run` is still archived and can be explicitly uploaded later.
+
+The upload merges the existing manifest with the local successful-page inventory.
+Raw objects are content-addressed and uploaded first; only then is the cumulative
+manifest replaced at `transcript-imports/milton-ma:transcripts:matv/manifest.json`.
+A failed upload leaves the prior manifest usable; repeat the command to finish.
+Use one uploader per source at a time. The importer can run while an upload is in
+progress: it reads either the old complete manifest or the new one.
+
+Import validates the manifest source, raw SHA-256, post IDs, publisher/category,
+and full transcript content. Each page's upserts and `transcript_imports` receipt
+commit together. Repeated imports skip receipted pages. Newer WordPress modification
+times update existing records and search; older versions cannot revert newer text.
+Missing or malformed uploads fail the job before publication, keeping completed
+pages available for retry. Other town records are retained, and nothing is deleted
+because a transcript disappears from the publisher or a later upload.
+
+Receipts live with the events in the Actions database cache. If that cache is lost,
+the cumulative manifest replays the uploaded transcript history from R2 without
+asking MATV again. `clear --scope records` resets import receipts with the records.
+The local fetch queue and completed watermark stay local; importing files does not
+claim that Actions has completed a live WordPress synchronization.
+
+For troubleshooting, the import command also runs directly against whichever
+SQLite database you select:
+
+```sh
+TOWNCIVIC_DOCUMENTS=s3 npm run transcripts:import -- --jurisdiction milton-ma --dry-run
+```
+
+Dry-run validates pending pages without writing events or receipts. Without
+`--dry-run`, it upserts into that selected database. Normal operation lets Refresh
+perform this step. Neither transfer command uploads or replaces a whole database;
+there is no need to run `snapshot` from the laptop or `documents --backfill` first.
 
 ## Run the live check before merging
 

@@ -102,6 +102,14 @@ jobs:
           restore-keys: |
             towncivic-db-
 
+      # Local fetchers upload immutable transcript pages and a manifest to R2.
+      # Import into this database before publishing; never replace it with a
+      # laptop snapshot or request MATV from a blocked hosted runner.
+      # Receipts are cached with the events. If the cache is lost, replaying the
+      # cumulative manifest reconstructs transcripts without re-fetching MATV.
+      - name: Import uploaded transcripts
+        run: npm run transcripts:import -- --jurisdiction all
+
       # Every registered town, in one pass. A town whose sources are all
       # disabled costs nothing here — it makes no requests.
       - name: Ingest
