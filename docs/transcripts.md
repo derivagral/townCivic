@@ -16,7 +16,60 @@ RSS polling is tabled. Its parser remains for compatibility tests and the shared
 MATV HTML parser, but there is no registered RSS transcript source. Existing records
 keep their permalink identity when switching from RSS to the API.
 
-## Run and resume
+## Local backfill and preview
+
+Run the CLI from a machine whose network MATV accepts. A browser loading the
+category list is encouraging, but the first CLI batch is the check for inventory
+pagination and full transcript access. The September 13 GitHub runner check received
+HTTP 202 with a SiteGround challenge before inventory discovery completed; it
+ingested no transcripts and advanced no watermark. No API key fixes that response.
+
+From your checkout, with Node 22.5+:
+
+```sh
+git fetch origin
+git switch feat/milton-transcripts
+git pull --ff-only origin feat/milton-transcripts
+npm ci
+
+# Reuse these settings in each terminal. This directory survives branch changes.
+export TOWNCIVIC_DATA_DIR="$HOME/.local/share/towncivic-matv"
+export TOWNCIVIC_DB="$TOWNCIVIC_DATA_DIR/towncivic.db"
+export TOWNCIVIC_DOCUMENTS=local
+export TOWNCIVIC_ACCOUNTS=sqlite
+
+# Discover IDs and ingest at most 20 full posts to verify local access and parsing.
+npm run --silent ingest -- --jurisdiction milton-ma --source milton-ma:transcripts:matv --max-pages 1 --json
+
+# If the first batch succeeds, continue with up to 600 posts. Repeat to resume.
+npm run --silent ingest -- --jurisdiction milton-ma --source milton-ma:transcripts:matv --max-pages 30 --json
+
+# Preview the same database locally.
+TOWNCIVIC_SECURE_COOKIES=0 TOWNCIVIC_BASE_URL=http://localhost:8787 npm run serve -- --port 8787
+```
+
+Explicit environment variables override the checkout's `.env`. Set both data paths:
+an existing `TOWNCIVIC_DB` in `.env` otherwise takes precedence over `TOWNCIVIC_DATA_DIR`.
+No Supabase, R2, YouTube, or model credentials are needed for these local commands.
+Open `http://localhost:8787/?town=milton-ma&source=milton-ma:transcripts:matv` to browse,
+then search with the regular search box. Text is indexed as each batch commits.
+
+Look for `ok: true` and `pending: 0` to know the inventory finished. A nonzero exit
+or `ok: false` means inspect `error`; `pending: 0` alone can also mean discovery
+failed. Re-run the same ingest command after an interruption or recoverable failure.
+Completed batches stay committed; an unfinished batch is retried. Discovery itself
+restarts if interrupted before the complete ID queue is saved. Run one ingestion
+process at a time against this database.
+
+After completion, the same command checks new and edited posts. `--backfill` and
+`--force` request full reconciliation and are unnecessary for routine resumption.
+Keep `towncivic.db` for events and checkpoints, and `documents/` for the raw archive;
+back up the directory with the CLI and preview server stopped. For occasional
+updates, run the command manually or schedule it locally using the same absolute
+paths and environment. A persistent self-hosted runner could do this later, but is
+not required for the first backfill.
+
+## Batch controls
 
 Requires the project's Node 22.5+ environment and dependencies (`npm ci`).
 
@@ -87,6 +140,32 @@ Publisher wording, including profanity, is retained. Numbered speakers remain
 unverified source labels; no names or attendance are inferred. Matter linking skips
 speech until passage-level evidence is supported. Board/date metadata is available
 for later notice/minutes matching; records are not merged on those fields.
+
+## Moving local results to the hosted site
+
+Local ingestion and preview work independently of signup or Supabase availability.
+They do not automatically update the live site. The snapshot command replaces the
+**whole database**; it does not merge transcripts into the existing town records.
+Do not publish this isolated transcript database over the production snapshot.
+
+There is also an existing pipeline limitation: Refresh restores its own Actions
+database cache, while Interpret starts from the published snapshot. Uploading a
+locally enriched snapshot alone would leave Refresh able to overwrite it with a
+database that lacks those transcripts. See [operations](operations.md) for the
+same limitation on local extraction.
+
+Before production handoff, choose a single database writer or add an explicit
+transcript import stage to the publishing workflow. A snapshot-based handoff needs
+Refresh to start from the latest published database, and local enrichment must
+coordinate with Refresh and Interpret so no writer publishes a stale copy.
+Alternatively, let the local fetcher upload a transcript bundle and have the existing
+workflow import it into its database. The latter keeps snapshot publishing within
+the workflow's existing concurrency group; that bundle importer is not implemented.
+
+Raw files can already be copied from the local archive to a configured R2 store with
+`TOWNCIVIC_DOCUMENTS=s3 npm run documents -- --backfill`. That copies documents only;
+it does not import events, sync checkpoints, or publish a database. Preserve the
+local database until a deliberate handoff is implemented and verified.
 
 ## Run the live check before merging
 

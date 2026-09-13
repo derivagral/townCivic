@@ -76,7 +76,11 @@ vi.mock('../src/fetch/http.ts', async (original) => {
 });
 
 describe('WordPress transcript sync', () => {
-  it('resumes a frozen ID queue and never advances the completed watermark halfway', async () => {
+  it('resumes a frozen ID queue after reopening the database without advancing the watermark halfway', async () => {
+    const file = path.join(dir, 'towncivic.db');
+    db.close();
+    db = openDb(file);
+    upsertSource(db, source);
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(response([{ id: 1 }, { id: 2 }, { id: 3 }]))
@@ -86,6 +90,10 @@ describe('WordPress transcript sync', () => {
     const first = await syncWordpressTranscripts(db, source, options);
     expect(first).toMatchObject({ ok: true, created: 2, pending: 1, completedThrough: null });
     expect(transcriptSyncState(db, source.id).pending).toMatchObject({ ids: [1, 2, 3], next: 2 });
+
+    // A later CLI invocation opens the file again; no in-process state survives.
+    db.close();
+    db = openDb(file);
     const second = await syncWordpressTranscripts(db, source, options);
     expect(second).toMatchObject({
       ok: true,

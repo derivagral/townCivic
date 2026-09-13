@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { openDb } from '../src/db/index.ts';
 import { createSqliteAccounts } from '../src/accounts/sqlite.ts';
 import { createSupabaseAccounts } from '../src/accounts/supabase.ts';
+import { AccountsUnavailableError } from '../src/accounts/store.ts';
 import type { AccountStore, StartedSession } from '../src/accounts/store.ts';
 import { fakeSupabase } from './helpers/fake-supabase.ts';
 
@@ -397,6 +398,45 @@ describe('the supabase backend', () => {
     // A 503 is not "that email and password did not match", and reporting it as
     // one would have readers resetting a password that is fine.
     await expect(store.signIn('reader@example.com', PASSWORD)).rejects.toThrow(/503|reach/);
+  });
+
+  /**
+   * The bug this pair was written for.
+   *
+   * Sign-up is the only request on this site that sends an email, so it is the
+   * one that sits there while a mailer does not answer — and Supabase's gateway
+   * gives up on GoTrue after about five seconds with `{"message":"Gateway
+   * timeout"}`. That used to come back as a 400 page with the words "Gateway
+   * timeout" printed under the email field, which tells a reader their form was
+   * rejected and tells an operator nothing at all.
+   */
+  it.each([504, 500, 429, 0])('calls a %d on sign-up an outage, not a bad form', async (status) => {
+    const { backend, store } = build();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    backend.fail(status);
+
+    try {
+      await expect(store.signUp({ email: 'reader@example.com', password: PASSWORD })).rejects.toThrow(
+        AccountsUnavailableError,
+      );
+      // And it says so where an operator will find it afterwards, which is the
+      // half of this that an empty `fly logs` was missing.
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining('/auth/v1/signup'));
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it('still tells a reader what a rejected sign-up was rejected for', async () => {
+    const { store } = build();
+    await store.signUp({ email: 'reader@example.com', password: PASSWORD });
+
+    // A 4xx from GoTrue is an answer about the form, and has to survive the
+    // split above intact — otherwise "that address is already registered"
+    // becomes "temporarily unavailable" and the reader retries forever.
+    const again = await store.signUp({ email: 'reader@example.com', password: PASSWORD });
+    expect(again.ok).toBe(false);
+    expect((again as { error: string }).error).toMatch(/registered/i);
   });
 
   it('serves pages signed-out rather than erroring when the store is unreachable', async () => {

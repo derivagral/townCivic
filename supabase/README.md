@@ -159,13 +159,33 @@ deploy and usually not to you.
 
 In the dashboard, under **Authentication**:
 
-- **Confirm email.** On by default, and townCivic handles it: sign-up says
-  "check your email" instead of signing anyone in. Turn it off only if you want
-  the local backend's behaviour back.
+- **Confirm email.** On by default, and townCivic handles either setting: with
+  it on, sign-up says "check your email" instead of signing anyone in; with it
+  off, sign-up issues a session directly the way the local backend does.
+
+  What the default does _not_ come with is a way to send the email. Supabase's
+  built-in sender is for development — a few messages an hour, and only to
+  members of the project — so a project with confirmation on and no SMTP of its
+  own has a sign-up form that does not work. It does not fail cleanly either:
+  GoTrue sits on the send until Supabase's gateway gives up at about five
+  seconds and returns a 504, and nothing is written, so there is no half-created
+  account to find afterwards.
+
+  **So the order is: SMTP first, confirmation second.** Wire a real sender
+  (Resend, Postmark, SES — anything that speaks SMTP) under **Authentication →
+  Emails → SMTP Settings**, _then_ turn Confirm email on. Until then, leave it
+  off; sign-up works, and the only thing missing is proof that an address is
+  real.
+
+  This deployment is in the "off" state deliberately, with a mail vendor to come
+  later.
+
 - **Site URL and redirect URLs.** Must include `TOWNCIVIC_BASE_URL`, or the
-  confirmation link lands nowhere.
+  confirmation link lands nowhere. Only matters once confirmation is on.
 - **Rate limits.** The defaults are sane and are one of the things you came here
-  for.
+  for. Note that the email rate limit applies to sign-ups as well, and a project
+  that trips it answers `429` rather than a confirmation — which townCivic
+  reports as the store being temporarily unavailable, not as a bad form.
 
 ## Existing local readers
 

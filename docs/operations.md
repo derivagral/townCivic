@@ -569,6 +569,54 @@ There is no volume, which is the payoff for everything before it: the archive is
 in a bucket, the readers are in Supabase, and the database is in the image, so a
 machine holds nothing anybody would miss.
 
+### When signing up fails
+
+The server writes one line per request to stdout, so `fly logs` is the first
+place to look rather than the last:
+
+```
+[http] POST /signup 503 5452ms
+[accounts] POST /auth/v1/signup → 504 after 5239ms: Gateway timeout
+```
+
+`TOWNCIVIC_ACCESS_LOG=off` silences it and `=all` adds `/healthz` and
+`/styles.css`, which the default skips while they succeed — the Fly health check
+runs every 30 seconds and would otherwise be nearly the whole log. Feed tokens
+are redacted; nothing else about a request is.
+
+The two lines mean different things and the second one is the diagnosis. A 503
+from `/signup` is this server refusing to blame a reader for something that is
+not their doing; the status underneath it is what actually went wrong:
+
+| Underneath            | What it means                                                                                                                    |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `504 Gateway timeout` | GoTrue did not answer in about five seconds. Sign-up is the only request that sends an email, so the mailer is the first suspect |
+| `429`                 | Supabase's own rate limit. The built-in email service allows a few messages an hour, and no more                                 |
+| `500`                 | Usually the trigger in `supabase/migrations/` — check the Postgres logs                                                          |
+| `unreachable`         | `SUPABASE_URL` is wrong, or the project is paused                                                                                |
+
+For the first two, the fix is in the dashboard rather than in this repo, and the
+ordering constraint is the part worth internalising: **a project needs its own
+SMTP before it turns email confirmation on.** Supabase's built-in sender is for
+development — rate limited to a handful of messages an hour, and it only
+delivers to members of the project — so a public sign-up form backed by it is
+a form that times out.
+
+Two settings, both under **Authentication**:
+
+- **Emails → SMTP Settings.** A real sender: Resend, Postmark, SES, anything
+  that speaks SMTP. This is the one that has to come first.
+- **Confirm email.** Off until the above exists. Sign-up then issues a session
+  directly, exactly as the local backend does, and never touches a mailer. The
+  cost is that nothing proves an address is real, which for a site whose whole
+  content is public records is a small thing to defer.
+
+`npm run accounts` reports which of those a project is configured for, in the
+`auth` line. It cannot test the mailer without sending mail, so a project that
+passes every check can still time out on the first real sign-up — which is
+exactly what happened the first time, and why the ordering above is stated as a
+rule rather than a preference.
+
 ### Not a shape: GitHub Pages
 
 Worth stating plainly, because moving accounts out makes it look closer than it
