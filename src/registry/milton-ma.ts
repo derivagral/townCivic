@@ -131,6 +131,29 @@ const milton: JurisdictionProfile = defineJurisdiction({
 
 const verified = { confidence: 'verified', enabled: true } as const;
 
+/** Category 36 was confirmed via MATV’s public WordPress API; no credentials. */
+export const MATV_TRANSCRIPTS: SourceInput = {
+  id: 'milton-ma:transcripts:matv',
+  jurisdiction: JURISDICTION,
+  label: 'Milton Access TV meeting transcripts',
+  adapter: 'wordpress-transcripts',
+  url: 'https://miltonaccesstv.org/wp-json/wp/v2/posts?categories=36&per_page=20&page=1&orderby=id&order=asc',
+  options: { categoryId: 36, pageSize: 20 },
+  level: 'municipal',
+  agency: 'Milton Access TV',
+  channel: 'meetings',
+  eventType: 'meeting_transcript',
+  priority: 'medium',
+  tier: 4,
+  precedence: 90,
+  ...verified,
+  // Category access confirmed by the user; runner access is checked by transcripts.yml.
+  // Explicit --source runs work while deployment-network access is verified.
+  enabled: false,
+  notes:
+    'WordPress category 36: user confirmed 429 published posts on September 13, 2026. Resumable full backfill followed by modified-post synchronization. No RSS polling. Speaker labels are unverified; attendance is not inferred. Disabled for scheduled refresh pending successful runner verification.',
+};
+
 const tier1: SourceInput[] = [
   ...AGENDA_CATEGORIES.map((category) => agendaCenterSource(milton, category, MODULES, verified)),
 
@@ -227,6 +250,6 @@ const tier1: SourceInput[] = [
   }),
 ];
 
-milton.sources = [...tier1, ...stateSources(milton)];
+milton.sources = [...tier1, MATV_TRANSCRIPTS, ...stateSources(milton)];
 
 export const miltonProfile = milton;

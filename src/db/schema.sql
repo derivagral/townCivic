@@ -105,6 +105,14 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_id, last_seen_at DESC);
 
+-- Atomic receipts for replaying local transcript uploads into the publishing DB.
+CREATE TABLE IF NOT EXISTS transcript_imports (
+  source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  document_id TEXT NOT NULL REFERENCES documents(id),
+  imported_at TEXT NOT NULL,
+  PRIMARY KEY (source_id, document_id)
+);
+
 CREATE TABLE IF NOT EXISTS events (
   id            TEXT PRIMARY KEY,          -- stable hash: source + external id
   jurisdiction  TEXT NOT NULL,
@@ -435,3 +443,11 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_attachments_event ON attachments(event_id);
+
+-- Resumable WordPress transcript inventory and content cursor. Source deletion
+-- cascades this cache; clear --scope records resets it for a complete re-fetch.
+CREATE TABLE IF NOT EXISTS transcript_sync (
+  source_id TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+  state TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);

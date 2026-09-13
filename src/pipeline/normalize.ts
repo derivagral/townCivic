@@ -93,6 +93,7 @@ export function normalize(source: SourceDef, item: RawItem): NormalizedEvent {
     priority,
     title: truncate(item.title, 300),
     summary,
+    ...(item.transcript ? { docText: item.transcript.segments.map((s) => s.text).join('\n\n') } : {}),
     url: item.url,
     documentUrl: item.documentUrl ?? null,
     occurredAt,
@@ -110,7 +111,8 @@ export function normalize(source: SourceDef, item: RawItem): NormalizedEvent {
       channel,
       eventType,
       subjects,
+      ...(item.transcript ? { transcript: item.transcript, body } : {}),
     }),
-    raw: { ...(item.extra ?? {}), externalId },
+    raw: { ...(item.extra ?? {}), externalId, ...(item.transcript ? { transcript: item.transcript } : {}) },
   };
 }
