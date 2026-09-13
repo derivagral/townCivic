@@ -1,22 +1,24 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sourceSchema } from '../src/types.ts';
 import { MATV_TRANSCRIPTS } from '../src/registry/milton-ma.ts';
 import { parseWithSource } from '../src/adapters/index.ts';
 import { normalize } from '../src/pipeline/normalize.ts';
-import { ingest, ingestBody } from '../src/pipeline/ingest.ts';
+import { ingestBody } from '../src/pipeline/ingest.ts';
 import { linkMatters } from '../src/pipeline/link.ts';
 import { openDb } from '../src/db/index.ts';
 import type { Db } from '../src/db/index.ts';
-import { getConditionalHeaders, queryEvents, upsertEvent, upsertSource } from '../src/db/repo.ts';
+import { queryEvents, upsertEvent, upsertSource } from '../src/db/repo.ts';
 import { transcriptFromRaw } from '../src/transcripts.ts';
 import { renderEvent } from '../src/web/views.ts';
-import { createLocalDocuments, setDocuments } from '../src/documents/index.ts';
 import { ROOT } from '../src/config.ts';
 
-const source = sourceSchema.parse(MATV_TRANSCRIPTS);
+const source = sourceSchema.parse({
+  ...MATV_TRANSCRIPTS,
+  adapter: 'matv-transcripts',
+  url: 'https://miltonaccesstv.org/category/transcript/feed/',
+});
 const xml = fs.readFileSync(path.join(ROOT, 'fixtures/milton-ma/matv-transcripts.xml'), 'utf8');
 const parse = (body = xml) => parseWithSource(source, body);
 let db: Db;
@@ -128,30 +130,5 @@ describe('MATV public transcripts', () => {
     expect(html).not.toContain('Posted by clerk');
     expect(html).not.toContain('No agenda items');
     expect(html).not.toContain('npm run extract');
-  });
-
-  it('archives the feed, handles conditional requests, and retries a failed parse without validators', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'towncivic-transcript-'));
-    setDocuments(createLocalDocuments(dir));
-    try {
-      const fetchImpl = vi
-        .fn<typeof fetch>()
-        .mockResolvedValueOnce(
-          new Response(xml, { headers: { 'content-type': 'application/rss+xml', etag: 'valid' } }),
-        )
-        .mockResolvedValueOnce(new Response(null, { status: 304, headers: { etag: 'valid' } }))
-        .mockResolvedValueOnce(new Response('<html>challenge</html>', { headers: { etag: 'blocked' } }));
-      const options = { jurisdiction: 'milton-ma', sourceIds: [source.id], fetchImpl };
-      expect((await ingest(db, options))[0]).toMatchObject({ ok: true, created: 1 });
-      expect(db.prepare('SELECT count(*) AS n FROM documents').get()).toMatchObject({ n: 1 });
-      expect((await ingest(db, options))[0]).toMatchObject({ ok: true, notModified: true });
-      expect(fetchImpl.mock.calls[1]![1]?.headers).toMatchObject({ 'if-none-match': 'valid' });
-      expect((await ingest(db, options))[0]).toMatchObject({ ok: false });
-      expect(getConditionalHeaders(db, source.id)).toEqual({});
-      expect(queryEvents(db, { q: 'stormwater' })).toHaveLength(1);
-    } finally {
-      setDocuments(undefined);
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
   });
 });

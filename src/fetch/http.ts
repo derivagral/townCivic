@@ -47,6 +47,7 @@ export interface FetchOptions {
   /** Overridable for tests. */
   fetchImpl?: typeof fetch;
   maxRetries?: number;
+  accept?: string;
 }
 
 /**
@@ -66,6 +67,7 @@ export async function fetchSource(
   const headers: Record<string, string> = {
     'user-agent': config.userAgent,
     accept:
+      options.accept ??
       'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.9, */*;q=0.8',
     'accept-language': 'en-US,en;q=0.9',
   };
@@ -99,6 +101,12 @@ export async function fetchSource(
         contentType: response.headers.get('content-type'),
         etag: response.headers.get('etag'),
         lastModified: response.headers.get('last-modified'),
+        ...(response.headers.has('x-wp-total')
+          ? { totalItems: Number(response.headers.get('x-wp-total')) }
+          : {}),
+        ...(response.headers.has('x-wp-totalpages')
+          ? { totalPages: Number(response.headers.get('x-wp-totalpages')) }
+          : {}),
       };
 
       if (response.status === 304) {

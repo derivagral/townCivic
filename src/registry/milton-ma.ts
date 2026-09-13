@@ -131,13 +131,14 @@ const milton: JurisdictionProfile = defineJurisdiction({
 
 const verified = { confidence: 'verified', enabled: true } as const;
 
-/** Public RSS includes complete content:encoded transcripts; no YouTube credentials. */
+/** Category 36 was confirmed via MATV’s public WordPress API; no credentials. */
 export const MATV_TRANSCRIPTS: SourceInput = {
   id: 'milton-ma:transcripts:matv',
   jurisdiction: JURISDICTION,
   label: 'Milton Access TV meeting transcripts',
-  adapter: 'matv-transcripts',
-  url: 'https://miltonaccesstv.org/category/transcript/feed/',
+  adapter: 'wordpress-transcripts',
+  url: 'https://miltonaccesstv.org/wp-json/wp/v2/posts?categories=36&per_page=20&page=1&orderby=id&order=asc',
+  options: { categoryId: 36, pageSize: 20 },
   level: 'municipal',
   agency: 'Milton Access TV',
   channel: 'meetings',
@@ -146,11 +147,11 @@ export const MATV_TRANSCRIPTS: SourceInput = {
   tier: 4,
   precedence: 90,
   ...verified,
-  // Public feed captured successfully, but the crawler received a bot challenge.
+  // Category access confirmed by the user; runner access is checked by transcripts.yml.
   // Explicit --source runs work while deployment-network access is verified.
   enabled: false,
   notes:
-    'Full automatic transcripts with board, meeting date, and timestamped video links. Verified September 12, 2026: 10 recent publications, including older meetings. This is a rolling feed, not a complete archive. Speaker labels are unverified; attendance is not inferred. Disabled for scheduled refresh until crawler access is verified; this environment received a bot challenge.',
+    'WordPress category 36: user confirmed 429 published posts on September 13, 2026. Resumable full backfill followed by modified-post synchronization. No RSS polling. Speaker labels are unverified; attendance is not inferred. Disabled for scheduled refresh pending successful runner verification.',
 };
 
 const tier1: SourceInput[] = [

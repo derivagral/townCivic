@@ -73,7 +73,8 @@ Options
   --provider <name>    Interpreter for \`interpret\`: ${PROVIDERS.join(' | ')} (default: rules)
   --scope <what>       For \`clear\`: ${CLEAR_SCOPES.join(' | ')} (default: derived)
   --orphans            For \`clear\`: every town in the database the registry has dropped
-  --backfill           For \`documents\`: copy the local archive into the configured store
+  --max-pages <n>      Maximum transcript content batches per ingest (default: 5)
+  --backfill           For ingest: full transcript reconciliation; for \`documents\`: copy the local archive into the configured store
   --pull               For \`snapshot\`: download the published database instead of publishing
 
 Towns
@@ -99,6 +100,7 @@ const { values, positionals } = parseArgs({
     json: { type: 'boolean', default: false },
     port: { type: 'string' },
     limit: { type: 'string' },
+    'max-pages': { type: 'string' },
     since: { type: 'string' },
     provider: { type: 'string' },
     scope: { type: 'string' },
@@ -131,7 +133,7 @@ const sourceIds = values.source ?? [];
  * variable names which flag it was. Only flags npm has no config of its own for
  * are checked, so nobody's `.npmrc` can trigger this.
  */
-const NPM_SWALLOWS = ['jurisdiction', 'source', 'limit', 'since', 'provider', 'port'] as const;
+const NPM_SWALLOWS = ['jurisdiction', 'source', 'limit', 'since', 'provider', 'port', 'max-pages'] as const;
 
 function npmAteTheFlags(): string[] {
   return NPM_SWALLOWS.filter(
@@ -243,6 +245,11 @@ async function main(): Promise<number> {
     }
 
     case 'ingest': {
+      const maxPages = Number(values['max-pages'] ?? 5);
+      if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 100) {
+        console.error('--max-pages must be an integer between 1 and 100');
+        return 1;
+      }
       const db = getDb();
       return forEachTown(async (town) => {
         const reports = await ingest(db, {
@@ -251,6 +258,8 @@ async function main(): Promise<number> {
           ...(values.all ? { includeDisabled: true } : {}),
           ...(values.force ? { force: true } : {}),
           ...(values['dry-run'] ? { dryRun: true } : {}),
+          maxPages,
+          ...(values.backfill ? { backfill: true } : {}),
           onProgress(report) {
             if (values.json) return;
             const state = report.notModified
@@ -258,13 +267,17 @@ async function main(): Promise<number> {
               : `${String(report.items).padStart(3)} items`;
             console.log(
               `${check(report.ok)}  ${report.sourceId.padEnd(40)} ${String(report.status).padStart(3)}  ${state}  ` +
+                (report.pending !== undefined ? `${report.pending} pending  ` : '') +
                 dim(`${report.created} new, ${report.revised} revised, ${report.duplicate} dup`) +
                 (report.error ? `\n     [31m${report.error}[0m` : ''),
             );
           },
         });
-        if (values.json) return emitJson(town, reports);
         const failed = reports.filter((r) => !r.ok);
+        if (values.json) {
+          emitJson(town, reports);
+          return failed.length ? 1 : 0;
+        }
         if (failed.length) {
           console.log(`\n${failed.length} of ${reports.length} sources failed.`);
         }

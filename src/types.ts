@@ -9,6 +9,7 @@ export const ADAPTERS = [
   'civicplus-bids',
   'html-links',
   'matv-transcripts',
+  'wordpress-transcripts',
 ] as const;
 export type AdapterName = (typeof ADAPTERS)[number];
 
@@ -122,6 +123,9 @@ export interface FetchResult {
   etag: string | null;
   lastModified: string | null;
   error?: string;
+  /** WordPress pagination headers, when present. */
+  totalItems?: number;
+  totalPages?: number;
 }
 
 export interface AdapterContext {

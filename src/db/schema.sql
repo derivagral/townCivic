@@ -435,3 +435,11 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_attachments_event ON attachments(event_id);
+
+-- Resumable WordPress transcript inventory and content cursor. Source deletion
+-- cascades this cache; clear --scope records resets it for a complete re-fetch.
+CREATE TABLE IF NOT EXISTS transcript_sync (
+  source_id TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+  state TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);

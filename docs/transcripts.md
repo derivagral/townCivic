@@ -1,102 +1,123 @@
 # Milton meeting transcripts
 
-Milton Access TV publishes a public WordPress RSS feed with the complete transcript
-in each item's `content:encoded` field:
+Milton Access TV's WordPress REST API is the primary transcript source. The user
+confirmed public category **36**, reporting 429 posts on September 13, 2026:
 
-- Archive/search: https://miltonaccesstv.org/transcripts/
-- RSS: https://miltonaccesstv.org/category/transcript/feed/
+- Category: https://miltonaccesstv.org/wp-json/wp/v2/categories?slug=transcript
+- Posts: https://miltonaccesstv.org/wp-json/wp/v2/posts?categories=36
+- Human archive/search: https://miltonaccesstv.org/transcripts/
 
-Verified September 12, 2026. **No YouTube API key, OAuth, Whisper, or transcription
-service is needed for this source.** The adapter reads MATV's published text;
-YouTube is the playback destination only. Google's official caption-download API
-requires permission to edit the video, not just a public API key:
-https://developers.google.com/youtube/v3/docs/captions/download
+No WordPress account, API key, YouTube credentials, or transcription service is
+needed for public posts. API access can still be challenged by SiteGround depending
+on the requesting environment. Category access alone does not establish that full
+post content is reachable from GitHub Actions.
 
-## Run
+RSS polling is tabled. Its parser remains for compatibility tests and the shared
+MATV HTML parser, but there is no registered RSS transcript source. Existing records
+keep their permalink identity when switching from RSS to the API.
 
-Requires the project's normal Node 22.5+ environment and dependencies (`npm ci`).
+## Run and resume
+
+Requires the project's Node 22.5+ environment and dependencies (`npm ci`).
 
 ```sh
-# Fetch and parse without inserting event records. Like other ingest sources,
-# dry-run still archives the response and records fetch state.
-npm run ingest -- --jurisdiction milton-ma --source milton-ma:transcripts:matv --dry-run
+# First invocation discovers the archive; fetch up to five batches of 20 posts.
+npm run ingest -- --jurisdiction milton-ma --source milton-ma:transcripts:matv --max-pages 5
 
-# --force refetches after a dry-run even if the publisher answers conditional GETs.
-npm run ingest -- --jurisdiction milton-ma --source milton-ma:transcripts:matv --force
+# Repeat the same command to resume pending IDs. Once complete, subsequent runs
+# discover newly modified posts instead of starting the archive again.
+npm run ingest -- --jurisdiction milton-ma --source milton-ma:transcripts:matv --max-pages 5
+
+# Explicit reconciliation of all published transcript posts. A pending batch
+# always resumes first; this flag starts a full scan when no queue is pending.
+npm run ingest -- --source milton-ma:transcripts:matv --backfill --max-pages 30
+
+# Inspect without inserting records or advancing any checkpoint/watermark.
+# Responses and fetch diagnostics are still archived, as with ordinary ingest.
+npm run ingest -- --source milton-ma:transcripts:matv --dry-run --max-pages 1 --json
 
 npm run serve
 ```
 
-Search Activity using a word from a transcript, or select the Milton Access TV
-source. Open a Transcript record to read all passages and follow a timestamp to
-YouTube. Dates in Activity are meeting dates, including historical meetings
-published recently. Use the Past/All view when appropriate.
+`--max-pages` limits content requests to 1–100 batches per invocation. Initial
+inventory discovery requests only IDs, in pages of 100: approximately five small
+requests for the currently reported archive. Discovery is capped at 10,000 posts;
+exceeding that cap fails explicitly. Every request uses the existing per-host
+politeness delay, timeout, and retry mechanism. A failed API ingest with `--json`
+returns a nonzero process status, so Actions does not mistake a bot check for success.
 
-Full text is indexed at ingestion: `extract` is unnecessary for these records.
-`interpret` remains a separate optional operation. The source is registered but
-**disabled in unattended refresh** pending a successful fetch from the deployment
-network. An explicit `--source` overrides that flag for a scoped run. After
-`npm run verify -- --jurisdiction milton-ma --source milton-ma:transcripts:matv`
-succeeds there, set `MATV_TRANSCRIPTS.enabled` to `true` in
-`src/registry/milton-ma.ts` to join the existing all-town refresh. It uses the same
-document-store configuration and needs no new secrets or database migration.
+The report includes `pages`, `pending`, `completedThrough`, and `unavailableIds`.
+A successful bounded batch can still have pending work. Repeat until `pending` is
+zero. Search and reading are available for each committed batch immediately; no
+`extract` or model call is needed.
 
-## Stored data
+## Synchronization and storage
 
-- One `meeting_transcript` event per MATV permalink; repeated fetches are idempotent.
-- Canonical board via the existing town aliases, day-precision meeting date, and
-  separate RSS publication date. No clock time is invented from the transcript.
-- Full searchable text in `events.doc_text`, without the brief summary's truncation.
-- Versioned transcript shape in `events.raw.transcript`: publisher-auto origin,
-  actual case-sensitive YouTube video ID, meeting date, and segments containing
-  start/end seconds, source speaker label, and text.
-- Raw XML in the existing content-addressed document archive. Changed text or
-  timestamps update the searchable projection and increment the event revision;
-  the fetched source bytes remain available in the archive.
+1. Discover IDs ordered by ID, scoped to category 36 and a fixed modification-time
+   upper bound. Pagination headers and distinct ascending IDs must agree. If the
+   inventory changes or a page is missing, discovery fails and is retried from
+   the beginning; an incomplete inventory is never checkpointed as complete.
+2. Save the discovered ID queue and cursor in `transcript_sync`, alongside the
+   events in SQLite. Fetch full content by explicit ID batches, so subsequent
+   content requests do not depend on changing page offsets.
+3. Archive each raw JSON response in the configured content-addressed store.
+   Parse the entire content batch, then atomically commit its events and cursor.
+   A malformed post or interrupted batch leaves that cursor pending for retry.
+4. Once the queue is exhausted, advance `completedThrough`. Later discovery uses
+   `modified_after` with a 24-hour overlap and `modified_before` fixed five minutes
+   behind the current clock. Both new posts and older edited posts are checked.
 
-Publisher wording is retained, including profanity. Whitespace is normalized and
-paragraph boundaries retained. HTML is converted to text and escaped at display.
-The source may already contain recognition errors or omissions.
+Posts removed, unpublished, or moved out of the category between discovery and
+retrieval are reported as `unavailableIds`. Existing stored records are retained.
+Public API reads cannot distinguish those reasons. Use `--backfill` periodically
+for full reconciliation, especially after a publisher imports backdated content.
 
-`Speaker 1` is an unverified source label, not an identified person. This adapter
-does not infer attendance or map labels to names. A later attendance record should
-use an explicit roll call/minutes reference, independently of speaker attribution.
+Checkpoints persist as part of the database, including its existing Actions cache
+and snapshot. Losing the database causes discovery to start over; raw archived
+responses remain in the configured document store. `clear --scope records` resets
+the transcript checkpoint with that town's records. The new checkpoint table is
+created automatically on database open; no manual migration is required.
 
-Board and meeting date provide candidates for a future notice/minutes join; this
-change does not merge recordings on those fields or assert exact meeting identity.
-Transcripts remain distinct from agendas/minutes. Matter linking skips transcript
-speech for now, so mention of an address, contract, or past approval does not create
-a location or assert a current decision. Passage-to-agenda matching and subject
-annotation are follow-up work.
+Meeting date remains separate from publication/modification time. Full text is
+indexed in `events.doc_text`; `events.raw.transcript` keeps source speaker labels,
+case-sensitive YouTube ID, and start/end seconds. Full post content, not the excerpt,
+is parsed. Transcript changes refresh search and increment the event revision.
 
-## Coverage and operational limits
+Publisher wording, including profanity, is retained. Numbered speakers remain
+unverified source labels; no names or attendance are inferred. Matter linking skips
+speech until passage-level evidence is supported. Board/date metadata is available
+for later notice/minutes matching; records are not merged on those fields.
 
-The observed RSS window contains **10 recent publications**, not the latest ten
-meeting dates. MATV is publishing historical transcripts as well as current ones.
-This first adapter fetches that window only. Previously ingested events remain
-when they leave the feed, but more than ten publications between successful polls
-can cause gaps. The existing twice-daily schedule is not a completeness guarantee.
-Old transcript corrections outside the feed window are not rediscovered.
+## Run the live check before merging
 
-The feed was downloaded successfully, but a later direct crawler request received
-a bot challenge (HTTP 202). Access from Actions/Fly/local environments still needs
-verification; that is why the source is disabled by default.
+`.github/workflows/transcripts.yml` runs on relevant **same-repository PR updates**.
+It checks out the PR head and performs inventory discovery plus at most two content
+batches (40 posts) by default. This is a live network check separate from offline CI.
 
-Archive pagination was not verified: the attempted second-page request returned a
-SiteGround bot challenge in this environment. Historical backfill needs a verified
-archive/API/feed export or cooperation from MATV. There is no unverified pagination
-fallback, proxy rotation, browser login, or YouTube scraping in this adapter.
+The job uses a fresh temporary SQLite database and local document archive. It has
+no production secrets, production cache restoration, snapshot publishing, or deploy
+step. Its report, database, and raw responses are uploaded as an artifact for seven
+days, including on failure. A red job distinguishes access or parser problems from a
+successful run with pending backfill.
 
-Malformed XML, HTML challenge responses (including HTTP 200), missing full content,
-and unrecognized segment structures fail the source visibly rather than returning
-an apparently successful empty transcript. A valid empty RSS channel is accepted.
-A failed parse preserves existing events and clears conditional validators so the
-next run retries the body. Parsing validates the complete batch before writes.
+A new `workflow_dispatch` workflow generally needs to exist on the default branch
+before its manual button is available. After merge, use Actions → Milton transcript
+API check → Run workflow → Branch, or:
 
-## Verification
+```sh
+gh workflow run transcripts.yml --ref feat/milton-transcripts -f max_pages=2
+```
 
-`test/transcripts.test.ts` uses synthetic feed text shaped like the live source.
-It checks date separation, canonical bodies, full-text indexing, late-text revisions,
-timestamps, unchanged reingestion, dry-run behavior, escaped rendering, malformed
-source handling, archive writes, and conditional requests. It does not rely on live
-municipal sites or infer real people's statements.
+Manual checks also use fresh temporary storage; they do not resume another job's
+artifact automatically. Run the ingest CLI against the same persistent database to
+resume a real backfill. The PR check is deliberately a bounded connectivity test.
+
+The source remains disabled in the shared unattended refresh until runner access
+is verified. Explicit `--source` overrides that flag. Once verified, setting
+`MATV_TRANSCRIPTS.enabled` to `true` lets the existing refresh command fill the
+archive over successive bounded runs, then switch automatically to incremental
+synchronization. No RSS fallback will activate.
+
+References: [WordPress posts API](https://developer.wordpress.org/rest-api/reference/posts/),
+[pagination](https://developer.wordpress.org/rest-api/using-the-rest-api/pagination/),
+[GitHub manual workflow runs](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).

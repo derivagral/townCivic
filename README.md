@@ -1013,6 +1013,7 @@ Please don't lower them.
 
 ### Meeting transcripts
 
-Milton Access TV’s public transcript feed is supported without YouTube credentials.
+Milton Access TV’s public WordPress API supports checkpointed transcript backfill
+and incremental updates without API credentials.
 See [Milton transcript ingestion](docs/transcripts.md) for commands, stored metadata,
-and the rolling feed’s coverage limits.
+and the branch Actions check. RSS polling is tabled.
