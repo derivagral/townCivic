@@ -51,9 +51,12 @@ export function parseMatvContent(html: string): { board: string; transcript: Tra
   }
 
   let videoId: string | undefined;
-  for (const el of $('iframe[src]').toArray()) {
+  for (const src of $('iframe[src], iframe[data-src]')
+    .toArray()
+    .flatMap((el) => [$(el).attr('src'), $(el).attr('data-src')])) {
+    if (!src) continue;
     try {
-      const url = new URL($(el).attr('src')!);
+      const url = new URL(src);
       if (
         url.protocol === 'https:' &&
         ['www.youtube.com', 'youtube.com', 'www.youtube-nocookie.com'].includes(url.hostname)

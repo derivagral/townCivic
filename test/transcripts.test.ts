@@ -57,6 +57,21 @@ describe('MATV public transcripts', () => {
     expect(event.subjects).toEqual([]);
   });
 
+  it.each(['', 'src="about:blank" '])(
+    'reads lazy-loaded video embeds with %s as the placeholder',
+    (placeholder) => {
+      const lazy = xml.replace('<iframe src=', `<iframe class="lazyload" ${placeholder}data-src=`);
+      expect(parse(lazy)).toEqual(parse());
+    },
+  );
+
+  it('rejects an untrusted lazy-loaded video URL', () => {
+    const lazy = xml.replace('<iframe src=', '<iframe data-src=');
+    expect(() =>
+      parse(lazy.replace('https://www.youtube.com/embed/', 'https://untrusted.test/embed/')),
+    ).toThrow('MATV transcript is missing Transcript heading or video');
+  });
+
   it('indexes every passage immediately and keeps repeat ingestion idempotent', () => {
     expect(ingestBody(db, source, xml)).toMatchObject({ created: 1 });
     expect(ingestBody(db, source, xml)).toMatchObject({ unchanged: 1, created: 0 });
