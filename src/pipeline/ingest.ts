@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { syncWordpressTranscripts } from './transcripts.ts';
 import type { Db } from '../db/index.ts';
 import type { SourceDef } from '../types.ts';
 import { parseWithSource } from '../adapters/index.ts';
@@ -30,6 +31,11 @@ export interface IngestReport {
   /** Seen, but already owned by a more authoritative source. */
   duplicate: number;
   error?: string;
+  /** API transcript synchronization progress. */
+  pages?: number;
+  pending?: number;
+  completedThrough?: string | null;
+  unavailableIds?: number[];
 }
 
 export interface IngestOptions {
@@ -42,6 +48,10 @@ export interface IngestOptions {
   force?: boolean;
   /** Also run sources marked `enabled: false`. */
   includeDisabled?: boolean;
+  /** Maximum transcript content batches per run (discovery fetches metadata only). */
+  maxPages?: number;
+  /** Start a full transcript reconciliation, or resume one already pending. */
+  backfill?: boolean;
   fetchImpl?: typeof fetch;
   onProgress?: (report: IngestReport) => void;
 }
@@ -83,6 +93,12 @@ export async function ingest(db: Db, options: IngestOptions = {}): Promise<Inges
   const reports: IngestReport[] = [];
 
   for (const source of sources) {
+    if (source.adapter === 'wordpress-transcripts') {
+      const report = await syncWordpressTranscripts(db, source, options);
+      reports.push(report);
+      options.onProgress?.(report);
+      continue;
+    }
     const startedAt = new Date().toISOString();
     const started = Date.now();
     const conditional = options.force ? {} : getConditionalHeaders(db, source.id);
@@ -139,8 +155,9 @@ export async function ingest(db: Db, options: IngestOptions = {}): Promise<Inges
     }
 
     updateSourceFetchState(db, source.id, {
-      etag: result.etag,
-      lastModified: result.lastModified,
+      clearValidators: !report.ok,
+      etag: report.ok ? result.etag : null,
+      lastModified: report.ok ? result.lastModified : null,
       status: result.status,
       error: report.error ?? null,
     });

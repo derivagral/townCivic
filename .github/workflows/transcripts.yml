@@ -1,0 +1,77 @@
+name: Milton transcript API check
+
+# PR updates can run a new workflow before it exists on main. The manual button
+# becomes available after merge; its Branch dropdown can then target any branch.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/transcripts.yml'
+      - 'src/adapters/**'
+      - 'src/pipeline/transcripts.ts'
+      - 'src/pipeline/ingest.ts'
+      - 'src/fetch/http.ts'
+      - 'src/registry/milton-ma.ts'
+      - 'src/transcripts.ts'
+      - 'src/cli.ts'
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: 'Content batches to fetch (20 posts each; 1–30)'
+        type: number
+        default: 2
+
+permissions:
+  contents: read
+
+concurrency:
+  group: transcript-api-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    name: Verify public WordPress access
+    # Do not direct municipal traffic on behalf of external fork PRs.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TOWNCIVIC_DATA_DIR: ${{ github.workspace }}/data/matv-api-check
+      TOWNCIVIC_DOCUMENTS: local
+      TOWNCIVIC_ACCOUNTS: sqlite
+      TOWNCIVIC_HOST_DELAY_MS: '1500'
+      TOWNCIVIC_MAX_RETRIES: '1'
+      MATV_MAX_PAGES: ${{ inputs.max_pages || 2 }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Check batch limit
+        run: |
+          node -e 'const n=Number(process.env.MATV_MAX_PAGES); if(!Number.isInteger(n)||n<1||n>30) process.exit(1)'
+      - name: Discover and ingest a bounded real batch
+        # This database/archive is temporary. No production cache, secrets, or
+        # snapshot publishing: a PR can verify access without deploying data.
+        run: |
+          mkdir -p "$TOWNCIVIC_DATA_DIR"
+          node --import tsx src/cli.ts ingest --jurisdiction milton-ma \
+            --source milton-ma:transcripts:matv --max-pages "$MATV_MAX_PAGES" \
+            --json > "$TOWNCIVIC_DATA_DIR/report.json"
+      - name: Summarize result
+        if: always()
+        run: |
+          if [ -f "$TOWNCIVIC_DATA_DIR/report.json" ]; then
+            cat "$TOWNCIVIC_DATA_DIR/report.json" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: matv-api-check-${{ github.run_id }}
+          path: ${{ env.TOWNCIVIC_DATA_DIR }}
+          retention-days: 7
+          if-no-files-found: warn

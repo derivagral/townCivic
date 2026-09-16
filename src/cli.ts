@@ -29,6 +29,7 @@ import { checkAccounts, formatAccounts } from './commands/accounts.ts';
 import { backfillDocuments, checkDocuments, formatDocuments } from './commands/documents.ts';
 import { formatPreflight, preflight } from './commands/preflight.ts';
 import { formatSnapshot, pullSnapshot, pushSnapshot } from './commands/snapshot.ts';
+import { uploadTranscripts, importTranscripts } from './commands/transcript-transfer.ts';
 import { createAccounts } from './accounts/index.ts';
 import { createApp } from './web/server.ts';
 import { countEvents, listJurisdictionRows, queryEvents } from './db/repo.ts';
@@ -53,6 +54,8 @@ Commands
   documents            Report where the document archive lives, probe it, and copy it
   preflight            Probe every external dependency at once; exit 1 if any is not ready
   snapshot             Publish the built database to the object store, or --pull it back
+  transcripts-upload   Upload locally fetched transcript pages to the configured document store
+  transcripts-import   Upsert uploaded transcripts into this database (no publisher requests)
   towns                List every registered town and what the database holds for it
   sources              Print the source registry
   events               Print recent records as JSON
@@ -73,7 +76,8 @@ Options
   --provider <name>    Interpreter for \`interpret\`: ${PROVIDERS.join(' | ')} (default: rules)
   --scope <what>       For \`clear\`: ${CLEAR_SCOPES.join(' | ')} (default: derived)
   --orphans            For \`clear\`: every town in the database the registry has dropped
-  --backfill           For \`documents\`: copy the local archive into the configured store
+  --max-pages <n>      Maximum transcript content batches per ingest (default: 5)
+  --backfill           For ingest: full transcript reconciliation; for \`documents\`: copy the local archive into the configured store
   --pull               For \`snapshot\`: download the published database instead of publishing
 
 Towns
@@ -99,6 +103,7 @@ const { values, positionals } = parseArgs({
     json: { type: 'boolean', default: false },
     port: { type: 'string' },
     limit: { type: 'string' },
+    'max-pages': { type: 'string' },
     since: { type: 'string' },
     provider: { type: 'string' },
     scope: { type: 'string' },
@@ -131,7 +136,7 @@ const sourceIds = values.source ?? [];
  * variable names which flag it was. Only flags npm has no config of its own for
  * are checked, so nobody's `.npmrc` can trigger this.
  */
-const NPM_SWALLOWS = ['jurisdiction', 'source', 'limit', 'since', 'provider', 'port'] as const;
+const NPM_SWALLOWS = ['jurisdiction', 'source', 'limit', 'since', 'provider', 'port', 'max-pages'] as const;
 
 function npmAteTheFlags(): string[] {
   return NPM_SWALLOWS.filter(
@@ -242,7 +247,37 @@ async function main(): Promise<number> {
       });
     }
 
+    case 'transcripts-upload':
+    case 'transcripts-import': {
+      if (command === 'transcripts-upload' && values['dry-run'])
+        throw new Error(
+          'transcripts-upload does not support --dry-run; use transcripts-import --dry-run to preview imports',
+        );
+      const db = getDb();
+      const sources = targets
+        .flatMap((town) => syncSources(db, town))
+        .filter((source) => source.adapter === 'wordpress-transcripts')
+        .filter((source) => !sourceIds.length || sourceIds.includes(source.id));
+      if (sourceIds.some((id) => !sources.some((source) => source.id === id)))
+        throw new Error('Select a registered WordPress transcript source in the requested jurisdiction');
+      const reports = [];
+      for (const source of sources) {
+        reports.push(
+          command === 'transcripts-upload'
+            ? await uploadTranscripts(db, source)
+            : await importTranscripts(db, source, undefined, { dryRun: values['dry-run'] }),
+        );
+      }
+      console.log(JSON.stringify(reports, null, 2));
+      return 0;
+    }
+
     case 'ingest': {
+      const maxPages = Number(values['max-pages'] ?? 5);
+      if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 100) {
+        console.error('--max-pages must be an integer between 1 and 100');
+        return 1;
+      }
       const db = getDb();
       return forEachTown(async (town) => {
         const reports = await ingest(db, {
@@ -251,6 +286,8 @@ async function main(): Promise<number> {
           ...(values.all ? { includeDisabled: true } : {}),
           ...(values.force ? { force: true } : {}),
           ...(values['dry-run'] ? { dryRun: true } : {}),
+          maxPages,
+          ...(values.backfill ? { backfill: true } : {}),
           onProgress(report) {
             if (values.json) return;
             const state = report.notModified
@@ -258,13 +295,17 @@ async function main(): Promise<number> {
               : `${String(report.items).padStart(3)} items`;
             console.log(
               `${check(report.ok)}  ${report.sourceId.padEnd(40)} ${String(report.status).padStart(3)}  ${state}  ` +
+                (report.pending !== undefined ? `${report.pending} pending  ` : '') +
                 dim(`${report.created} new, ${report.revised} revised, ${report.duplicate} dup`) +
                 (report.error ? `\n     [31m${report.error}[0m` : ''),
             );
           },
         });
-        if (values.json) return emitJson(town, reports);
         const failed = reports.filter((r) => !r.ok);
+        if (values.json) {
+          emitJson(town, reports);
+          return failed.length ? 1 : 0;
+        }
         if (failed.length) {
           console.log(`\n${failed.length} of ${reports.length} sources failed.`);
         }

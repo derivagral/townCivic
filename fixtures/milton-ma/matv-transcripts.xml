@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic content matching MATV's public feed structure. Not actual meeting speech. -->
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+<channel><title>transcript | Milton Access TV</title>
+<item>
+<title>Milton Zoning Board of Appeals: July 21st, 2026 &#8211; Transcript</title>
+<link>https://miltonaccesstv.org/abc_def1234/</link>
+<pubDate>Sat, 12 Sep 2026 10:14:07 +0000</pubDate>
+<description>A deliberately incomplete excerpt.</description>
+<content:encoded><![CDATA[
+<p><strong>Board:</strong> Zoning Board of Appeals</p>
+<p><strong>Date:</strong> 2026-07-21</p>
+<style>.matv-video-wrap { width: 25%; }</style>
+<div class="matv-video-wrap"><iframe src="https://www.youtube.com/embed/AbC_dEf1234"></iframe></div>
+<hr/><h3>Transcript</h3><p><em>Auto-generated; may contain errors.</em></p>
+<h4>Speaker 1 (<a href="https://www.youtube.com/watch?v=AbC_dEf1234&#038;t=53s">00:53</a>–01:06)</h4>
+<p>Welcome. This is a synthetic meeting fixture.</p>
+<h4>Speaker 2 (<a href="https://www.youtube.com/watch?v=AbC_dEf1234&#038;t=3602s">01:00:02</a>–01:00:45)</h4>
+<p>That damn culvert needs attention &amp; repair.</p>
+<p>We have not approved 14 Adams Street or contract SB26-9. &lt;script&gt;alert('quoted text')&lt;/script&gt;</p>
+<h4>Speaker 1 (<a href="https://www.youtube.com/watch?v=AbC_dEf1234&#038;t=3660s">01:01:00</a>–01:01:00)</h4>
+<p>We will revisit stormwater next time.</p>
+]]></content:encoded>
+</item></channel></rss>

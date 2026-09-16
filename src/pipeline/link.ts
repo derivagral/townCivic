@@ -81,6 +81,9 @@ function searchableText(event: LinkableEvent): string {
  * thing tying a contract award back to the bid posting it answers.
  */
 export function refsForEvent(event: LinkableEvent, knownBids: Iterable<string> = []): MatterRef[] {
+  // Speech needs passage-level evidence before it can establish a subject or outcome.
+  // Initial transcript ingestion supplies search only, not automatic matter claims.
+  if (event.event_type === 'meeting_transcript') return [];
   const year = event.sort_date ? new Date(event.sort_date).getUTCFullYear() : null;
   const found = new Map<string, MatterRef>();
 
@@ -104,6 +107,7 @@ export function refsForEvent(event: LinkableEvent, knownBids: Iterable<string> =
 function bidVocabulary(events: LinkableEvent[]): Set<string> {
   const known = new Set<string>();
   for (const event of events) {
+    if (event.event_type === 'meeting_transcript') continue;
     for (const number of extractBidNumbers(searchableText(event))) known.add(number);
   }
   return known;

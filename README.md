@@ -132,6 +132,8 @@ npx tsx src/cli.ts <command>
 
 | Command              | What it does                                                                 |
 | -------------------- | ---------------------------------------------------------------------------- |
+| `transcripts-upload` | Upload locally fetched transcript pages for the publishing workflow          |
+| `transcripts-import` | Upsert uploaded transcript pages into the selected database                  |
 | `ingest`             | Fetch every enabled source, normalize, store what changed                    |
 | `extract`            | Open the linked PDFs and read agendas, locations, posting times and subjects |
 | `link`               | Group records about the same property or article into timelines              |
@@ -1010,3 +1012,12 @@ These are small municipal servers serving public records. The defaults reflect t
 one request per host per second, conditional GETs so unchanged pages cost nothing,
 bounded retries with exponential backoff, and a user agent with a contact URL.
 Please don't lower them.
+
+### Meeting transcripts
+
+Milton Access TV’s public WordPress API supports checkpointed transcript backfill
+and incremental updates without API credentials.
+Local fetches can be uploaded with `npm run transcripts:upload`; Refresh imports
+them through the same upsert path before publishing.
+See [Milton transcript ingestion](docs/transcripts.md) for commands, stored metadata,
+and the branch Actions check. RSS polling is tabled.
