@@ -30,8 +30,40 @@ function seconds(timestamp: string): number {
   return parts.reduce((total, part) => total * 60 + part, 0);
 }
 
-/** MATV's public RSS carries the entire article in content:encoded, not just an excerpt. */
-export function parseMatvContent(html: string): { board: string; transcript: TranscriptArtifact } {
+/** Some older posts say Date: Unknown but include an explicit date in Board. */
+function boardMeetingDate(board: string): string | undefined {
+  const months = [
+    'january',
+    'february',
+    'march',
+    'april',
+    'may',
+    'june',
+    'july',
+    'august',
+    'september',
+    'october',
+    'november',
+    'december',
+  ];
+  const matches = [
+    ...board.matchAll(
+      /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s+(\d{4})\b/gi,
+    ),
+  ];
+  const dates = matches.map(
+    (match) =>
+      `${match[3]}-${String(months.indexOf(match[1]!.toLowerCase()) + 1).padStart(2, '0')}-${match[2]!.padStart(2, '0')}`,
+  );
+  return new Set(dates).size === 1 ? dates[0] : undefined;
+}
+
+/** Shared full article parser for WordPress JSON and RSS content:encoded. */
+export function parseMatvContent(html: string): {
+  board: string;
+  meetingDateSource: 'date-field' | 'board-label';
+  transcript: TranscriptArtifact;
+} {
   const $ = load(html);
   $('script, style').remove();
   const field = (name: string): string => {
@@ -41,8 +73,10 @@ export function parseMatvContent(html: string): { board: string; transcript: Tra
     return clean(label.parent().text().slice(label.text().length));
   };
   const board = field('Board');
-  const meetingDate = field('Date');
-  if (!board || !/^\d{4}-\d{2}-\d{2}$/.test(meetingDate)) {
+  const dateField = field('Date');
+  const meetingDateSource = !dateField || /^unknown$/i.test(dateField) ? 'board-label' : 'date-field';
+  const meetingDate = meetingDateSource === 'board-label' ? boardMeetingDate(board) : dateField;
+  if (!board || !meetingDate || !/^\d{4}-\d{2}-\d{2}$/.test(meetingDate)) {
     throw new Error('MATV transcript is missing Board or ISO meeting Date');
   }
   const [year, month, day] = meetingDate.split('-').map(Number);
@@ -98,6 +132,7 @@ export function parseMatvContent(html: string): { board: string; transcript: Tra
   }
   return {
     board,
+    meetingDateSource,
     transcript: transcriptSchema.parse({
       version: 1,
       origin: 'publisher-auto',
@@ -125,7 +160,7 @@ export const matvTranscriptsAdapter: Adapter = {
       if (!link || url.protocol !== 'https:' || url.hostname !== new URL(ctx.source.url).hostname) {
         throw new Error('MATV item is missing its publisher permalink');
       }
-      const { board, transcript } = parseMatvContent(nodeText(node['content:encoded']));
+      const { board, transcript, meetingDateSource } = parseMatvContent(nodeText(node['content:encoded']));
       const [year, month, day] = transcript.meetingDate.split('-').map(Number);
       const published = parseFeedDate(nodeText(node.pubDate));
       const title = clean(load(nodeText(node.title)).text());
@@ -140,7 +175,7 @@ export const matvTranscriptsAdapter: Adapter = {
         eventType: 'meeting_transcript',
         summary: `Automatic transcript published by Milton Access TV for the ${board} meeting.`,
         transcript,
-        extra: { board, datePrecision: 'day' },
+        extra: { board, datePrecision: 'day', meetingDateSource },
       };
     });
   },

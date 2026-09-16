@@ -40,7 +40,16 @@ export function wordpressTranscriptItem(post: WordpressPost, ctx: AdapterContext
   ) {
     throw new Error(`Post ${post.id} is not a public transcript from the configured publisher/category`);
   }
-  const { board, transcript } = parseMatvContent(post.content.rendered);
+  let parsed: ReturnType<typeof parseMatvContent>;
+  try {
+    parsed = parseMatvContent(post.content.rendered);
+  } catch (error) {
+    throw new Error(
+      `MATV post ${post.id} (${post.link}): ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+  const { board, transcript, meetingDateSource } = parsed;
   const [year, month, day] = transcript.meetingDate.split('-').map(Number);
   return {
     // Keep the RSS prototype's permalink identity so switching transports is idempotent.
@@ -52,7 +61,13 @@ export function wordpressTranscriptItem(post: WordpressPost, ctx: AdapterContext
     eventType: 'meeting_transcript',
     summary: `Automatic transcript published by Milton Access TV for the ${board} meeting.`,
     transcript,
-    extra: { board, datePrecision: 'day', wordpressPostId: post.id, modifiedAt: `${post.modified_gmt}Z` },
+    extra: {
+      board,
+      datePrecision: 'day',
+      meetingDateSource,
+      wordpressPostId: post.id,
+      modifiedAt: `${post.modified_gmt}Z`,
+    },
   };
 }
 

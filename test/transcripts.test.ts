@@ -32,6 +32,41 @@ afterEach(() => {
 });
 
 describe('MATV public transcripts', () => {
+  it.each([
+    ['Board Of Appeals – September 15th, 2025 (7pm)', '2025-09-15'],
+    ['Planning Board Meeting September 25th, 2014 Pt 1', '2014-09-25'],
+    ['Board of Selectmen September 23th, 2014 Pt 1', '2014-09-23'],
+  ])('recovers an unknown meeting date from %s', (board, meetingDate) => {
+    const body = xml
+      .replace('Zoning Board of Appeals</p>', `${board}</p>`)
+      .replace('2026-07-21</p>', 'Unknown</p>');
+    const [item] = parse(body);
+    expect(item!.transcript!.meetingDate).toBe(meetingDate);
+    expect(item!.extra).toMatchObject({ board, meetingDateSource: 'board-label' });
+    expect(normalize(source, item!).occurredAt).toBe(`${meetingDate}T12:00:00.000Z`);
+    expect(item!.publishedAt!.toISOString()).toBe('2026-09-12T10:14:07.000Z');
+  });
+
+  it.each([
+    'Board of Appeals',
+    'Board of Appeals September 15th',
+    'Board of Appeals February 30th, 2025',
+    'Board of Appeals September 15th, 2025 and September 16th, 2025',
+  ])('rejects unknown or invalid meeting dates in %s', (board) => {
+    const body = xml
+      .replace('Zoning Board of Appeals</p>', `${board}</p>`)
+      .replace('2026-07-21</p>', 'Unknown</p>');
+    expect(() => parse(body)).toThrow();
+  });
+
+  it('prefers the explicit Date field over a date in the Board label', () => {
+    const [item] = parse(
+      xml.replace('Zoning Board of Appeals</p>', 'Board of Appeals September 15th, 2025</p>'),
+    );
+    expect(item!.transcript!.meetingDate).toBe('2026-07-21');
+    expect(item!.extra).toMatchObject({ meetingDateSource: 'date-field' });
+  });
+
   it('reads full content, correct board/date and case-sensitive video ID without identifying speakers', () => {
     const [item] = parse();
     const event = normalize(source, item!);
