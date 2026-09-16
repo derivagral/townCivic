@@ -5,7 +5,10 @@ export const transcriptSchema = z.object({
   version: z.literal(1),
   origin: z.literal('publisher-auto'),
   videoId: z.string().regex(/^[A-Za-z0-9_-]{11}$/),
-  meetingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  meetingDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullable(),
   segments: z
     .array(
       z

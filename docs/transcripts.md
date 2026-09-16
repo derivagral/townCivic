@@ -239,6 +239,15 @@ is verified. Explicit `--source` overrides that flag. Once verified, setting
 archive over successive bounded runs, then switch automatically to incremental
 synchronization. No RSS fallback will activate.
 
+Undated archive recordings are ingested and searchable with `meetingDate: null`
+and no occurrence date. This includes year-only labels, two-digit years with no
+explicit century, and recordings spanning multiple meeting dates. The original
+Board label is preserved, and publication date remains separate. A single explicit
+full date in the Board label can supply a missing date; its provenance is recorded
+as `meetingDateSource: board-label`. Otherwise the source is `unknown`. Invalid
+explicit calendar dates, missing boards, or malformed transcripts still fail
+visibly with the post ID and URL.
+
 References: [WordPress posts API](https://developer.wordpress.org/rest-api/reference/posts/),
 [pagination](https://developer.wordpress.org/rest-api/using-the-rest-api/pagination/),
 [GitHub manual workflow runs](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).

@@ -50,13 +50,29 @@ describe('MATV public transcripts', () => {
   it.each([
     'Board of Appeals',
     'Board of Appeals September 15th',
-    'Board of Appeals February 30th, 2025',
+    '12 29 94 Selectmen Meeting',
+    '1996 Selectmen Race',
+    'Selectmen Meetings: 3/29/ 96 &amp; 2/29/96',
+    'Selectmen Meeting November 1996',
     'Board of Appeals September 15th, 2025 and September 16th, 2025',
-  ])('rejects unknown or invalid meeting dates in %s', (board) => {
+  ])('ingests %s without inventing a meeting date', (board) => {
     const body = xml
       .replace('Zoning Board of Appeals</p>', `${board}</p>`)
       .replace('2026-07-21</p>', 'Unknown</p>');
-    expect(() => parse(body)).toThrow();
+    expect(ingestBody(db, source, body)).toMatchObject({ created: 1 });
+    expect(ingestBody(db, source, body)).toMatchObject({ unchanged: 1 });
+    const [row] = queryEvents(db, { q: 'stormwater' });
+    expect(row!.occurred_at).toBeNull();
+    expect(row!.published_at).toBe('2026-09-12T10:14:07.000Z');
+    expect(transcriptFromRaw(row!.raw)?.meetingDate).toBeNull();
+    expect(parse(body)[0]!.extra).toMatchObject({ meetingDateSource: 'unknown' });
+  });
+
+  it('rejects an impossible calendar date in the Board label', () => {
+    const body = xml
+      .replace('Zoning Board of Appeals</p>', 'Board of Appeals February 30th, 2025</p>')
+      .replace('2026-07-21</p>', 'Unknown</p>');
+    expect(() => parse(body)).toThrow('Invalid meeting date');
   });
 
   it('prefers the explicit Date field over a date in the Board label', () => {

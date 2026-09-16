@@ -2,7 +2,6 @@ import { load } from 'cheerio';
 import { z } from 'zod';
 import type { Adapter, AdapterContext, RawItem } from '../types.ts';
 import { parseMatvContent } from './matv-transcripts.ts';
-import { dateOnlyToIso } from '../util/dates.ts';
 import { clean } from '../util/text.ts';
 
 const gmtDate = z
@@ -50,20 +49,22 @@ export function wordpressTranscriptItem(post: WordpressPost, ctx: AdapterContext
     );
   }
   const { board, transcript, meetingDateSource } = parsed;
-  const [year, month, day] = transcript.meetingDate.split('-').map(Number);
+  const occurredAt = transcript.meetingDate ? new Date(`${transcript.meetingDate}T12:00:00.000Z`) : undefined;
   return {
     // Keep the RSS prototype's permalink identity so switching transports is idempotent.
     externalId: `matv-transcript:${url.href}`,
-    title: clean(load(post.title.rendered).text()) || `${board}: ${transcript.meetingDate} — Transcript`,
+    title:
+      clean(load(post.title.rendered).text()) ||
+      `${board}${transcript.meetingDate ? `: ${transcript.meetingDate}` : ''} — Transcript`,
     url: url.href,
-    occurredAt: new Date(dateOnlyToIso(year!, month!, day!)),
+    ...(occurredAt ? { occurredAt } : {}),
     publishedAt: new Date(`${post.date_gmt}Z`),
     eventType: 'meeting_transcript',
     summary: `Automatic transcript published by Milton Access TV for the ${board} meeting.`,
     transcript,
     extra: {
       board,
-      datePrecision: 'day',
+      ...(occurredAt ? { datePrecision: 'day' } : {}),
       meetingDateSource,
       wordpressPostId: post.id,
       modifiedAt: `${post.modified_gmt}Z`,

@@ -61,7 +61,7 @@ function boardMeetingDate(board: string): string | undefined {
 /** Shared full article parser for WordPress JSON and RSS content:encoded. */
 export function parseMatvContent(html: string): {
   board: string;
-  meetingDateSource: 'date-field' | 'board-label';
+  meetingDateSource: 'date-field' | 'board-label' | 'unknown';
   transcript: TranscriptArtifact;
 } {
   const $ = load(html);
@@ -74,14 +74,20 @@ export function parseMatvContent(html: string): {
   };
   const board = field('Board');
   const dateField = field('Date');
-  const meetingDateSource = !dateField || /^unknown$/i.test(dateField) ? 'board-label' : 'date-field';
-  const meetingDate = meetingDateSource === 'board-label' ? boardMeetingDate(board) : dateField;
-  if (!board || !meetingDate || !/^\d{4}-\d{2}-\d{2}$/.test(meetingDate)) {
-    throw new Error('MATV transcript is missing Board or ISO meeting Date');
-  }
-  const [year, month, day] = meetingDate.split('-').map(Number);
-  if (dateOnlyToIso(year!, month!, day!).slice(0, 10) !== meetingDate) {
-    throw new Error(`Invalid meeting date: ${meetingDate}`);
+  if (!board) throw new Error('MATV transcript is missing Board');
+  const explicitDate = Boolean(dateField) && !/^unknown$/i.test(dateField);
+  const meetingDate = (explicitDate ? dateField : boardMeetingDate(board)) ?? null;
+  const meetingDateSource = meetingDate ? (explicitDate ? 'date-field' : 'board-label') : 'unknown';
+  // An undated or multi-meeting recording is still searchable. Never substitute
+  // its publication date, invent a day, or guess a two-digit year's century.
+  if (meetingDate !== null) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(meetingDate)) {
+      throw new Error(`Invalid meeting date: ${meetingDate}`);
+    }
+    const [year, month, day] = meetingDate.split('-').map(Number);
+    if (dateOnlyToIso(year!, month!, day!).slice(0, 10) !== meetingDate) {
+      throw new Error(`Invalid meeting date: ${meetingDate}`);
+    }
   }
 
   let videoId: string | undefined;
@@ -161,21 +167,23 @@ export const matvTranscriptsAdapter: Adapter = {
         throw new Error('MATV item is missing its publisher permalink');
       }
       const { board, transcript, meetingDateSource } = parseMatvContent(nodeText(node['content:encoded']));
-      const [year, month, day] = transcript.meetingDate.split('-').map(Number);
+      const occurredAt = transcript.meetingDate
+        ? new Date(`${transcript.meetingDate}T12:00:00.000Z`)
+        : undefined;
       const published = parseFeedDate(nodeText(node.pubDate));
       const title = clean(load(nodeText(node.title)).text());
       return {
         // Use the publisher permalink, not a lowercased slug as a YouTube ID:
         // YouTube IDs are case-sensitive; the actual ID is read from the embed.
         externalId: `matv-transcript:${url.href}`,
-        title: title || `${board}: ${transcript.meetingDate} — Transcript`,
+        title: title || `${board}${transcript.meetingDate ? `: ${transcript.meetingDate}` : ''} — Transcript`,
         url: url.href,
-        occurredAt: new Date(dateOnlyToIso(year!, month!, day!)),
+        ...(occurredAt ? { occurredAt } : {}),
         ...(published ? { publishedAt: new Date(published) } : {}),
         eventType: 'meeting_transcript',
         summary: `Automatic transcript published by Milton Access TV for the ${board} meeting.`,
         transcript,
-        extra: { board, datePrecision: 'day', meetingDateSource },
+        extra: { board, ...(occurredAt ? { datePrecision: 'day' } : {}), meetingDateSource },
       };
     });
   },

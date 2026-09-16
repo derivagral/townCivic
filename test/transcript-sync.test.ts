@@ -78,10 +78,11 @@ vi.mock('../src/fetch/http.ts', async (original) => {
 describe('WordPress transcript sync', () => {
   it('identifies the failing post when transcript metadata is invalid', () => {
     expect(() =>
-      parseWithSource(source, JSON.stringify([post(5461, content.replace('2026-07-21</p>', 'Unknown</p>'))])),
-    ).toThrow(
-      'MATV post 5461 (https://miltonaccesstv.org/post-5461/): MATV transcript is missing Board or ISO meeting Date',
-    );
+      parseWithSource(
+        source,
+        JSON.stringify([post(5461, content.replace('<strong>Board:</strong>', '<strong>Other:</strong>'))]),
+      ),
+    ).toThrow('MATV post 5461 (https://miltonaccesstv.org/post-5461/): MATV transcript is missing Board');
   });
 
   it('resumes a frozen ID queue after reopening the database without advancing the watermark halfway', async () => {
@@ -92,11 +93,12 @@ describe('WordPress transcript sync', () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(response([{ id: 1 }, { id: 2 }, { id: 3 }]))
-      .mockResolvedValueOnce(response([post(1), post(2)]))
+      .mockResolvedValueOnce(response([post(1, content.replace('2026-07-21</p>', 'Unknown</p>')), post(2)]))
       .mockResolvedValueOnce(response([post(3)]));
     const options = { maxPages: 1, fetchImpl, now };
     const first = await syncWordpressTranscripts(db, source, options);
     expect(first).toMatchObject({ ok: true, created: 2, pending: 1, completedThrough: null });
+    expect(queryEvents(db).find((row) => row.url.endsWith('/post-1/'))?.occurred_at).toBeNull();
     expect(transcriptSyncState(db, source.id).pending).toMatchObject({ ids: [1, 2, 3], next: 2 });
 
     // A later CLI invocation opens the file again; no in-process state survives.
