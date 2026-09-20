@@ -3,6 +3,7 @@ import type { Adapter, AdapterContext, RawItem } from '../types.ts';
 import type { EventType } from '../taxonomy.ts';
 import { parseCivicPlusStamp, parseLooseDate } from '../util/dates.ts';
 import { clean, extractSubjects } from '../util/text.ts';
+import { rejectAccessPage } from './html-response.ts';
 
 /**
  * CivicPlus Agenda Center.
@@ -14,7 +15,7 @@ import { clean, extractSubjects } from '../util/text.ts';
  *
  * The meeting date (MMDDYYYY), the file id, and the agenda/minutes distinction
  * are all in the path. A theme change can restyle the listing without breaking
- * ingestion, and the parser degrades to "found nothing" rather than to garbage.
+ * ingestion. Known access-denial pages fail instead of looking like empty lists.
  */
 const VIEW_FILE_RE = /\/AgendaCenter\/ViewFile\/(Agenda|Minutes)\/_(\d{8})-(\d+)/i;
 
@@ -30,6 +31,7 @@ export const civicPlusAgendaCenterAdapter: Adapter = {
   name: 'civicplus-agenda-center',
   parse(body: string, ctx: AdapterContext): RawItem[] {
     const $ = cheerio.load(body);
+    rejectAccessPage($);
     // CivicPlus duplicates link text inside screen-reader-only spans; leaving
     // them in doubles every title and breaks the date heuristics below.
     $('.visuallyHidden, .hidden, .sr-only, .screenReaderOnly').remove();

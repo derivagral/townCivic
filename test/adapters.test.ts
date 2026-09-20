@@ -120,6 +120,31 @@ describe('civicplus-bids', () => {
   });
 });
 
+describe.each(['civicplus-agenda-center', 'civicplus-bids'] as const)('%s access pages', (adapter) => {
+  const listingSource = source({ adapter, url: 'https://example.gov/listing' });
+
+  it.each([
+    '<title>Just a moment...</title>',
+    '<h1>Checking your browser</h1>',
+    '<title>Attention Required! | Cloudflare</title>',
+    '<h1>Access Denied</h1>',
+    '<h1>Request Rejected</h1>',
+    '<title>Pardon Our Interruption</title>',
+    '<form id="challenge-form"></form>',
+    '<div id="cf-challenge-running"></div>',
+    '<div id="cf-error-details"></div>',
+  ])('rejects a successful HTTP response containing %s', (html) => {
+    expect(() => parseWithSource(listingSource, html)).toThrow('access-denial or browser-challenge');
+  });
+
+  it('preserves legitimate empty listings and does not scan ordinary prose for challenge words', () => {
+    const title = adapter === 'civicplus-agenda-center' ? 'Agenda Center' : 'Bid Postings';
+    const html = `<title>${title}</title><h1>${title}</h1><p>No items available.</p>
+      <p>Report access denied errors if you see Checking your browser.</p>`;
+    expect(parseWithSource(listingSource, html)).toEqual([]);
+  });
+});
+
 describe('rss', () => {
   const rssSource = source({
     adapter: 'rss',
