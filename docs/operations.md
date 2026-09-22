@@ -66,6 +66,27 @@ errors for the CivicPlus agenda and bids adapters. They must not count as empty
 listings or leave conditional-fetch validators that hide the failure. Normal
 empty listings remain valid.
 
+The fetcher identifies Cloudflare's explicit `cf-mitigated: challenge` header
+before status-code handling, even on 2xx responses, and does not retry it.
+Errors include a validated `cf-ray` identifier when available; cookies and
+challenge tokens are not logged. A Cloudflare server header alone does not
+establish that a challenge occurred.
+
+For a bounded Hull check from a local environment, run:
+
+```bash
+node --import tsx scripts/probe-hull.mjs
+```
+
+The **Hull source access check** workflow runs the same one-source probe on
+relevant same-repository PR updates or manual dispatch. It uses the crawler's
+normal headers, no conditional validators, and no retries. It writes no database
+or object-store data. Its JSON report includes UTC request time, source URL,
+proxy presence, status, and the challenge/Ray ID diagnostic; a failure exits
+non-zero. Compare that report with a local run before attempting another full
+Refresh. See the [Hull incident investigation](incidents/2026-09-20-hull-access.md)
+for the observed transition and remaining questions.
+
 Refresh preserves its working database as a cache/artifact on failure but keeps
 the last successfully published snapshot. Extract/link and publication are
 skipped, and the dependent Deploy run is skipped too. After access recovers,

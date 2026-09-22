@@ -1,0 +1,52 @@
+name: Hull source access check
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/hull-access.yml'
+      - 'scripts/probe-hull.mjs'
+      - 'src/fetch/http.ts'
+      - 'src/registry/hull-ma.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hull-access-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    # Fixed source only; do not direct municipal traffic for external fork PRs.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Probe one Hull source
+        # No production secrets/cache, cookies, retries, ingest, or publication.
+        run: |
+          set -o pipefail
+          node --import tsx scripts/probe-hull.mjs | tee hull-access.json
+      - name: Preserve diagnostic report
+        if: always()
+        run: |
+          if [ -f hull-access.json ]; then
+            cat hull-access.json >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hull-access-${{ github.run_id }}
+          path: hull-access.json
+          retention-days: 14
+          if-no-files-found: warn
