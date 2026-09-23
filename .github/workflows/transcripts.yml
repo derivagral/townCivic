@@ -58,10 +58,11 @@ jobs:
         # This database/archive is temporary. No production cache, secrets, or
         # snapshot publishing: a PR can verify access without deploying data.
         run: |
+          set -o pipefail
           mkdir -p "$TOWNCIVIC_DATA_DIR"
           node --import tsx src/cli.ts ingest --jurisdiction milton-ma \
             --source milton-ma:transcripts:matv --max-pages "$MATV_MAX_PAGES" \
-            --json > "$TOWNCIVIC_DATA_DIR/report.json"
+            --json | tee "$TOWNCIVIC_DATA_DIR/report.json"
       - name: Summarize result
         if: always()
         run: |

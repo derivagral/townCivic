@@ -52,6 +52,51 @@ are problems and make the command non-zero. A verified source that is empty or
 has gone quiet is a warning: it still needs inspection, but it does not make a
 healthy new snapshot less publishable than the older one already on Fly.
 
+### When Refresh fails before extraction
+
+Read the first failing source in **Ingest**, then **Status**. If many URLs on
+one town's host return `HTTP 403`, the response was denied before the parser
+ran. A parser change or `force` cannot repair that refusal. Compare a single
+source from an approved local environment with the hosted run; investigate the
+publisher's access policy if the denial persists. Avoid repeatedly retrying
+every URL or marking the failed town healthy just to publish.
+
+Known browser-challenge and access-denial pages returned with HTTP 200 are also
+errors for the CivicPlus agenda and bids adapters. They must not count as empty
+listings or leave conditional-fetch validators that hide the failure. Normal
+empty listings remain valid.
+
+The fetcher identifies Cloudflare's explicit `cf-mitigated: challenge` header
+before status-code handling, even on 2xx responses, and does not retry it.
+Errors include a validated `cf-ray` identifier when available; cookies and
+challenge tokens are not logged. A Cloudflare server header alone does not
+establish that a challenge occurred.
+
+For a bounded Hull check from a local environment, run:
+
+```bash
+node --import tsx scripts/probe-hull.mjs
+```
+
+The **Hull source access check** workflow runs the same one-source probe on
+relevant same-repository PR updates or manual dispatch. It uses the crawler's
+normal headers, no conditional validators, and no retries. It writes no database
+or object-store data. Its JSON report includes UTC request time, source URL,
+proxy presence, status, and the challenge/Ray ID diagnostic; a failure exits
+non-zero. Compare that report with a local run before attempting another full
+Refresh. See the [Hull incident investigation](incidents/2026-09-20-hull-access.md)
+for the observed transition and remaining questions.
+
+Refresh preserves its working database as a cache/artifact on failure but keeps
+the last successfully published snapshot. Extract/link and publication are
+skipped, and the dependent Deploy run is skipped too. After access recovers,
+run Refresh again. Its manual `force` input passes `--force` to ingest to bypass
+ETag/Last-Modified validators; it does not bypass access controls.
+
+The Milton transcript check writes its JSON report to both the Actions log and
+the artifact, preserving the ingest command's failure status. That makes a
+specific post's parser error visible without downloading the database.
+
 ## The two pieces of state
 
 |                     |                                                                             |

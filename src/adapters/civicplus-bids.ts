@@ -2,6 +2,7 @@ import * as cheerio from 'cheerio';
 import type { Adapter, AdapterContext, RawItem } from '../types.ts';
 import { parseLooseDate } from '../util/dates.ts';
 import { clean, truncate } from '../util/text.ts';
+import { rejectAccessPage } from './html-response.ts';
 
 /**
  * CivicPlus bid postings (`/bids.aspx`).
@@ -28,6 +29,7 @@ export const civicPlusBidsAdapter: Adapter = {
   name: 'civicplus-bids',
   parse(body: string, ctx: AdapterContext): RawItem[] {
     const $ = cheerio.load(body);
+    rejectAccessPage($);
     $(HIDDEN_SELECTOR).remove();
 
     const byBid = new Map<string, RawItem>();

@@ -113,7 +113,12 @@ jobs:
       # Every registered town, in one pass. A town whose sources are all
       # disabled costs nothing here — it makes no requests.
       - name: Ingest
-        run: npm run ingest -- --jurisdiction all
+        env:
+          REFRESH_FORCE: ${{ inputs.force || false }}
+        run: |
+          args=(--jurisdiction all)
+          if [ "$REFRESH_FORCE" = "true" ]; then args+=(--force); fi
+          npm run ingest -- "${args[@]}"
 
       # Documents are the slow part. Cap each run so a first run over a
       # nine-year archive spreads across several runs instead of timing out.

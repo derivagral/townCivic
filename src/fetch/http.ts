@@ -41,6 +41,15 @@ async function politeWait(url: string): Promise<void> {
 
 const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
 
+function responseError(response: Response): string {
+  const challenge = response.headers.get('cf-mitigated') === 'challenge';
+  // Preserve only the request identifier, not cookies, challenge tokens, or
+  // arbitrary upstream text. The publisher can look this up in Security Events.
+  const ray = response.headers.get('cf-ray') ?? '';
+  const rayLabel = /^[a-f0-9]{16}(?:-[a-z]{3})?$/i.test(ray) ? ` (cf-ray: ${ray})` : '';
+  return `HTTP ${response.status}${challenge ? ' — Cloudflare challenge' : ''}${rayLabel}`;
+}
+
 export interface FetchOptions {
   etag?: string | undefined;
   lastModified?: string | undefined;
@@ -109,6 +118,13 @@ export async function fetchSource(
           : {}),
       };
 
+      // Cloudflare documents this header for every challenge-page type. Check
+      // before HTTP success/retry handling: even a 2xx is not source content,
+      // and repeating the request cannot execute the browser challenge.
+      if (response.headers.get('cf-mitigated') === 'challenge') {
+        await response.body?.cancel().catch(() => {});
+        return { ...meta, ok: false, status: response.status, body: '', error: responseError(response) };
+      }
       if (response.status === 304) {
         return { ...meta, ok: true, status: 304, notModified: true, body: '' };
       }
@@ -117,7 +133,8 @@ export async function fetchSource(
         continue;
       }
       if (!response.ok) {
-        return { ...meta, ok: false, status: response.status, body: '', error: `HTTP ${response.status}` };
+        await response.body?.cancel().catch(() => {});
+        return { ...meta, ok: false, status: response.status, body: '', error: responseError(response) };
       }
       return { ...meta, ok: true, status: response.status, body: await response.text() };
     } catch (error) {
