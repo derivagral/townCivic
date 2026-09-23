@@ -27,6 +27,8 @@
  * implement, which is not an interface at all.
  */
 
+import type { LocationInput, ReaderLocation } from './location.ts';
+
 /** A reader, as both backends describe one. */
 export interface Reader {
   id: string;
@@ -34,6 +36,7 @@ export interface Reader {
   displayName: string | null;
   /** Bearer token for the personal feed. Rotatable, and not the password. */
   feedToken: string;
+  location: ReaderLocation;
 }
 
 /** One thing a reader follows. Mirrors the `subscriptions` table's columns. */
@@ -141,6 +144,8 @@ export interface AccountStore {
   resolve(cookieValue: string | undefined): Promise<Identity | null>;
   /** Constant-time check of a form's CSRF field against this session. */
   verifyCsrf(identity: Identity | null, supplied: string | undefined): boolean;
+
+  updateLocation(identity: Identity, input: LocationInput): Promise<void>;
 
   listSubscriptions(identity: Identity): Promise<Subscription[]>;
   addSubscription(identity: Identity, input: SubscriptionInput): Promise<void>;

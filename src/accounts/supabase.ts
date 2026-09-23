@@ -1,4 +1,5 @@
 import { createHmac, randomBytes } from 'node:crypto';
+import { normalizeLocation, type ReaderLocation } from './location.ts';
 // Imported for its side effect: installing the proxy dispatcher on the global
 // `fetch`. Its own `fetchSource` is not used here — that one waits a second
 // between requests to the same host, which is right for a town's web server and
@@ -67,7 +68,8 @@ const REFRESH_MARGIN_SECONDS = 60;
  */
 const COOKIE_DAYS = 30;
 
-const READER_COLUMNS = 'user_id,email,display_name,feed_token';
+const READER_COLUMNS =
+  'user_id,email,display_name,feed_token,street_status,home_jurisdiction,street,location_updated_at';
 const SUBSCRIPTION_COLUMNS = 'jurisdiction,kind,value,label,alerts';
 
 /** What GoTrue hands back on a successful sign-in, sign-up or refresh. */
@@ -82,6 +84,10 @@ interface ReaderRow {
   email: string | null;
   display_name: string | null;
   feed_token: string;
+  street_status: ReaderLocation['status'];
+  home_jurisdiction: string | null;
+  street: string | null;
+  location_updated_at: string | null;
 }
 
 interface SubscriptionRow {
@@ -351,6 +357,12 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
     email: row.email ?? '',
     displayName: row.display_name,
     feedToken: row.feed_token,
+    location: {
+      status: row.street_status ?? 'unset',
+      jurisdiction: row.home_jurisdiction ?? null,
+      street: row.street ?? null,
+      updatedAt: row.location_updated_at ?? null,
+    },
   });
 
   const toSubscription = (row: SubscriptionRow): Subscription => ({
@@ -483,6 +495,26 @@ export function createSupabaseAccounts(options: SupabaseAccountsOptions = {}): A
     verifyCsrf(identity, supplied) {
       if (!identity || !supplied) return false;
       return sameSecret(identity.csrfToken, supplied);
+    },
+
+    async updateLocation(identity, input) {
+      const location = normalizeLocation(input);
+      const response = await request<ReaderRow[]>(
+        `${REST}/readers?${eq('user_id', identity.reader.id)}&select=user_id`,
+        {
+          method: 'PATCH',
+          token: identity.credential,
+          headers: { Prefer: 'return=representation' },
+          body: {
+            street_status: location.status,
+            home_jurisdiction: location.jurisdiction,
+            street: location.street,
+            location_updated_at: location.updatedAt,
+          },
+        },
+      );
+      if (!response.ok || response.body?.[0]?.user_id !== identity.reader.id)
+        throw new AccountsUnavailableError('Your street preference could not be saved. Please try again.');
     },
 
     async listSubscriptions(identity) {

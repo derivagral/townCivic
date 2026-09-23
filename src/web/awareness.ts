@@ -5,11 +5,12 @@ import { readCookie } from '../accounts/cookies.ts';
 import { facetCounts, getMatter, personalFeed } from '../db/repo.ts';
 import { CHANNELS, CHANNEL_LABELS, isChannel } from '../taxonomy.ts';
 import { hasSampleData } from '../commands/seed.ts';
-import { escapeHtml as esc, eventCard, layout, EMPTY_FILTERS, withTown } from './views.ts';
+import { escapeHtml as esc, eventCard, layout, EMPTY_FILTERS, withTown, locationPrompt } from './views.ts';
 import type { TownView } from './views.ts';
 
 const STARTS: Record<string, string> = {
-  activity: '/',
+  meetings: '/meetings',
+  activity: '/activity',
   nearby: '/nearby',
   timelines: '/matters',
   personal: '/for-me',
@@ -51,6 +52,7 @@ export function registerAwareness(
       sampleData: hasSampleData(db, town.id),
       body,
       activeView: 'for-me',
+      locationPrompt: locationPrompt(current, withTown(town.path, town)),
       account: current?.reader.displayName || current?.reader.email || null,
     });
   const hidden = (name: string, value: string) =>
@@ -59,7 +61,7 @@ export function registerAwareness(
   app.get('/start', (c) => {
     const start = readCookie(c.req.header('cookie'), 'towncivic_start') ?? '';
     c.header('cache-control', 'private, no-store');
-    return c.redirect(withTown(Object.hasOwn(STARTS, start) ? STARTS[start]! : '/', townFor(c)), 302);
+    return c.redirect(withTown(Object.hasOwn(STARTS, start) ? STARTS[start]! : '/meetings', townFor(c)), 302);
   });
 
   app.get('/interests', async (c) => {
@@ -183,14 +185,14 @@ export function registerAwareness(
       ${eventCard(row, { ...EMPTY_FILTERS, town: row.jurisdiction })}</section>`,
       )
       .join('');
-    const start = readCookie(c.req.header('cookie'), 'towncivic_start') ?? 'activity';
+    const start = readCookie(c.req.header('cookie'), 'towncivic_start') ?? 'meetings';
     return c.html(
       page(
         `<section class="view-intro"><p class="eyebrow">For me</p><h1>Your followed activity</h1>
       <p>Up to 40 matching records across your followed towns, ordered by event date.
       This is not a list of changes since your last visit.</p></section>
       <p><a href="${esc(withTown('/interests', town))}">Add an interest</a> · <a href="/my">Manage follows</a> ·
-      <a href="${esc(withTown('/', town))}">Explore all activity</a></p>
+      <a href="${esc(withTown('/activity', town))}">Explore all activity</a></p>
       <form method="post" action="/interests/start" class="search">
         ${hidden('csrf', current.csrfToken)}
         <label for="starting-view">Start here on this browser</label>

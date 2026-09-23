@@ -433,6 +433,7 @@ export function upsertEvent(db: Db, event: NormalizedEvent): UpsertOutcome {
 export interface EventQuery {
   jurisdiction?: string;
   channels?: string[];
+  eventTypes?: string[];
   sources?: string[];
   bodies?: string[];
   levels?: string[];
@@ -465,6 +466,7 @@ function buildWhere(query: EventQuery): { clause: string; params: unknown[] } {
   }
   for (const [column, values] of [
     ['e.channel', query.channels],
+    ['e.event_type', query.eventTypes],
     ['e.source_id', query.sources],
     ['e.body', query.bodies],
     ['e.level', query.levels],

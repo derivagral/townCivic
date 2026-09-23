@@ -36,6 +36,10 @@ interface ReaderRow {
   email: string;
   display_name: string | null;
   feed_token: string;
+  street_status: string;
+  home_jurisdiction: string | null;
+  street: string | null;
+  location_updated_at: string | null;
 }
 
 interface SubscriptionRow {
@@ -216,6 +220,10 @@ export function fakeSupabase(options: FakeSupabaseOptions = {}): FakeSupabase {
         email: user.email,
         display_name: (meta['display_name'] as string | null) || null,
         feed_token: randomBytes(24).toString('hex'),
+        street_status: 'unset',
+        home_jurisdiction: null,
+        street: null,
+        location_updated_at: null,
       });
 
       if (options.confirmEmail) return json({ id: user.id, email: user.email, confirmed_at: null });
@@ -306,6 +314,11 @@ export function fakeSupabase(options: FakeSupabaseOptions = {}): FakeSupabase {
 
       if (request.method === 'PATCH') {
         const row = readerFor(role);
+        const requested = url.searchParams.get('user_id');
+        if (requested && filterValue(requested) !== role) return json([]);
+        for (const key of ['street_status', 'home_jurisdiction', 'street', 'location_updated_at'] as const) {
+          if (key in body) (row as unknown as Record<string, unknown>)[key] = body[key];
+        }
         if (typeof body['feed_token'] === 'string') row.feed_token = body['feed_token'];
         if ('display_name' in body) row.display_name = (body['display_name'] as string | null) ?? null;
         return json([row]);

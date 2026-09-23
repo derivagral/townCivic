@@ -4,7 +4,7 @@ import type { BoundingBox, LatLon } from '../geo/project.ts';
 import { MASSACHUSETTS_BBOX } from '../registry/profile.ts';
 import { boundaryBox, boundarySvgPath } from '../geo/boundary.ts';
 import type { Boundary } from '../geo/boundary.ts';
-import { CHANNEL_LABELS } from '../taxonomy.ts';
+import { CHANNELS, CHANNEL_LABELS } from '../taxonomy.ts';
 import type { Channel } from '../taxonomy.ts';
 import { STAGE_LABELS, isStage } from '../matters/stages.ts';
 import { formatDate } from '../util/dates.ts';
@@ -227,7 +227,7 @@ export function renderNearbyBody(model: NearbyModel): string {
   <input type="search" name="q" value="${escapeHtml(model.q ?? '')}" placeholder="Find an address" aria-label="Find an address">
   <select name="status" aria-label="Matter status"><option value="">Any status</option>${statusOptions}</select>
   ${model.town ? `<input type="hidden" name="town" value="${escapeHtml(model.town)}">` : ''}
-  ${model.channel ? `<input type="hidden" name="channel" value="${escapeHtml(model.channel)}">` : ''}
+  <select name="channel" aria-label="Topic"><option value="">All topics</option>${CHANNELS.map((channel) => `<option value="${channel}"${model.channel === channel ? ' selected' : ''}>${escapeHtml(CHANNEL_LABELS[channel])}</option>`).join('')}</select>
   <button type="submit">Show</button>
 </form>`;
   const list = model.points.length

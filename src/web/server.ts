@@ -1,3 +1,5 @@
+import { renderMeetings, MEETING_TYPES, type MeetingFilters } from './meetings.ts';
+import { normalizeLocation, type LocationInput } from '../accounts/location.ts';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { Db } from '../db/index.ts';
@@ -49,6 +51,7 @@ import {
   EMPTY_FILTERS,
   layout,
   renderAuth,
+  locationPrompt,
   renderEvent,
   renderFeedIndex,
   renderIndex,
@@ -68,12 +71,6 @@ import { registerAwareness } from './awareness.ts';
 
 const PAGE_SIZE = 60;
 const FEED_SIZE = 50;
-/**
- * Milton has 78 boards. Listing every one turns the filter rail into a wall, so
- * it shows the most active and says how many it left out.
- */
-const FACET_LIMIT = 16;
-
 /** Read filters off the query string, ignoring anything that is not a known value. */
 function readFilters(url: URL, town: TownView): Filters {
   const get = (key: string) => url.searchParams.get(key)?.trim() || undefined;
@@ -191,7 +188,13 @@ export function createApp(db: Db, options: AppOptions = {}) {
   const townFor = (c: Context, override?: string): TownView => {
     const requested = override ?? new URL(c.req.url).searchParams.get('town')?.trim();
     const id = requested && served.includes(requested) ? requested : defaultJurisdiction;
-    return { id, label: getProfile(id).label, options: townOptions, path: new URL(c.req.url).pathname };
+    return {
+      id,
+      label: getProfile(id).label,
+      options: townOptions,
+      path: new URL(c.req.url).pathname,
+      search: new URL(c.req.url).search,
+    };
   };
 
   /**
@@ -205,20 +208,11 @@ export function createApp(db: Db, options: AppOptions = {}) {
     label: getProfile(jurisdiction).label,
     options: townOptions,
     path: new URL(c.req.url).pathname,
+    search: new URL(c.req.url).search,
   });
 
-  /**
-   * Keep the selected value visible even when it falls outside the top slice,
-   * so an active filter never disappears from the rail that set it.
-   */
-  const trim = (facets: { value: string; n: number }[], selected?: string) => {
-    const head = facets.slice(0, FACET_LIMIT);
-    if (selected && !head.some((f) => f.value === selected)) {
-      const match = facets.find((f) => f.value === selected);
-      if (match) head.push(match);
-    }
-    return { shown: head, hidden: Math.max(0, facets.length - FACET_LIMIT) };
-  };
+  // Selects can hold the complete facet list without taking over the page.
+  const facetGroup = (facets: { value: string; n: number }[]) => ({ shown: facets, hidden: 0 });
 
   /**
    * The signed-in reader, if any.
@@ -236,6 +230,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
    * request.
    */
   const currentUser = async (c: Context): Promise<Identity | null> => {
+    if (readCookie(c.req.header('cookie'), SESSION_COOKIE)) c.header('cache-control', 'private, no-store');
     const identity = await accounts.resolve(readCookie(c.req.header('cookie'), SESSION_COOKIE));
     if (identity?.refreshedCookie) {
       c.header('set-cookie', sessionCookie(identity.refreshedCookie, secureCookies));
@@ -243,7 +238,10 @@ export function createApp(db: Db, options: AppOptions = {}) {
     return identity;
   };
 
-  const nameFor = (identity: Identity | null) => (identity ? readerName(identity.reader) : null);
+  const accountFor = (identity: Identity | null, c: Context) => ({
+    account: identity ? readerName(identity.reader) : null,
+    locationPrompt: locationPrompt(identity, new URL(c.req.url).pathname + new URL(c.req.url).search),
+  });
   registerAwareness(app, db, accounts, currentUser, townFor, secureCookies);
 
   app.get('/styles.css', (c) => c.body(STYLES, 200, { 'content-type': 'text/css; charset=utf-8' }));
@@ -254,7 +252,62 @@ export function createApp(db: Db, options: AppOptions = {}) {
     c.json({ ok: true, jurisdiction: defaultJurisdiction, jurisdictions: served, accounts: accounts.kind }),
   );
 
-  app.get('/', async (c) => {
+  const meetings = async (c: Context) => {
+    const url = new URL(c.req.url);
+    const town = townFor(c);
+    const filters: MeetingFilters = {
+      q: url.searchParams.get('q')?.trim() ?? '',
+      body: url.searchParams.get('body')?.trim() ?? '',
+      kind: url.searchParams.get('kind') === 'all' ? 'all' : 'transcripts',
+      when:
+        url.searchParams.get('when') === 'upcoming'
+          ? 'upcoming'
+          : url.searchParams.get('when') === 'past'
+            ? 'past'
+            : 'all',
+      page: Math.max(1, Math.min(100000, Math.floor(Number(url.searchParams.get('page'))) || 1)),
+    };
+    const base: EventQuery = {
+      jurisdiction: town.id,
+      eventTypes: filters.kind === 'transcripts' ? ['meeting_transcript'] : MEETING_TYPES,
+      includeAdmin: true,
+      when: filters.when,
+      ...(filters.q ? { q: filters.q } : {}),
+    };
+    const query = { ...base, ...(filters.body ? { bodies: [filters.body] } : {}) };
+    const rows = queryEvents(db, { ...query, limit: PAGE_SIZE, offset: (filters.page - 1) * PAGE_SIZE });
+    const evidence = Object.fromEntries(
+      searchEvidenceForEvents(
+        db,
+        rows.map((r) => r.id),
+        filters.q,
+      ).map((e) => [e.eventId, e]),
+    );
+    return c.html(
+      renderMeetings({
+        town,
+        filters,
+        rows,
+        evidence,
+        total: countEvents(db, query),
+        boards: facetCounts(db, 'body', base),
+        pageSize: PAGE_SIZE,
+        sampleData: hasSampleData(db, town.id),
+        ...accountFor(await currentUser(c), c),
+      }),
+    );
+  };
+  app.get('/meetings', meetings);
+
+  app.get('/', (c) => {
+    const url = new URL(c.req.url);
+    const legacy = ['q', 'body', 'source', 'level', 'channel', 'when', 'page', 'derived'].some((key) =>
+      url.searchParams.has(key),
+    );
+    return legacy ? activity(c) : meetings(c);
+  });
+
+  const activity = async (c: Context) => {
     const url = new URL(c.req.url);
     const town = townFor(c);
     const filters = readFilters(url, town);
@@ -290,14 +343,16 @@ export function createApp(db: Db, options: AppOptions = {}) {
         filters,
         upcoming,
         past,
-        total: countEvents(db, base),
+        total: countEvents(db, { ...base, when: filters.when }),
         facets: {
-          sources: trim(
-            facetCounts(db, 'source_id', base).map((f) => ({ ...f, label: sourceLabel(db, f.value) })),
-            filters.source,
+          sources: facetGroup(
+            facetCounts(db, 'source_id', { ...base, sources: [] }).map((f) => ({
+              ...f,
+              label: sourceLabel(db, f.value),
+            })),
           ),
-          bodies: trim(facetCounts(db, 'body', base), filters.body),
-          levels: trim(facetCounts(db, 'level', base), filters.level),
+          bodies: facetGroup(facetCounts(db, 'body', { ...base, bodies: [] })),
+          levels: facetGroup(facetCounts(db, 'level', { ...base, levels: [] })),
         },
         sampleData: hasSampleData(db, town.id),
         town,
@@ -306,10 +361,11 @@ export function createApp(db: Db, options: AppOptions = {}) {
         hasDerived: countInterpretations(db, town.id) > 0,
         evidence,
         townDormant: !loadSources(town.id).some((source) => source.enabled),
-        account: nameFor(current),
+        ...accountFor(current, c),
       }),
     );
-  });
+  };
+  app.get('/activity', activity);
 
   app.get('/event/:id', async (c) => {
     const row = getEvent(db, c.req.param('id'));
@@ -340,7 +396,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
           data: item.data,
           created_at: item.created_at,
         })),
-        account: nameFor(current),
+        ...accountFor(current, c),
       }),
     );
   });
@@ -375,7 +431,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
         linked: countMatters(db, { jurisdiction: town.id }) > 0,
         sampleData: hasSampleData(db, town.id),
         town,
-        account: nameFor(await currentUser(c)),
+        ...accountFor(await currentUser(c), c),
       }),
     );
   });
@@ -388,6 +444,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
       renderMatter({
         matter,
         timeline: matterTimeline(db, matter.id),
+        locationPrompt: locationPrompt(current, new URL(c.req.url).pathname),
         place: getPlace(db, matter.id) ?? null,
         ...(current
           ? {
@@ -469,26 +526,38 @@ export function createApp(db: Db, options: AppOptions = {}) {
         sampleData: hasSampleData(db, town.id),
         body,
         activeView: 'nearby',
-        account: nameFor(await currentUser(c)),
+        ...accountFor(await currentUser(c), c),
       }),
     );
   });
 
   /* ------------------------------------------------------------- accounts */
 
+  app.use('/login', async (c, next) => {
+    c.header('cache-control', 'private, no-store');
+    await next();
+  });
+  app.use('/signup', async (c, next) => {
+    c.header('cache-control', 'private, no-store');
+    await next();
+  });
+
   /**
    * Only same-site paths are accepted as a post-login destination. An
    * open redirect is the classic way a login form becomes a phishing tool.
    */
   const safeNext = (value: string | undefined): string | undefined =>
-    value && value.startsWith('/') && !value.startsWith('//') ? value : undefined;
+    value && value.startsWith('/') && !value.startsWith('//') && !/[\\\u0000-\u001f\u007f]/.test(value)
+      ? value
+      : undefined;
 
   app.get('/login', async (c) => {
-    if (await currentUser(c)) return c.redirect('/my', 302);
+    if (await currentUser(c)) return c.redirect('/start', 302);
     const next = safeNext(new URL(c.req.url).searchParams.get('next') ?? undefined);
     return c.html(
       renderAuth({
         mode: 'login',
+        capabilities: accounts.capabilities,
         next,
         sampleData: hasSampleData(db, defaultJurisdiction),
         town: townFor(c),
@@ -497,15 +566,21 @@ export function createApp(db: Db, options: AppOptions = {}) {
   });
 
   app.get('/signup', async (c) => {
-    if (await currentUser(c)) return c.redirect('/my', 302);
+    if (await currentUser(c)) return c.redirect('/start', 302);
     return c.html(
-      renderAuth({ mode: 'signup', sampleData: hasSampleData(db, defaultJurisdiction), town: townFor(c) }),
+      renderAuth({
+        mode: 'signup',
+        capabilities: accounts.capabilities,
+        next: safeNext(new URL(c.req.url).searchParams.get('next') ?? undefined),
+        sampleData: hasSampleData(db, defaultJurisdiction),
+        town: townFor(c),
+      }),
     );
   });
 
   const startSession = (c: Context, session: StartedSession, next: string | undefined) => {
     c.header('set-cookie', sessionCookie(session, secureCookies));
-    return c.redirect(next ?? '/my', 303);
+    return c.redirect(next ?? '/start', 303);
   };
 
   /**
@@ -519,12 +594,13 @@ export function createApp(db: Db, options: AppOptions = {}) {
   const authAgain = (
     c: Context,
     mode: 'login' | 'signup',
-    status: 400 | 401 | 503,
+    status: 200 | 400 | 401 | 503,
     fields: { error?: string; notice?: string; email?: string; next?: string | undefined },
   ) =>
     c.html(
       renderAuth({
         mode,
+        capabilities: accounts.capabilities,
         ...(fields.error ? { error: fields.error } : {}),
         ...(fields.notice ? { notice: fields.notice } : {}),
         ...(fields.email ? { email: fields.email } : {}),
@@ -535,7 +611,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
       status,
     );
 
-  const UNAVAILABLE = 'Accounts are temporarily unavailable. The records below are unaffected.';
+  const UNAVAILABLE = 'Accounts are temporarily unavailable. You can still browse public records.';
 
   app.post('/login', async (c) => {
     const form = await c.req.parseBody();
@@ -561,6 +637,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
   app.post('/signup', async (c) => {
     const form = await c.req.parseBody();
     const email = String(form['email'] ?? '');
+    const next = safeNext(form['next'] ? String(form['next']) : undefined);
 
     let result;
     try {
@@ -571,15 +648,15 @@ export function createApp(db: Db, options: AppOptions = {}) {
       });
     } catch (error) {
       if (!(error instanceof AccountsUnavailableError)) throw error;
-      return authAgain(c, 'signup', 503, { error: UNAVAILABLE, email });
+      return authAgain(c, 'signup', 503, { error: UNAVAILABLE, email, next });
     }
 
-    if (!result.ok) return authAgain(c, 'signup', 400, { error: result.error, email });
+    if (!result.ok) return authAgain(c, 'signup', 400, { error: result.error, email, next });
     // A backend that confirms addresses creates the account without signing
     // anyone in. Sending them to /my would bounce them straight back to a login
     // form for an account that does not work yet.
-    if (!result.session) return authAgain(c, 'login', 400, { notice: result.message, email });
-    return startSession(c, result.session, undefined);
+    if (!result.session) return authAgain(c, 'login', 200, { notice: result.message, email, next });
+    return startSession(c, result.session, next);
   });
 
   app.post('/logout', async (c) => {
@@ -602,6 +679,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
     return c.html(
       renderProfile({
         email: current.reader.email,
+        location: current.reader.location,
         displayName: current.reader.displayName,
         subscriptions: subscriptions.map((s) => ({
           kind: s.kind,
@@ -630,6 +708,34 @@ export function createApp(db: Db, options: AppOptions = {}) {
         account: readerName(current.reader),
       }),
     );
+  });
+
+  app.post('/my/location', async (c) => {
+    c.header('cache-control', 'private, no-store');
+    const current = await currentUser(c);
+    if (!current) return c.redirect('/login?next=%2Fmy', 303);
+    const form = await c.req.parseBody();
+    if (!accounts.verifyCsrf(current, String(form['csrf'] ?? '')))
+      return c.text('Reload this form and try again.', 403);
+    const status = String(form['status'] ?? '');
+    const jurisdiction = String(form['jurisdiction'] ?? '');
+    let input: LocationInput;
+    if (status === 'provided' && served.includes(jurisdiction))
+      input = { status, jurisdiction, street: String(form['street'] ?? '') };
+    else if (status === 'unset' || status === 'declined') input = { status };
+    else return c.text('Choose a valid town and street preference. Go back to try again.', 400);
+    try {
+      normalizeLocation(input);
+    } catch {
+      return c.text('Enter a street name of up to 160 characters. Go back to try again.', 400);
+    }
+    try {
+      await accounts.updateLocation(current, input);
+    } catch (error) {
+      if (!(error instanceof AccountsUnavailableError)) throw error;
+      return c.text('Your street preference could not be saved. Please go back and try again.', 503);
+    }
+    return c.redirect(safeNext(String(form['next'] ?? '')) ?? '/my?saved=1#location', 303);
   });
 
   /** Every state-changing post goes through the same gate. */
@@ -764,7 +870,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
           notes: row.notes,
         })),
         sampleData: hasSampleData(db, town.id),
-        account: nameFor(await currentUser(c)),
+        ...accountFor(await currentUser(c), c),
       }),
     );
   });
