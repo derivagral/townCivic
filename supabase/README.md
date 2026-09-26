@@ -247,3 +247,12 @@ Two doors this opens that are not walked through here:
   different change with a different budget — the events table and its full-text
   index are the large ones, and Supabase's free tier is 500 MB — and nothing
   here assumes it. See "Deliberately not built yet" in the main README.
+
+## Street preferences
+
+Before deploying the transcript-first UI, apply
+[`20260923170811_reader_street_preference.sql`](migrations/20260923170811_reader_street_preference.sql)
+after the accounts migration. It adds street choice, home town, street name, and
+last-updated time to each reader. Existing readers start with `unset`; `declined`
+is a persistent answer, not a missing value. The previous app can run with these
+additive columns. See [the rollout and profile contract](../docs/transcript-first-home.md).

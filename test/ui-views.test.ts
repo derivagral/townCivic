@@ -137,7 +137,7 @@ describe('three-view UI', () => {
       hasDerived: false,
     });
     expect(html).toContain('aria-label="Explore"');
-    expect(html).toContain('>Activity</a>');
+    expect(html).toContain('>General feed</a>');
     expect(html).toContain('>Nearby</a>');
     expect(html).toContain('>Timelines</a>');
   });

@@ -249,6 +249,10 @@ CREATE TABLE IF NOT EXISTS users (
   -- Lower-cased email, so one address cannot register twice in two cases.
   email_key     TEXT NOT NULL UNIQUE,
   display_name  TEXT,
+  street_status TEXT NOT NULL DEFAULT 'unset' CHECK (street_status IN ('unset', 'provided', 'declined')),
+  home_jurisdiction TEXT,
+  street TEXT,
+  location_updated_at TEXT,
   -- scrypt, with a per-user salt. Never a bare hash of the password.
   password_hash TEXT NOT NULL,
   password_salt TEXT NOT NULL,

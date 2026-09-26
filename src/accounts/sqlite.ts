@@ -1,4 +1,5 @@
 import { randomBytes, scryptSync } from 'node:crypto';
+import { normalizeLocation, type ReaderLocation } from './location.ts';
 import type { Db } from '../db/index.ts';
 import { sameSecret } from './cookies.ts';
 import {
@@ -45,6 +46,10 @@ export interface UserRow {
   password_salt: string;
   feed_token: string;
   created_at: string;
+  street_status?: ReaderLocation['status'];
+  home_jurisdiction?: string | null;
+  street?: string | null;
+  location_updated_at?: string | null;
 }
 
 export interface SubscriptionRow {
@@ -270,6 +275,12 @@ const toReader = (row: UserRow): Reader => ({
   email: row.email,
   displayName: row.display_name,
   feedToken: row.feed_token,
+  location: {
+    status: row.street_status ?? 'unset',
+    jurisdiction: row.home_jurisdiction ?? null,
+    street: row.street ?? null,
+    updatedAt: row.location_updated_at ?? null,
+  },
 });
 
 const toSubscription = (row: SubscriptionRow): Subscription => ({
@@ -338,6 +349,15 @@ export function createSqliteAccounts(db: Db): AccountStore {
     verifyCsrf(identity, supplied) {
       if (!identity) return false;
       return checkCsrf(sessionOf(identity), supplied);
+    },
+
+    async updateLocation(identity, input) {
+      const session = sessionOf(identity);
+      if (!session || session.userId !== identity.reader.id) throw new Error('Session expired.');
+      const location = normalizeLocation(input);
+      db.prepare(
+        `UPDATE users SET street_status = ?, home_jurisdiction = ?, street = ?, location_updated_at = ? WHERE id = ?`,
+      ).run(location.status, location.jurisdiction, location.street, location.updatedAt, session.userId);
     },
 
     async listSubscriptions(identity) {

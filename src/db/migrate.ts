@@ -29,6 +29,14 @@ export const SCHEMA_VERSION = 4;
 
 /** Columns introduced after the first release. Additive, so an upgrade is free. */
 const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
+  {
+    table: 'users',
+    column: 'street_status',
+    definition: "TEXT NOT NULL DEFAULT 'unset' CHECK (street_status IN ('unset', 'provided', 'declined'))",
+  },
+  { table: 'users', column: 'home_jurisdiction', definition: 'TEXT' },
+  { table: 'users', column: 'street', definition: 'TEXT' },
+  { table: 'users', column: 'location_updated_at', definition: 'TEXT' },
   { table: 'sources', column: 'precedence', definition: 'INTEGER NOT NULL DEFAULT 50' },
   { table: 'events', column: 'precedence', definition: 'INTEGER NOT NULL DEFAULT 50' },
   { table: 'events', column: 'doc_text', definition: 'TEXT' },

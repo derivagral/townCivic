@@ -38,41 +38,75 @@ a { color: inherit; }
 .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px 64px; }
 
 header.site { border-bottom: 1px solid var(--line); background: var(--panel); }
-header.site .wrap { padding-top: 22px; padding-bottom: 0; }
-.brand { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-.brand h1 { font-size: 21px; margin: 0; letter-spacing: -0.01em; }
-.brand h1 a { text-decoration: none; }
-.brand .tag { color: var(--muted); font-size: 13px; }
-.brand .spacer { flex: 1; }
-.brand .util { font-size: 13px; color: var(--muted); display: flex; gap: 14px; }
-
-/*
- * The town switcher. Deliberately quieter than the channel tabs below it and
- * visually above them: which town you are in is a bigger question than which
- * channel, and asking it twice a session should not compete with the content.
- */
-nav.towns { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0 0; font-size: 13px; }
-nav.towns a { color: var(--muted); text-decoration: none; }
-nav.towns a:hover { color: var(--ink); text-decoration: underline; }
-nav.towns a.on { color: var(--ink); font-weight: 600; }
-
-nav.primary { display: flex; gap: 22px; margin-top: 20px; border-bottom: 1px solid var(--line); }
-nav.primary a {
-  padding: 0 1px 10px; color: var(--muted); text-decoration: none; font-size: 15px; font-weight: 600;
-  border-bottom: 3px solid transparent; margin-bottom: -1px;
-}
+header.site .masthead { display: flex; align-items: center; gap: 24px; padding-top: 14px; padding-bottom: 14px; }
+.brand-name { font-size: 21px; font-weight: 750; letter-spacing: -.035em; text-decoration: none; }
+.town-picker { display: flex; align-items: center; gap: 4px; }
+.town-picker select { max-width: 150px; }
+.town-picker button { padding: 6px 8px; }
+.compact-header .account-link { max-width: none; }
+.account-link { margin-left: auto; font-size: 13px; max-width: 140px; overflow-wrap: anywhere; }
+nav.primary { display: flex; gap: 20px; align-items: center; }
+nav.primary a { padding: 7px 0; color: var(--muted); text-decoration: none; white-space: nowrap; font-size: 14px; }
 nav.primary a:hover { color: var(--ink); }
-nav.primary a.on { color: var(--accent); border-bottom-color: var(--accent); }
-
-nav.channels { display: flex; gap: 4px; flex-wrap: wrap; margin: 10px 0 0; }
-nav.channels a {
-  padding: 7px 12px; font-size: 13.5px; text-decoration: none; color: var(--muted);
-  border: 1px solid transparent; border-bottom: none; border-radius: 8px 8px 0 0;
+nav.primary a.on { color: var(--accent); box-shadow: 0 2px var(--accent); font-weight: 650; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.skip-link { position: absolute; top: -60px; left: 12px; padding: 8px 14px; background: var(--panel); z-index: 10; }
+.skip-link:focus { top: 8px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+button, select, input { font: inherit; color: var(--ink); }
+button, select { padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); font-size: 13px; }
+button { cursor: pointer; }
+.browse-search { margin: 4px 0 22px; }
+.search-line { display: flex; gap: 8px; }
+.search-line input { min-width: 0; flex: 1; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.search-line button { background: var(--accent); color: var(--bg); border-color: var(--accent); padding-inline: 22px; font-weight: 650; }
+.filter-details { margin-top: 12px; }
+.filter-details summary { cursor: pointer; color: var(--muted); font-size: 13px; width: fit-content; }
+.filter-details > button, .filter-details > a { margin: 10px 8px 0 0; font-size: 13px; }
+.filter-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
+.filter-grid label { display: grid; gap: 5px; font-size: 12px; color: var(--muted); }
+.filter-grid select { width: 100%; }
+.meeting-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 14px; margin-top: 12px; }
+.meeting-filters label { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+.meeting-filters select { max-width: 300px; }
+.meeting-filters button { margin-left: auto; }
+.meeting-meta, .meeting-links { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); }
+.meeting-meta { margin-bottom: 7px; }
+.meeting-card h3 { margin: 0 0 8px; font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
+.meeting-card h3 a { text-decoration: none; }
+.meeting-card h3 a:hover { text-decoration: underline; }
+.meeting-links { justify-content: space-between; margin-top: 12px; }
+.meeting-links a { color: var(--accent); font-weight: 600; text-decoration: none; }
+.transcript-excerpt { font-size: 14px; color: var(--muted); margin: 4px 0 12px; max-width: 85ch; }
+.badge.transcript-badge { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.coverage-note { font-size: 12px; color: var(--muted); margin-top: 24px; max-width: 90ch; }
+.location-prompt { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin-top: 18px; font-size: 13px; background: var(--accent-soft); }
+.location-prompt > span { flex: 1 1 480px; }
+.location-prompt form { margin: 0; }
+.location-prompt button { background: transparent; border: 0; padding: 0; text-decoration: underline; font-size: 13px; }
+.location-form { display: grid; gap: 8px; max-width: 520px; margin-top: 16px; }
+.location-form label { font-size: 13px; }
+.location-form input { padding: 9px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; }
+.location-form select { width: 100%; }
+@media (max-width: 1050px) {
+  header.site .masthead { flex-wrap: wrap; gap: 10px 20px; }
+  nav.primary { order: 4; width: 100%; gap: 24px; }
 }
-nav.channels a:hover { color: var(--ink); }
-nav.channels a.on {
-  color: var(--ink); background: var(--bg); border-color: var(--line);
-  margin-bottom: -1px; padding-bottom: 8px; font-weight: 600;
+@media (max-width: 600px) {
+  .wrap { padding-inline: 16px; }
+  header.site .masthead { gap: 8px 12px; }
+  .brand-name { font-size: 19px; }
+  .town-picker select { max-width: 120px; }
+  .account-link { max-width: 86px; }
+  nav.primary { gap: 12px; overflow-x: auto; padding-bottom: 3px; }
+  nav.primary a { font-size: 13px; }
+  .filter-grid { grid-template-columns: 1fr; }
+  .meeting-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .meeting-filters label { display: grid; gap: 3px; min-width: 0; }
+  .meeting-filters select { width: 100%; max-width: 100%; }
+  .meeting-filters button { margin: 0; min-height: 36px; }
+  .search-line input { font-size: 15px; }
+  .search-line button { padding-inline: 14px; }
 }
 
 .banner {
@@ -126,17 +160,18 @@ form.search button, form.search select {
   display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
   padding-bottom: 12px; margin-bottom: 6px; border-bottom: 1px solid var(--line);
 }
+.toolbar > a { font-size: 13px; color: var(--accent); margin-left: auto; }
 .toolbar .count { font-size: 13px; color: var(--muted); }
 .toolbar .modes { margin-left: auto; display: flex; gap: 10px; font-size: 13px; }
 .toolbar .modes a { color: var(--muted); text-decoration: none; }
 .toolbar .modes a.on { color: var(--ink); font-weight: 600; }
 
 .daygroup { margin-top: 26px; }
-.daygroup > h3 {
+.daygroup > h3, .daygroup > h2 {
   font-size: 12.5px; font-weight: 600; color: var(--muted); margin: 0 0 10px;
   letter-spacing: 0.02em; display: flex; align-items: center; gap: 10px;
 }
-.daygroup > h3::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.daygroup > h3::after, .daygroup > h2::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .daygroup.upcoming > h3 { color: var(--accent); }
 
 article.event {

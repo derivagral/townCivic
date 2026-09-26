@@ -79,6 +79,8 @@ jobs:
           curl -fsS http://localhost:8787/healthz > /dev/null
           curl -fsS "http://localhost:8787/?channel=land-use" > /dev/null
           curl -fsS "http://localhost:8787/?q=Pleasant&derived=1" > /dev/null
+          curl -fsS http://localhost:8787/meetings > /dev/null
+          curl -fsS http://localhost:8787/activity > /dev/null
           curl -fsS http://localhost:8787/sources > /dev/null
 
           # Multi-town: the switcher lists every registered town, and a town
@@ -121,3 +123,26 @@ jobs:
       # this must pass on a clean checkout.
       - name: Check documents
         run: npm run documents
+
+  profile-schema:
+    name: reader profile RLS
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check migrations, profile constraints, and reader isolation
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f test/sql/reader-location.sql

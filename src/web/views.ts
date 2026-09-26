@@ -1,3 +1,5 @@
+import type { Identity, AccountCapabilities } from '../accounts/store.ts';
+import type { ReaderLocation } from '../accounts/location.ts';
 import { formatTimestamp, transcriptFromRaw, transcriptVideoUrl } from '../transcripts.ts';
 import type { EventRow, MatterRow, SearchEvidence, SourceRow, TimelineRow } from '../db/repo.ts';
 import { CHANNELS, CHANNEL_DESCRIPTIONS, CHANNEL_LABELS, EVENT_TYPE_LABELS } from '../taxonomy.ts';
@@ -35,6 +37,7 @@ export interface TownView {
   options: { id: string; label: string }[];
   /** The current path, so switching towns stays on the same kind of page. */
   path: string;
+  search?: string;
 }
 
 export const isMultiTown = (town: TownView): boolean => town.options.length > 1;
@@ -47,7 +50,6 @@ export function withTown(path: string, town: TownView, params: Record<string, st
   return qs ? `${path}?${qs}` : path;
 }
 
-/** The same page, in another town. Filters are dropped: they mean nothing there. */
 function switchTownHref(path: string, id: string): string {
   return `${path}?town=${encodeURIComponent(id)}`;
 }
@@ -69,7 +71,7 @@ export interface Filters {
 export const EMPTY_FILTERS: Filters = { when: 'all', page: 1 };
 
 /** Build a URL for the current filters with one or more values replaced. */
-export function href(filters: Filters, patch: Partial<Filters> = {}, path = '/'): string {
+export function href(filters: Filters, patch: Partial<Filters> = {}, path = '/activity'): string {
   const next = { ...filters, ...patch };
   const params = new URLSearchParams();
   // First, so a shared link reads as the town before it reads as the filter.
@@ -116,49 +118,41 @@ export interface LayoutOptions {
   feedUrl?: string;
   /** Display name of the signed-in reader, when there is one. */
   account?: string | null;
+  locationPrompt?: string;
   /** The reader job this page belongs to in the primary navigation. */
-  activeView?: 'activity' | 'nearby' | 'timelines' | 'for-me';
+  compact?: boolean;
+  activeView?: 'meetings' | 'activity' | 'nearby' | 'timelines' | 'for-me';
 }
 
 export function layout(options: LayoutOptions): string {
-  const { filters, town } = options;
-  const channelPath = options.activeView === 'nearby' ? '/nearby' : '/';
-  const tabs = [
-    { value: '', label: 'Everything' },
-    ...CHANNELS.map((c) => ({ value: c, label: CHANNEL_LABELS[c] })),
-  ]
-    .map((tab) => {
-      const on = (filters.channel ?? '') === tab.value;
-      const url = href(filters, { channel: tab.value || undefined, page: 1 }, channelPath);
-      return `<a class="${on ? 'on' : ''}" href="${escapeHtml(url)}">${escapeHtml(tab.label)}</a>`;
-    })
-    .join('');
+  const { town } = options;
+  const returnPath = town.search !== undefined ? town.path + town.search : withTown(town.path, town);
   const primary = [
-    { value: 'for-me', label: 'For me', path: '/for-me' },
-    { value: 'activity', label: 'Activity', path: '/' },
-    { value: 'nearby', label: 'Nearby', path: '/nearby' },
+    { value: 'meetings', label: 'Meetings', path: '/meetings' },
     { value: 'timelines', label: 'Timelines', path: '/matters' },
+    { value: 'activity', label: 'General feed', path: '/activity' },
+    { value: 'nearby', label: 'Nearby', path: '/nearby' },
+    { value: 'for-me', label: 'For me', path: '/for-me' },
   ]
     .map(
       (item) =>
-        `<a class="${options.activeView === item.value ? 'on' : ''}" href="${escapeHtml(withTown(item.path, town))}">${item.label}</a>`,
+        `<a${options.activeView === item.value ? ' class="on" aria-current="page"' : ''} href="${escapeHtml(withTown(item.path, town))}">${item.label}</a>`,
     )
     .join('');
-
-  // The switcher is the whole multi-town UI: the same pages, a different town.
-  // It deliberately drops the current filters — "Planning Board" is a different
-  // board in the next town over, and a board filter that silently follows you
-  // across the town line is worse than no filter at all.
+  // A record belongs to its original town; switching from a detail opens the
+  // corresponding index instead of relabelling the same record.
+  const switchPath = town.path.startsWith('/event/')
+    ? '/meetings'
+    : town.path.startsWith('/matter/')
+      ? '/matters'
+      : town.path;
   const switcher = isMultiTown(town)
-    ? `<nav class="towns" aria-label="Town">${town.options
-        .map(
-          (option) =>
-            `<a class="${option.id === town.id ? 'on' : ''}" href="${escapeHtml(
-              switchTownHref(town.path, option.id),
-            )}">${escapeHtml(option.label.split(',')[0] ?? option.label)}</a>`,
-        )
-        .join('')}<a href="${escapeHtml(withTown('/towns', town))}">All towns</a></nav>`
-    : '';
+    ? `<form class="town-picker" action="${escapeHtml(switchPath)}" method="get">
+        <label class="sr-only" for="town-picker">Town</label>
+        <select id="town-picker" name="town">${town.options.map((option) => `<option value="${escapeHtml(option.id)}"${option.id === town.id ? ' selected' : ''}>${escapeHtml(option.label.split(',')[0])}</option>`).join('')}</select>
+        <button type="submit" aria-label="Change town">Go</button>
+      </form>`
+    : `<span class="tag">${escapeHtml(town.label)}</span>`;
 
   const banner = options.sampleData
     ? `<div class="banner"><strong>Sample data.</strong> Some entries below were loaded from synthetic fixtures for development
@@ -176,24 +170,19 @@ export function layout(options: LayoutOptions): string {
 ${options.feedUrl ? `<link rel="alternate" type="application/atom+xml" title="${escapeHtml(options.title)}" href="${escapeHtml(options.feedUrl)}">` : ''}
 </head>
 <body>
-<header class="site">
-  <div class="wrap">
-    <div class="brand">
-      <h1><a href="${escapeHtml(withTown('/start', town))}">townCivic</a></h1>
-      <span class="tag">${escapeHtml(town.label)} · primary-source civic record</span>
-      <span class="spacer"></span>
-      <span class="util"><a href="${escapeHtml(withTown('/sources', town))}">Sources</a><a href="${escapeHtml(withTown('/feeds', town))}">Feeds</a>${
-        options.account ? `<a href="/my">${escapeHtml(options.account)}</a>` : '<a href="/login">Sign in</a>'
-      }</span>
-    </div>
-    ${switcher}
-    <nav class="primary" aria-label="Explore">${primary}</nav>
-    ${options.activeView === 'activity' || options.activeView === 'nearby' ? `<nav class="channels" aria-label="Channel">${tabs}</nav>` : ''}
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site${options.compact ? ' compact-header' : ''}">
+  <div class="wrap masthead">
+    <a class="brand-name" href="${escapeHtml(withTown('/start', town))}">townCivic</a>
+    ${options.compact ? '' : switcher}
+    ${options.compact ? '' : `<nav class="primary" aria-label="Explore">${primary}</nav>`}
+    <a class="account-link" href="${options.compact ? escapeHtml(withTown('/meetings', town)) : options.account ? '/my' : `/login?next=${encodeURIComponent(returnPath)}`}">${options.compact ? 'Browse meetings' : options.account ? escapeHtml(options.account) : 'Sign in'}</a>
   </div>
 </header>
 <div class="wrap">
   ${banner}
-  ${options.aside ? `<div class="layout"><aside>${options.aside}</aside><main>${options.body}</main></div>` : `<main>${options.body}</main>`}
+  ${options.locationPrompt ?? ''}
+  ${options.aside ? `<div class="layout"><aside>${options.aside}</aside><main id="main">${options.body}</main></div>` : `<main id="main">${options.body}</main>`}
   <footer class="site">
     <p>Every entry links to the primary source. townCivic does not summarize, editorialize, or decide what is newsworthy —
        it records what was published, by whom, and when.</p>
@@ -314,26 +303,26 @@ export interface IndexViewModel {
    */
   townDormant?: boolean;
   account?: string | null;
+  locationPrompt?: string;
 }
 
-function facetGroup(
-  heading: string,
+function facetSelect(
+  label: string,
   key: 'source' | 'body' | 'level',
   group: FacetGroup,
   filters: Filters,
 ): string {
-  if (!group.shown.length) return '';
-  const items = group.shown
-    .map((facet) => {
-      const on = filters[key] === facet.value;
-      return `<li><a class="${on ? 'on' : ''}" href="${escapeHtml(toggle(filters, key, facet.value))}">
-        <span>${escapeHtml(facet.label ?? facet.value)}</span><span class="n">${facet.n}</span></a></li>`;
-    })
+  const values = group.shown
+    .map(
+      (facet) =>
+        `<option value="${escapeHtml(facet.value)}"${filters[key] === facet.value ? ' selected' : ''}>${escapeHtml(facet.label ?? facet.value)} (${facet.n})</option>`,
+    )
     .join('');
-  // Long tails are real here — Milton has 78 boards — so say what was left out
-  // rather than silently truncating, and point at search for the rest.
-  const more = group.hidden ? `<li class="more"><span>+ ${group.hidden} more — use search</span></li>` : '';
-  return `<div class="group"><h2>${escapeHtml(heading)}</h2><ul>${items}${more}</ul></div>`;
+  const missing =
+    filters[key] && !group.shown.some((facet) => facet.value === filters[key])
+      ? `<option selected value="${escapeHtml(filters[key])}">${escapeHtml(filters[key])}</option>`
+      : '';
+  return `<label>${label}<select name="${key}"><option value="">All</option>${missing}${values}</select></label>`;
 }
 
 export function renderIndex(model: IndexViewModel): string {
@@ -348,30 +337,22 @@ export function renderIndex(model: IndexViewModel): string {
        </label>`
     : '';
 
-  const aside = `
-<form class="search" action="/" method="get">
-  <input type="search" name="q" value="${escapeHtml(filters.q ?? '')}" placeholder="Search records" aria-label="Search records">
+  const search = `<form class="browse-search" action="/activity" method="get">
   ${filters.town ? `<input type="hidden" name="town" value="${escapeHtml(filters.town)}">` : ''}
-  ${filters.channel ? `<input type="hidden" name="channel" value="${escapeHtml(filters.channel)}">` : ''}
-  <button type="submit">Go</button>
-  ${derivedToggle}
-</form>
-${facetGroup('Board or department', 'body', model.facets.bodies, filters)}
-${facetGroup('Source', 'source', model.facets.sources, filters)}
-${facetGroup('Level of government', 'level', model.facets.levels, filters)}
-${
-  filters.source || filters.body || filters.level || filters.q
-    ? `<div class="group"><a href="${escapeHtml(href({ ...EMPTY_FILTERS, channel: filters.channel }))}">Clear filters</a></div>`
-    : ''
-}`;
-
-  const modes = (['all', 'upcoming', 'past'] as const)
-    .map((mode) => {
-      const label = mode === 'all' ? 'All' : mode === 'upcoming' ? 'Upcoming' : 'Past';
-      const on = filters.when === mode;
-      return `<a class="${on ? 'on' : ''}" href="${escapeHtml(href(filters, { when: mode, page: 1 }))}">${label}</a>`;
-    })
-    .join('');
+  <div class="search-line"><label class="sr-only" for="record-search">Search records</label>
+    <input id="record-search" type="search" name="q" value="${escapeHtml(filters.q ?? '')}" placeholder="Search a topic, street, or issue">
+    <button type="submit">Search</button></div>
+  <details class="filter-details"${filters.channel || filters.body || filters.source || filters.level || filters.derived || filters.when !== 'all' ? ' open' : ''}>
+    <summary>Filters${filters.channel || filters.body || filters.source || filters.level || filters.derived || filters.when !== 'all' ? ' · active' : ''}</summary>
+    <div class="filter-grid">
+      <label>Topic<select name="channel"><option value="">All topics</option>${CHANNELS.map((ch) => `<option value="${ch}"${filters.channel === ch ? ' selected' : ''}>${escapeHtml(CHANNEL_LABELS[ch])}</option>`).join('')}</select></label>
+      ${facetSelect('Board or department', 'body', model.facets.bodies, filters)}
+      ${facetSelect('Source', 'source', model.facets.sources, filters)}
+      ${facetSelect('Level of government', 'level', model.facets.levels, filters)}
+      <label>When<select name="when">${['all', 'upcoming', 'past'].map((when) => `<option value="${when}"${filters.when === when ? ' selected' : ''}>${when === 'all' ? 'Any time' : when === 'past' ? 'Past' : 'Upcoming'}</option>`).join('')}</select></label>
+    </div>${derivedToggle}<button type="submit">Apply filters</button>
+    <a href="${escapeHtml(withTown('/activity', model.town))}">Clear filters</a>
+  </details></form>`;
 
   const channelNote = filters.channel
     ? `<p class="count">${escapeHtml(CHANNEL_DESCRIPTIONS[filters.channel as Channel] ?? '')}</p>`
@@ -383,28 +364,24 @@ ${
       : model.townDormant
         ? `<div class="empty">
              <p>Nothing has been collected for ${escapeHtml(model.town.label)} yet.</p>
-             <p>It is registered — its URL shapes are written down — but no source has been confirmed
-                against the live site, so nothing fetches. Run <code>npm run discover</code> for its board
-                ids, then <code>npm run verify</code>, and enable what answered.</p>
+             <p>Try another town or check the source registry for coverage.</p>
            </div>`
         : `<div class="empty">
              <p>No records match these filters.</p>
-             <p>If the database is empty, load the development fixtures with <code>npm run seed</code>,
-                or fetch the live site with <code>npm run ingest</code>.</p>
+             <p>Try fewer filters or a different search. Coverage depends on the records collected.</p>
            </div>`;
 
   const body = `<div class="view-intro">
-  <p class="eyebrow">Activity</p>
-  <h1>What changed in town</h1>
+  <h1>General feed</h1>
   <p>New notices, agendas, minutes, decisions, and deadlines—ordered by when they happen.</p>
 </div>
+${search}
 <div class="toolbar">
   <strong>${model.total.toLocaleString('en-US')}</strong>
   <span class="count">record${model.total === 1 ? '' : 's'}${filters.q ? ` matching “${escapeHtml(filters.q)}”` : ''}${
     filters.q && filters.derived ? ', including derived readings' : ''
   }</span>
   ${channelNote}
-  <span class="modes">${modes}</span>
 </div>
 ${model.upcoming.length ? `<h2 class="count" style="margin:22px 0 0;font-size:13px;text-transform:uppercase;letter-spacing:.07em;">Upcoming</h2>${dayGroups(model.upcoming, filters, true, model.evidence)}` : ''}
 ${model.past.length ? `${model.upcoming.length ? `<h2 class="count" style="margin:34px 0 0;font-size:13px;text-transform:uppercase;letter-spacing:.07em;">Already happened</h2>` : ''}${dayGroups(model.past, filters, false, model.evidence)}` : ''}
@@ -426,10 +403,10 @@ ${
     filters,
     sampleData: model.sampleData,
     body,
-    aside,
     feedUrl: model.feedUrl,
     activeView: 'activity',
     ...(model.account !== undefined ? { account: model.account } : {}),
+    ...(model.locationPrompt ? { locationPrompt: model.locationPrompt } : {}),
   });
 }
 
@@ -454,6 +431,7 @@ export interface EventViewModel {
   /** Model-derived readings of the document. Never the record itself. */
   interpretations?: InterpretationView[];
   account?: string | null;
+  locationPrompt?: string;
 }
 
 export function renderEvent(model: EventViewModel): string {
@@ -559,12 +537,16 @@ export function renderEvent(model: EventViewModel): string {
 
   return layout({
     title: `${row.title} — townCivic`,
+    activeView:
+      row.event_type.startsWith('meeting_') || row.event_type === 'hearing_scheduled'
+        ? 'meetings'
+        : 'activity',
     town,
     filters: EMPTY_FILTERS,
     sampleData,
     body,
-    activeView: 'activity',
     ...(model.account !== undefined ? { account: model.account } : {}),
+    ...(model.locationPrompt ? { locationPrompt: model.locationPrompt } : {}),
   });
 }
 
@@ -649,6 +631,7 @@ export interface MattersViewModel {
   sampleData: boolean;
   town: TownView;
   account?: string | null;
+  locationPrompt?: string;
 }
 
 export function renderMatters(model: MattersViewModel): string {
@@ -732,6 +715,7 @@ ${empty}`;
     body,
     activeView: 'timelines',
     ...(model.account !== undefined ? { account: model.account } : {}),
+    ...(model.locationPrompt ? { locationPrompt: model.locationPrompt } : {}),
   });
 }
 
@@ -745,6 +729,7 @@ export interface MatterViewModel {
   sampleData: boolean;
   town: TownView;
   account?: string | null;
+  locationPrompt?: string;
 }
 
 export function renderMatter(model: MatterViewModel): string {
@@ -813,6 +798,7 @@ export function renderMatter(model: MatterViewModel): string {
     body,
     activeView: 'timelines',
     ...(model.account !== undefined ? { account: model.account } : {}),
+    ...(model.locationPrompt ? { locationPrompt: model.locationPrompt } : {}),
   });
 }
 
@@ -820,6 +806,7 @@ export function renderMatter(model: MatterViewModel): string {
 
 export interface AuthViewModel {
   mode: 'login' | 'signup';
+  capabilities?: AccountCapabilities;
   error?: string | undefined;
   /**
    * Something that went right but is not a sign-in — "check your email", from a
@@ -840,8 +827,7 @@ export function renderAuth(model: AuthViewModel): string {
 
   const body = `<div class="detail authform">
   <h1>${signup ? 'Create an account' : 'Sign in'}</h1>
-  <p class="count">An account exists for one reason: to keep a list of what you want to be told about —
-     a property, a board, a search — so the feed can be yours rather than the whole town's.</p>
+  <p class="count">Save topics, boards, and searches you want to follow.</p>
   ${model.error ? `<p class="formerror">${escapeHtml(model.error)}</p>` : ''}
   ${model.notice ? `<p class="formnotice">${escapeHtml(model.notice)}</p>` : ''}
   <form method="post" action="${action}">
@@ -864,16 +850,17 @@ export function renderAuth(model: AuthViewModel): string {
   <p class="count" style="margin-top:20px">
     ${
       signup
-        ? 'Already have one? <a href="/login">Sign in</a>.'
-        : 'No account yet? <a href="/signup">Create one</a>.'
+        ? `Already have one? <a href="/login${model.next ? `?next=${encodeURIComponent(model.next)}` : ''}">Sign in</a>.`
+        : `No account yet? <a href="/signup${model.next ? `?next=${encodeURIComponent(model.next)}` : ''}">Create one</a>.`
     }
   </p>
-  <p class="count" style="margin-top:16px">This is a proof of concept. There is no email verification and no
-     password reset — if you lose the password, the account is gone. Do not reuse a password you care about.</p>
+  <p><a href="${escapeHtml(model.next ?? withTown('/meetings', model.town))}">Continue browsing without an account</a></p>
+  ${model.capabilities && !model.capabilities.passwordReset ? '<p class="count">Local accounts do not support password recovery. Use a unique password.</p>' : ''}
 </div>`;
 
   return layout({
     title: `${signup ? 'Create an account' : 'Sign in'} — townCivic`,
+    compact: true,
     town: model.town,
     filters: EMPTY_FILTERS,
     sampleData: model.sampleData,
@@ -893,6 +880,7 @@ export interface ProfileSubscription {
 }
 
 export interface ProfileViewModel {
+  location: ReaderLocation;
   email: string;
   displayName: string | null;
   subscriptions: ProfileSubscription[];
@@ -912,6 +900,36 @@ const SUBSCRIPTION_KIND_LABELS: Record<string, string> = {
   channel: 'Channel',
   search: 'Search',
 };
+
+export function locationPrompt(identity: Identity | null, next: string): string {
+  if (!identity || identity.reader.location.status !== 'unset') return '';
+  return `<aside class="location-prompt" aria-label="Street preference">
+    <span><strong>Add your street?</strong> A street name helps us prepare more local updates. No house number needed.</span>
+    <a href="/my#location">Add street</a>
+    <form method="post" action="/my/location">
+      <input type="hidden" name="csrf" value="${escapeHtml(identity.csrfToken)}">
+      <input type="hidden" name="status" value="declined">
+      <input type="hidden" name="next" value="${escapeHtml(next)}">
+      <button type="submit">Prefer not to share</button>
+    </form>
+  </aside>`;
+}
+
+function locationForm(model: ProfileViewModel): string {
+  const location = model.location;
+  return `<section class="agenda" id="location"><h2>Your street</h2>
+    <p class="count">${location.status === 'declined' ? 'You chose not to share a street. You can change that here.' : location.status === 'provided' ? 'Your street is saved. You can update or remove it here.' : 'Your street is not set.'} This prepares your profile for local updates; it does not enable email or push notifications.</p>
+    <form action="/my/location" method="post" class="location-form">
+      <input type="hidden" name="csrf" value="${escapeHtml(model.csrfToken)}">
+      <label for="home-town">Home town</label>
+      <select id="home-town" name="jurisdiction" required><option value="">Choose your town</option>${model.town.options.map((t) => `<option value="${escapeHtml(t.id)}"${location.jurisdiction === t.id ? ' selected' : ''}>${escapeHtml(t.label)}</option>`).join('')}</select>
+      <label for="street">Street name <span class="count">(no house number)</span></label>
+      <input id="street" name="street" value="${escapeHtml(location.street ?? '')}" maxlength="160" required placeholder="e.g. Adams Street">
+      <div class="actions"><button type="submit" name="status" value="provided">Save street</button>
+      <button type="submit" name="status" value="declined" formnovalidate>Prefer not to share</button>
+      ${location.status !== 'unset' ? '<button type="submit" name="status" value="unset" formnovalidate>Clear preference</button>' : ''}</div>
+    </form></section>`;
+}
 
 export function renderProfile(model: ProfileViewModel): string {
   const rows = model.subscriptions
@@ -951,6 +969,7 @@ export function renderProfile(model: ProfileViewModel): string {
   <p class="count" style="margin-top:10px">That feed URL contains a token that stands in for your password.
      Treat it as a secret; anyone with it can read your feed.</p>
 
+  ${locationForm(model)}
   <section class="agenda">
     <h2>Following</h2>
     ${rows || '<p class="count">Nothing yet. Add something below, or press “Watch this matter” on any timeline.</p>'}
@@ -1078,6 +1097,7 @@ export interface TownsViewModel {
   }[];
   sampleData: boolean;
   account?: string | null;
+  locationPrompt?: string;
 }
 
 /**
@@ -1133,5 +1153,6 @@ export function renderTowns(model: TownsViewModel): string {
     sampleData: model.sampleData,
     body,
     ...(model.account !== undefined ? { account: model.account } : {}),
+    ...(model.locationPrompt ? { locationPrompt: model.locationPrompt } : {}),
   });
 }

@@ -817,13 +817,13 @@ describe('links', () => {
   it('carries the town on every internal link when there is more than one', () => {
     expect(withTown('/matters', many)).toBe('/matters?town=weymouth-ma');
     expect(href({ when: 'all', page: 1, town: 'weymouth-ma', channel: 'land-use' })).toBe(
-      '/?town=weymouth-ma&channel=land-use',
+      '/activity?town=weymouth-ma&channel=land-use',
     );
   });
 
   it('leaves a one-town install’s URLs exactly as they were', () => {
     expect(withTown('/matters', one)).toBe('/matters');
-    expect(href({ when: 'all', page: 1, channel: 'land-use' })).toBe('/?channel=land-use');
+    expect(href({ when: 'all', page: 1, channel: 'land-use' })).toBe('/activity?channel=land-use');
   });
 });
 
