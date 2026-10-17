@@ -100,6 +100,8 @@ jobs:
           curl -fsS "http://localhost:8787/?q=Pleasant&derived=1" > /dev/null
           curl -fsS http://localhost:8787/meetings > /dev/null
           curl -fsS http://localhost:8787/activity > /dev/null
+          curl -fsS http://localhost:8787/api/v1/catalog | grep -q '"apiVersion":1'
+          curl -fsS 'http://localhost:8787/api/v1/events?view=transcripts' > /dev/null
           curl -fsS http://localhost:8787/sources > /dev/null
 
           # Multi-town: the switcher lists every registered town, and a town

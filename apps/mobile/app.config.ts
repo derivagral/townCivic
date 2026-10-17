@@ -1,8 +1,7 @@
 import type { ExpoConfig } from 'expo/config';
 
-// Run `eas init` once, then set these non-secret identifiers in this config or
-// the build environment. Never put backend secrets in EXPO_PUBLIC_* variables.
-const projectId = process.env.EAS_PROJECT_ID;
+// Public identifiers for the existing Expo project; signing credentials stay in EAS.
+const projectId = process.env.EAS_PROJECT_ID ?? 'a261728d-fe6e-455d-8a63-879f98fa7e3b';
 const bundleIdentifier = process.env.TOWNCIVIC_BUNDLE_ID ?? 'org.towncivic.reader';
 const profile = process.env.EAS_BUILD_PROFILE;
 if (profile === 'testflight' || profile === 'production') {
@@ -14,6 +13,7 @@ if (profile === 'testflight' || profile === 'production') {
 
 const config: ExpoConfig = {
   name: 'TownCivic',
+  owner: 'deriteam',
   slug: 'towncivic',
   version: '0.1.0',
   scheme: 'towncivic',

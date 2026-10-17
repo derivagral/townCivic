@@ -28,7 +28,7 @@ form field_ — structured data, not prose. See
 
 The Expo / React Native client lives in `apps/mobile` in this npm-workspace
 monorepo. It shares versioned API contracts and backend queries with the website.
-See [mobile development and feature-branch TestFlight builds](docs/mobile.md)
+See [mobile development and mainline TestFlight builds](docs/mobile.md)
 for setup, release steps and the beta's current scope.
 
 ## Quick start

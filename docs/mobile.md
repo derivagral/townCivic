@@ -85,84 +85,104 @@ The optional browser preview (`npm run web --workspace @towncivic/mobile`) is
 useful for layout review; its sessions are memory-only. It does not replace
 physical iOS validation or the existing server-rendered website.
 
-## Build from the feature branch and send to TestFlight
+## One backend: merge, deploy, then build
 
-**Yes: a feature-branch checkout can produce a TestFlight build.** Apple receives
-a signed binary and build number, not a Git branch. EAS uploads the checked-out
-source. Record the commit SHA with each beta and use a clean checkout for releases.
-Backend code does not travel inside the iOS binary: deploy this branch's `/api/v1`
-endpoints to an HTTPS preview backend first, or deploy the backward-compatible
-API separately before pointing the app at production. The existing website
-alone, without the new API, cannot serve this client.
+The website and installed app both use **https://towncivic.fly.dev**. There is
+one Fly app, one ingestion pipeline, and the existing account service. No
+preview backend or additional database is required. Following/unfollowing in a
+beta changes the same reader account used on the website.
 
-1. Renew/enroll the Apple developer account. Choose a permanent bundle ID
-   (proposed default: `org.towncivic.reader`) and create its App Store Connect app.
-   Keep that ID consistent across the Expo config, provisioning and Apple record.
-2. Create/link an Expo project. From `apps/mobile`, run
-   `npx eas-cli@24.10.0 login`, then `npx eas-cli@24.10.0 init`.
-   Because the config is dynamic, EAS may ask you to add `extra.eas.projectId`
-   manually. Set `EAS_PROJECT_ID` to the UUID it reports (the config reads it),
-   or commit the non-secret ID directly in `app.config.ts`. Confirm with
-   `npx eas-cli@24.10.0 project:info`.
-3. In the EAS **preview** environment, configure plain-text variables
-   `EXPO_PUBLIC_API_URL`, `EAS_PROJECT_ID`, and `TOWNCIVIC_BUNDLE_ID`.
-   Use the same values in your shell for local config evaluation. The API URL
-   is bundled public configuration; never put secrets in `EXPO_PUBLIC_*`.
-   The `testflight` profile explicitly uses EAS preview; `production` uses
-   a separate production environment.
-4. From a clean feature-branch checkout, run:
+Committed public configuration:
+
+| Setting            | Value                                  | Location                                                             |
+| ------------------ | -------------------------------------- | -------------------------------------------------------------------- |
+| Expo owner/project | `deriteam/towncivic`                   | `apps/mobile/app.config.ts`                                          |
+| EAS project ID     | `a261728d-fe6e-455d-8a63-879f98fa7e3b` | `apps/mobile/app.config.ts`                                          |
+| iOS bundle ID      | `org.towncivic.reader`                 | `apps/mobile/app.config.ts`                                          |
+| API origin         | `https://towncivic.fly.dev`            | `build.production.env.EXPO_PUBLIC_API_URL` in `apps/mobile/eas.json` |
+
+The `testflight` profile inherits `production`: both use store distribution,
+remote auto-incremented build numbers, the EAS production environment and the
+same API URL. TestFlight is a distribution step, not another backend environment.
+No additional EAS dashboard variables or GitHub repository variables are needed.
+Older `MOBILE_API_URL`, `EAS_PROJECT_ID` and `TOWNCIVIC_BUNDLE_ID` GitHub variables
+are no longer read by the workflow. If earlier setup added conflicting EAS
+production variables or shell exports, remove those obsolete overrides.
+Local development can still use `apps/mobile/.env` to point Metro at localhost
+or a LAN address. Never put backend credentials in `EXPO_PUBLIC_*` variables.
+
+### First rollout
+
+1. Merge the mobile PR after CI passes. Signed compilation/device checks remain
+   beta release gates; they do not require a separate backend before merging.
+2. Run **Actions → Deploy → Run workflow → main**. Existing Fly, document-store
+   and account configuration is reused. Merging alone does not trigger Deploy;
+   the existing scheduled Refresh/Interpret deployment triggers remain in place.
+   The deployment now checks `/api/v1/catalog` as well as the website and feeds.
+3. Confirm the API is live:
 
 ```bash
-git switch feat/mobile-reader
+curl -fsS https://towncivic.fly.dev/api/v1/catalog
+```
+
+Expect JSON with `"apiVersion":1`. Do not build against the old website version
+without these endpoints. Backend code does not travel inside the iOS binary.
+
+4. Update your local checkout to the merged main branch. Commit/preserve any
+   local edits first; the project-ID fix is now included in the repository.
+   From the repository root:
+
+```bash
+git switch main
+git pull --ff-only
 npm ci
-npm run typecheck
-npm test
-npm run mobile:typecheck
-npm run mobile:lint
 cd apps/mobile
-export EAS_PROJECT_ID='YOUR-EXPO-PROJECT-UUID'
-export TOWNCIVIC_BUNDLE_ID='org.towncivic.reader'
-export EXPO_PUBLIC_API_URL='https://YOUR-PREVIEW-BACKEND'
+npx eas-cli@24.10.0 login
 npx eas-cli@24.10.0 build --platform ios --profile testflight
 ```
 
-The first interactive build configures Apple certificates/provisioning with
-EAS. `autoIncrement` and remote version tracking provide successive iOS build
-numbers. A successful EAS build is an installable native binary; the Linux CI
-bundle check alone is not.
+Apple signing credentials for this project have been configured by the owner.
+EAS can reuse them. Run the first build interactively so any remaining Apple or
+remote build-number initialization can prompt. No manual project linking or
+API-URL exports are needed. Follow the EAS URL until the signed build succeeds;
+a JavaScript export alone does not prove native compilation/signing succeeds.
 
-5. Submit the **exact successful EAS build ID** (shown in its build details):
+### Subsequent builds from GitHub
+
+Set **one repository secret**, `EXPO_TOKEN`, to an Expo access token belonging
+to an account with access to `deriteam/towncivic`. Keep the token out of git.
+
+Run **Actions → Mobile TestFlight → Run workflow**, using workflow branch `main`
+and `source_ref=main` (the default). The workflow runs typecheck/lint/API-client
+tests, checks the live catalog at the API origin read from `eas.json`, and queues
+a signed build. It records the exact source SHA. It does not deploy the backend,
+submit to Apple, or build automatically after every ingestion refresh.
+
+A green GitHub run means EAS accepted the build request. Follow the EAS build URL
+and confirm the native build succeeds before submitting. Trusted feature branches
+or commit SHAs can still be selected with `source_ref`; their API requirements
+must already be available on the shared backend. Only dispatch trusted repository
+code because the EAS build step receives `EXPO_TOKEN`.
+
+### Submit and invite testers
+
+From `apps/mobile`, submit the **exact successful EAS build ID**:
 
 ```bash
 npx eas-cli@24.10.0 submit --platform ios --profile testflight --id YOUR-BUILD-ID
 ```
 
-The first submission prompts for the App Store Connect app and credentials.
-Once known, put its non-secret numeric `ascAppId` in
-`submit.testflight.ios.ascAppId` in `eas.json`. Keep Apple private keys and
-passwords in EAS credential management, not the repository. Submission uploads
-to App Store Connect/TestFlight; it does not release the app publicly.
+The first submission prompts for the App Store Connect app and submission
+credentials, which are separate from build signing. Select/create the app with
+bundle ID `org.towncivic.reader`. Once known, its non-secret numeric Apple ID can
+be saved as `submit.testflight.ios.ascAppId` in `eas.json`. Apple private keys and
+passwords belong in EAS credential management, not the repository.
 
-6. In App Store Connect, finish beta metadata/export-compliance questions, add
-   a TestFlight group and invite your partner. External testers need the initial
-   beta review. Builds expire after 90 days. TestFlight installs and launches the
-   bundled app without Metro or your laptop running; its HTTPS backend must stay up.
-
-The new `Mobile TestFlight` Action queues a build only when manually dispatched;
-it never runs on PRs and does not submit to Apple. Configure repository secret
-`EXPO_TOKEN` and variables `EAS_PROJECT_ID`, `TOWNCIVIC_BUNDLE_ID`, `MOBILE_API_URL`
-after completing an interactive build. Keep them consistent with EAS preview.
-The run records its commit and checks the backend catalog before queuing.
-
-**GitHub bootstrap caveat:** a new `workflow_dispatch` workflow must exist on
-the default branch before GitHub exposes it for manual dispatch. Until that
-small workflow is merged, the EAS CLI commands above work directly from this
-feature branch. Afterwards use the workflow from `main` and set its `source_ref`
-input to `feat/mobile-reader` (or a reviewed commit SHA), or run
-`gh workflow run mobile-testflight.yml --ref main -f source_ref=feat/mobile-reader`.
-Only select trusted repository code: the EAS build step receives `EXPO_TOKEN`.
-The workflow records the checked-out source SHA, which can differ from the
-workflow's own commit on main. It fails early if the source has no mobile app.
+In App Store Connect, finish beta metadata/export-compliance questions, add the
+build to a TestFlight group and invite your partner. External testers need beta
+review. Builds expire after 90 days. TestFlight launches the bundled app without
+Metro or your laptop; the same live backend used by the website stays available.
+Submission to TestFlight does not release the app publicly in the App Store.
 
 ## API and compatibility
 
