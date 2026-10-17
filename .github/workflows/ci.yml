@@ -11,6 +11,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  mobile:
+    name: mobile typecheck, lint, iOS bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run mobile:typecheck
+      - run: npm run mobile:lint
+      # Compile the iOS JS/Hermes bundle without Apple credentials. A native
+      # signed build and device smoke test remain separate release gates.
+      - run: npm run mobile:export
+        env:
+          EXPO_PUBLIC_API_URL: https://towncivic.example
+
   check:
     name: typecheck, format, test
     runs-on: ubuntu-latest

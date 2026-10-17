@@ -73,7 +73,7 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --workspaces=false
 
       # The model SDK stays out of the default install. Bring one pinned version
       # into this disposable runner only when the metered provider was selected.

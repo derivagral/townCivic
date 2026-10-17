@@ -144,3 +144,8 @@ vite.config.ts.timestamp-*
 
 # townCivic runtime data — derived, rebuildable with `npm run ingest`
 /data/
+
+# Expo generates native projects from app config.
+apps/mobile/.expo/
+apps/mobile/ios/
+apps/mobile/android/

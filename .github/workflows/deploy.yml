@@ -67,7 +67,7 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --workspaces=false
 
       # Everything the deployed machine will depend on, asked before the deploy
       # rather than after. This is the whole reason `preflight` exists.

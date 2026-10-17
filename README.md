@@ -24,6 +24,13 @@ agendas: Milton's notices are fillable PDFs, so the agenda arrives as a _named
 form field_ — structured data, not prose. See
 [Reading the documents](#reading-the-documents).
 
+## Mobile reader
+
+The Expo / React Native client lives in `apps/mobile` in this npm-workspace
+monorepo. It shares versioned API contracts and backend queries with the website.
+See [mobile development and feature-branch TestFlight builds](docs/mobile.md)
+for setup, release steps and the beta's current scope.
+
 ## Quick start
 
 ```bash
@@ -79,7 +86,7 @@ npm run serve
 Seeded records are tagged `sample` and the UI shows a standing banner while any
 are present. `npm run clear-samples` removes them.
 
-**Requires Node ≥ 22.5** (for `node:sqlite`).
+**Requires Node ≥ 22.13** (for the Expo workspace and `node:sqlite`).
 
 ## What it collects
 

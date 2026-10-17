@@ -1,4 +1,6 @@
-import { renderMeetings, MEETING_TYPES, type MeetingFilters } from './meetings.ts';
+import { renderMeetings } from './meetings.ts';
+import { readMeetings, type MeetingFilters } from '../read-models/meetings.ts';
+import { readerApi } from '../api/reader.ts';
 import { normalizeLocation, type LocationInput } from '../accounts/location.ts';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -243,6 +245,10 @@ export function createApp(db: Db, options: AppOptions = {}) {
     locationPrompt: locationPrompt(identity, new URL(c.req.url).pathname + new URL(c.req.url).search),
   });
   registerAwareness(app, db, accounts, currentUser, townFor, secureCookies);
+  app.route(
+    '/api/v1',
+    readerApi(db, accounts, { apiVersion: 1, defaultTown: defaultJurisdiction, towns: townOptions }),
+  );
 
   app.get('/styles.css', (c) => c.body(STYLES, 200, { 'content-type': 'text/css; charset=utf-8' }));
   app.get('/healthz', (c) =>
@@ -267,30 +273,12 @@ export function createApp(db: Db, options: AppOptions = {}) {
             : 'all',
       page: Math.max(1, Math.min(100000, Math.floor(Number(url.searchParams.get('page'))) || 1)),
     };
-    const base: EventQuery = {
-      jurisdiction: town.id,
-      eventTypes: filters.kind === 'transcripts' ? ['meeting_transcript'] : MEETING_TYPES,
-      includeAdmin: true,
-      when: filters.when,
-      ...(filters.q ? { q: filters.q } : {}),
-    };
-    const query = { ...base, ...(filters.body ? { bodies: [filters.body] } : {}) };
-    const rows = queryEvents(db, { ...query, limit: PAGE_SIZE, offset: (filters.page - 1) * PAGE_SIZE });
-    const evidence = Object.fromEntries(
-      searchEvidenceForEvents(
-        db,
-        rows.map((r) => r.id),
-        filters.q,
-      ).map((e) => [e.eventId, e]),
-    );
+    const model = readMeetings(db, town.id, filters, PAGE_SIZE);
     return c.html(
       renderMeetings({
         town,
         filters,
-        rows,
-        evidence,
-        total: countEvents(db, query),
-        boards: facetCounts(db, 'body', base),
+        ...model,
         pageSize: PAGE_SIZE,
         sampleData: hasSampleData(db, town.id),
         ...accountFor(await currentUser(c), c),

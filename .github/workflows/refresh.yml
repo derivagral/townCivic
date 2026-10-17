@@ -80,7 +80,7 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --workspaces=false
 
       # Fail before the first request rather than after. If the bucket is
       # misconfigured, every `put` in `ingest` throws — but only after the

@@ -78,7 +78,7 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --workspaces=false
 
       # Exits non-zero if any configured dependency did not answer, which is
       # what turns this run red.
