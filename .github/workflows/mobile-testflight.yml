@@ -1,0 +1,68 @@
+name: Mobile TestFlight
+
+# Register on main; build a trusted branch/tag/SHA after EAS/Apple setup.
+# Only dispatch reviewed repository code: the build receives EXPO_TOKEN.
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Trusted repository branch, tag, or commit to build
+        type: string
+        required: true
+        default: feat/mobile-reader
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-testflight
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+      TOWNCIVIC_BUNDLE_ID: ${{ vars.TOWNCIVIC_BUNDLE_ID }}
+      EXPO_PUBLIC_API_URL: ${{ vars.MOBILE_API_URL }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+      - name: Check mobile workspace and record source
+        run: |
+          test -f apps/mobile/eas.json || { echo 'Choose a source ref containing apps/mobile (initially feat/mobile-reader).'; exit 1; }
+          echo "MOBILE_SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run mobile:typecheck
+      - run: npm run mobile:lint
+      - run: npm test -- test/mobile-api.test.ts test/mobile-client.test.ts
+      - name: Check configuration and live API
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          test -n "$EXPO_TOKEN" || { echo 'Set the EXPO_TOKEN secret.'; exit 1; }
+          test -n "$EAS_PROJECT_ID" || { echo 'Set the EAS_PROJECT_ID variable.'; exit 1; }
+          test -n "$TOWNCIVIC_BUNDLE_ID" || { echo 'Set the TOWNCIVIC_BUNDLE_ID variable.'; exit 1; }
+          node --input-type=module -e '
+            const url = new URL(process.env.EXPO_PUBLIC_API_URL);
+            if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw Error("MOBILE_API_URL must be an HTTPS origin");
+            const response = await fetch(new URL("/api/v1/catalog", url), { signal: AbortSignal.timeout(20000), redirect: "error" });
+            if (!response.ok || (await response.json()).apiVersion !== 1) throw Error("Deploy the mobile API before building");
+          '
+      - name: Queue signed iOS build
+        working-directory: apps/mobile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: npx --yes eas-cli@24.10.0 build --platform ios --profile testflight --non-interactive --no-wait
+      - name: Record handoff
+        run: |
+          echo '### iOS beta build queued' >> "$GITHUB_STEP_SUMMARY"
+          echo "Source commit: $MOBILE_SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Follow the EAS build URL in the previous step. This workflow does not submit to Apple. After a successful build, submit that exact build ID using the command in docs/mobile.md.' >> "$GITHUB_STEP_SUMMARY"
