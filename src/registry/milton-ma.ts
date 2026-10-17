@@ -119,6 +119,7 @@ const milton: JurisdictionProfile = defineJurisdiction({
    */
   venueAddresses: ['525 Canton Avenue', '515 Canton Avenue', '40 Highland Street', '1 Wharf Street'],
   fixtures: {
+    'milton-ma:transcripts:matv': 'milton-ma/wordpress-transcripts.json',
     'milton-ma:agenda:index': 'milton-ma/agenda-center-index.html',
     'milton-ma:agenda:select-board': 'milton-ma/select-board-6.html',
     'milton-ma:agenda:planning-board': 'milton-ma/planning-board-39.html',

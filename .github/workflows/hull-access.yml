@@ -31,7 +31,7 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - run: npm ci
+      - run: npm ci --workspaces=false
       - name: Probe one Hull source
         # No production secrets/cache, cookies, retries, ingest, or publication.
         run: |

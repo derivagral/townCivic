@@ -67,7 +67,7 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --workspaces=false
 
       # Everything the deployed machine will depend on, asked before the deploy
       # rather than after. This is the whole reason `preflight` exists.
@@ -113,3 +113,9 @@ jobs:
             || { echo "deployed machine is not using the hosted accounts backend"; exit 1; }
           curl -fsS "$URL/" >/dev/null && echo "index OK"
           curl -fsS "$URL/feeds/all.atom" >/dev/null && echo "feed OK"
+          node --input-type=module -e '
+            const origin = process.env.TOWNCIVIC_BASE_URL || "https://towncivic.fly.dev";
+            const response = await fetch(new URL("/api/v1/catalog", origin), { signal: AbortSignal.timeout(20000), redirect: "error" });
+            if (!response.ok || (await response.json()).apiVersion !== 1) throw Error("Deployed mobile API is unavailable");
+            console.log("mobile API v1 OK");
+          '

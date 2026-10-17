@@ -50,7 +50,7 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - run: npm ci
+      - run: npm ci --workspaces=false
       - name: Check batch limit
         run: |
           node -e 'const n=Number(process.env.MATV_MAX_PAGES); if(!Number.isInteger(n)||n<1||n>30) process.exit(1)'

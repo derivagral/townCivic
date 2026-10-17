@@ -5,20 +5,8 @@ import { formatDate, dayKey, formatDayHeading } from '../util/dates.ts';
 import { escapeHtml as esc, layout, EMPTY_FILTERS, withTown } from './views.ts';
 import type { TownView, Facet } from './views.ts';
 
-export const MEETING_TYPES = [
-  'meeting_transcript',
-  'meeting_notice',
-  'meeting_agenda',
-  'meeting_minutes',
-  'hearing_scheduled',
-];
-export interface MeetingFilters {
-  q: string;
-  body: string;
-  kind: 'transcripts' | 'all';
-  when: 'all' | 'past' | 'upcoming';
-  page: number;
-}
+import type { MeetingFilters } from '../read-models/meetings.ts';
+export { MEETING_TYPES, type MeetingFilters } from '../read-models/meetings.ts';
 export interface MeetingsModel {
   town: TownView;
   filters: MeetingFilters;

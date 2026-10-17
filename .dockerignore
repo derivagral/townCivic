@@ -38,3 +38,7 @@ data/*.db-shm
 *.log
 .DS_Store
 coverage
+
+# Native clients are built separately from the serving/ingestion image.
+apps
+packages

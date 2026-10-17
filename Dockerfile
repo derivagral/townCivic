@@ -38,7 +38,7 @@ ENV NODE_ENV=production
 # registry at container start, and the machines were running a version the
 # lockfile does not pin.
 COPY package.json package-lock.json ./
-RUN npm ci --include=dev --no-audit --no-fund
+RUN npm ci --workspaces=false --include=dev --no-audit --no-fund
 
 COPY src ./src
 COPY tsconfig.json ./

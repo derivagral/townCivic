@@ -5,7 +5,7 @@
   "description": "RSS for the jurisdiction \u2014 a primary-source event feed for a single Massachusetts town.",
   "type": "module",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=22.13.0"
   },
   "bin": {
     "towncivic": "./src/cli.ts"
@@ -37,7 +37,11 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "mobile": "npm run start --workspace @towncivic/mobile --",
+    "mobile:typecheck": "npm run typecheck --workspace @towncivic/mobile",
+    "mobile:lint": "npm run lint --workspace @towncivic/mobile",
+    "mobile:export": "npm run export:ios --workspace @towncivic/mobile"
   },
   "dependencies": {
     "@hono/node-server": "^1.14.0",
@@ -54,5 +58,13 @@
     "tsx": "^4.19.0",
     "typescript": "^5.8.0",
     "vitest": "^3.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "overrides": {
+    "react-native-reanimated": "4.5.1",
+    "react-native-worklets": "0.10.1"
   }
 }
