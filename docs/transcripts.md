@@ -165,11 +165,11 @@ gh workflow run refresh.yml
 
 Refresh reads the manifest, upserts transcript records into its existing database,
 and uses the existing snapshot/deploy workflow. It never requests MATV to import
-these pages. Direct MATV polling remains disabled; import deliberately includes
-registered transcript sources even when their network polling is disabled. An
+these pages. Direct MATV polling is enabled in Refresh; import also includes registered
+transcript sources when their network polling is disabled. An
 absent manifest is a no-op, so towns without uploads keep working as before.
 
-Repeat **local ingest → upload** for later batches or corrections. Uploads can
+Local ingest → upload remains an optional fallback for later batches or corrections. Uploads can
 contain a partial backfill; each complete validated page is independently usable.
 The report's `uploaded` counts newly registered raw pages, and `documents` is the
 cumulative page count, not the number of meetings. Successful inventory requests,
@@ -233,11 +233,38 @@ Manual checks also use fresh temporary storage; they do not resume another job's
 artifact automatically. Run the ingest CLI against the same persistent database to
 resume a real backfill. The PR check is deliberately a bounded connectivity test.
 
-The source remains disabled in the shared unattended refresh until runner access
-is verified. Explicit `--source` overrides that flag. Once verified, setting
-`MATV_TRANSCRIPTS.enabled` to `true` lets the existing refresh command fill the
-archive over successive bounded runs, then switch automatically to incremental
-synchronization. No RSS fallback will activate.
+GitHub-hosted access was verified on November 16, 2026: inventory discovery
+found 700 posts and two full content batches ingested 40 transcripts with HTTP 200.
+[Live check](https://github.com/derivagral/townCivic/actions/runs/43880255243).
+The source is now enabled in the shared Refresh, scheduled at 07:10 and 19:10 UTC.
+It ingests up to five batches (100 posts) per run, resumes its cached checkpoint,
+and then checks new/modified posts automatically. Refresh publishes the database
+and the existing Deploy workflow ships it. No manual local upload is required.
+The development environment still received a SiteGround challenge on the same day;
+a successful check establishes access from that runner, not every network forever.
+Future challenges fail visibly and prevent publication of that run.
+
+### GitHub Actions configuration
+
+No database password, WordPress login, Supabase service-role key, or YouTube key
+is needed for transcripts. They are stored in the pipeline's SQLite database,
+which is cached by Actions and published to the existing object store.
+
+| Kind     | Name                   | Value                                       |
+| -------- | ---------------------- | ------------------------------------------- |
+| Secret   | `S3_ACCESS_KEY_ID`     | Existing R2/S3 bucket read/write access key |
+| Secret   | `S3_SECRET_ACCESS_KEY` | Matching secret key                         |
+| Variable | `S3_BUCKET`            | Existing archive bucket name                |
+| Variable | `S3_ENDPOINT`          | Existing R2/S3 API endpoint                 |
+| Variable | `S3_REGION`            | `auto` for R2 (default)                     |
+
+The successful scheduled Refresh and Deploy already use these settings, so no
+new transcript secrets should be necessary. Keep the existing Deploy secrets
+(including `FLY_API_TOKEN`) and account configuration. After merge the next
+scheduled Refresh polls MATV, imports any prior local uploads, and updates the
+hosted site automatically. An initial scan of 700 posts takes up to seven
+successful runs at the current batch limit. Previously imported records remain
+available during the scan; matching permalinks are updated rather than duplicated.
 
 Undated archive recordings are ingested and searchable with `meetingDate: null`
 and no occurrence date. This includes year-only labels, two-digit years with no
@@ -251,48 +278,3 @@ visibly with the post ID and URL.
 References: [WordPress posts API](https://developer.wordpress.org/rest-api/reference/posts/),
 [pagination](https://developer.wordpress.org/rest-api/using-the-rest-api/pagination/),
 [GitHub manual workflow runs](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
-
-## Unattended collection from an accepted network
-
-The November 16, 2026 retry from the development environment still returned
-`202`, `sg-captcha: challenge`, and HTML instead of JSON. The public WordPress API
-needs no password. A database secret cannot resolve that network challenge.
-The separate PR API check reports whether GitHub-hosted access has recovered.
-
-When hosted access remains blocked, register a GitHub Actions self-hosted runner
-on an always-on machine using the same network where local ingestion succeeds.
-Give it the custom label `matv`, then set repository **Actions variable**
-`MATV_RUNNER` to `["self-hosted", "matv"]`. This opts into
-`Collect Milton transcripts`, scheduled at 06:10 and 18:10 UTC. The machine must
-be online, able to reach GitHub and your R2 endpoint, and able to run Node 22.
-Keep this runner limited to trusted code; the collector has no PR trigger.
-
-The collector uses the existing repository configuration:
-
-| Kind     | Name                   | Value                                          |
-| -------- | ---------------------- | ---------------------------------------------- |
-| Secret   | `S3_ACCESS_KEY_ID`     | R2/S3 access key with bucket read/write access |
-| Secret   | `S3_SECRET_ACCESS_KEY` | Matching secret key                            |
-| Variable | `S3_BUCKET`            | Existing archive bucket name                   |
-| Variable | `S3_ENDPOINT`          | Existing R2/S3 API endpoint                    |
-| Variable | `S3_REGION`            | `auto` for R2 (default)                        |
-| Variable | `MATV_RUNNER`          | Runner labels as a JSON array                  |
-
-No new database password, Supabase service-role key, WordPress login, or YouTube
-key is needed. Transcripts live in SQLite; the collector uploads raw pages and a
-manifest using the existing object-store credentials. Refresh imports these into
-its own database, publishes the snapshot, and triggers Deploy as before. Existing
-working Refresh and Deploy credentials can stay as configured.
-
-After merge and runner setup, run **Collect Milton transcripts** once manually
-and confirm collection and upload succeed. The next successful Refresh imports
-those pages automatically. Collection keeps its own cached database/checkpoint,
-fetches at most 100 posts per run, and switches to modified-post polling when the
-backfill finishes. A lost cache causes a safe full rescan. It never replaces the
-published database. Do not run a separate laptop uploader concurrently with this
-collector for the same source; there must be only one manifest writer.
-
-If GitHub-hosted access is verified later, `MATV_RUNNER` can instead be
-`["ubuntu-latest"]` to schedule this same collector on hosted runners. Leave the
-shared registry flag disabled while using the collector to avoid duplicate live
-polling. Clearing `MATV_RUNNER` disables scheduled collection.
