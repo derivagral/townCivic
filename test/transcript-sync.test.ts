@@ -229,11 +229,11 @@ describe('WordPress transcript sync', () => {
     expect(normalize(source, apiItem!).id).toBe(normalize(oldSource, rssItem!).id);
   });
 
-  it('routes explicit ingest through the API and leaves unattended ingestion disabled', async () => {
+  it('routes explicit ingest through the API and enables unattended ingestion', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => response([]));
     const [report] = await ingest(db, { jurisdiction: 'milton-ma', sourceIds: [source.id], fetchImpl });
     expect(report).toMatchObject({ ok: true, pending: 0 });
     expect(new URL(String(fetchImpl.mock.calls[0]![0])).pathname).toBe('/wp-json/wp/v2/posts');
-    expect(MATV_TRANSCRIPTS.enabled).toBe(false);
+    expect(MATV_TRANSCRIPTS.enabled).toBe(true);
   });
 });
