@@ -148,11 +148,11 @@ export const MATV_TRANSCRIPTS: SourceInput = {
   tier: 4,
   precedence: 90,
   ...verified,
-  // Category access confirmed by the user; runner access is checked by transcripts.yml.
-  // Explicit --source runs work while deployment-network access is verified.
-  enabled: false,
+  // Hosted runner verified inventory and full content on November 16, 2026.
+  // Refresh resumes bounded batches, then checks modified posts automatically.
+  enabled: true,
   notes:
-    'WordPress category 36: user confirmed 429 published posts on September 13, 2026. Resumable full backfill followed by modified-post synchronization. No RSS polling. Speaker labels are unverified; attendance is not inferred. Disabled for scheduled refresh pending successful runner verification.',
+    'WordPress category 36: user confirmed 429 published posts on September 13, 2026. Resumable full backfill followed by modified-post synchronization. No RSS polling. Speaker labels are unverified; attendance is not inferred. GitHub-hosted inventory and full content verified November 16, 2026; scheduled Refresh enabled.',
 };
 
 const tier1: SourceInput[] = [

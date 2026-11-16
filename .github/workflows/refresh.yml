@@ -104,7 +104,7 @@ jobs:
 
       # Local fetchers upload immutable transcript pages and a manifest to R2.
       # Import into this database before publishing; never replace it with a
-      # laptop snapshot or request MATV from a blocked hosted runner.
+      # laptop snapshot. Enabled live polling below also checks MATV directly.
       # Receipts are cached with the events. If the cache is lost, replaying the
       # cumulative manifest reconstructs transcripts without re-fetching MATV.
       - name: Import uploaded transcripts

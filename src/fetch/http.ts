@@ -43,11 +43,12 @@ const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 function responseError(response: Response): string {
   const challenge = response.headers.get('cf-mitigated') === 'challenge';
+  const siteground = response.headers.get('sg-captcha') === 'challenge';
   // Preserve only the request identifier, not cookies, challenge tokens, or
   // arbitrary upstream text. The publisher can look this up in Security Events.
   const ray = response.headers.get('cf-ray') ?? '';
   const rayLabel = /^[a-f0-9]{16}(?:-[a-z]{3})?$/i.test(ray) ? ` (cf-ray: ${ray})` : '';
-  return `HTTP ${response.status}${challenge ? ' — Cloudflare challenge' : ''}${rayLabel}`;
+  return `HTTP ${response.status}${challenge ? ' — Cloudflare challenge' : siteground ? ' — SiteGround challenge' : ''}${rayLabel}`;
 }
 
 export interface FetchOptions {
@@ -118,10 +119,13 @@ export async function fetchSource(
           : {}),
       };
 
-      // Cloudflare documents this header for every challenge-page type. Check
+      // Both publishers identify challenge pages with explicit headers. Check
       // before HTTP success/retry handling: even a 2xx is not source content,
       // and repeating the request cannot execute the browser challenge.
-      if (response.headers.get('cf-mitigated') === 'challenge') {
+      if (
+        response.headers.get('cf-mitigated') === 'challenge' ||
+        response.headers.get('sg-captcha') === 'challenge'
+      ) {
         await response.body?.cancel().catch(() => {});
         return { ...meta, ok: false, status: response.status, body: '', error: responseError(response) };
       }
