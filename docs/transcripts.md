@@ -251,3 +251,48 @@ visibly with the post ID and URL.
 References: [WordPress posts API](https://developer.wordpress.org/rest-api/reference/posts/),
 [pagination](https://developer.wordpress.org/rest-api/using-the-rest-api/pagination/),
 [GitHub manual workflow runs](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
+
+## Unattended collection from an accepted network
+
+The November 16, 2026 retry from the development environment still returned
+`202`, `sg-captcha: challenge`, and HTML instead of JSON. The public WordPress API
+needs no password. A database secret cannot resolve that network challenge.
+The separate PR API check reports whether GitHub-hosted access has recovered.
+
+When hosted access remains blocked, register a GitHub Actions self-hosted runner
+on an always-on machine using the same network where local ingestion succeeds.
+Give it the custom label `matv`, then set repository **Actions variable**
+`MATV_RUNNER` to `["self-hosted", "matv"]`. This opts into
+`Collect Milton transcripts`, scheduled at 06:10 and 18:10 UTC. The machine must
+be online, able to reach GitHub and your R2 endpoint, and able to run Node 22.
+Keep this runner limited to trusted code; the collector has no PR trigger.
+
+The collector uses the existing repository configuration:
+
+| Kind     | Name                   | Value                                          |
+| -------- | ---------------------- | ---------------------------------------------- |
+| Secret   | `S3_ACCESS_KEY_ID`     | R2/S3 access key with bucket read/write access |
+| Secret   | `S3_SECRET_ACCESS_KEY` | Matching secret key                            |
+| Variable | `S3_BUCKET`            | Existing archive bucket name                   |
+| Variable | `S3_ENDPOINT`          | Existing R2/S3 API endpoint                    |
+| Variable | `S3_REGION`            | `auto` for R2 (default)                        |
+| Variable | `MATV_RUNNER`          | Runner labels as a JSON array                  |
+
+No new database password, Supabase service-role key, WordPress login, or YouTube
+key is needed. Transcripts live in SQLite; the collector uploads raw pages and a
+manifest using the existing object-store credentials. Refresh imports these into
+its own database, publishes the snapshot, and triggers Deploy as before. Existing
+working Refresh and Deploy credentials can stay as configured.
+
+After merge and runner setup, run **Collect Milton transcripts** once manually
+and confirm collection and upload succeed. The next successful Refresh imports
+those pages automatically. Collection keeps its own cached database/checkpoint,
+fetches at most 100 posts per run, and switches to modified-post polling when the
+backfill finishes. A lost cache causes a safe full rescan. It never replaces the
+published database. Do not run a separate laptop uploader concurrently with this
+collector for the same source; there must be only one manifest writer.
+
+If GitHub-hosted access is verified later, `MATV_RUNNER` can instead be
+`["ubuntu-latest"]` to schedule this same collector on hosted runners. Leave the
+shared registry flag disabled while using the collector to avoid duplicate live
+polling. Clearing `MATV_RUNNER` disables scheduled collection.

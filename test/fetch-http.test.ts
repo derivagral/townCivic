@@ -37,6 +37,23 @@ describe('HTTP challenge diagnostics', () => {
     },
   );
 
+  it.each([200, 202, 403, 503])('rejects an HTTP %i SiteGround challenge', async (status) => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response('captcha with private token', { status, headers: { 'sg-captcha': 'challenge' } }),
+      );
+    const result = await fetchSource('test', 'https://example.test/posts', { fetchImpl, maxRetries: 3 });
+    expect(result).toMatchObject({
+      ok: false,
+      status,
+      body: '',
+      error: `HTTP ${status} — SiteGround challenge`,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(result)).not.toContain('private token');
+  });
+
   it('does not attribute an ordinary 403 to a Cloudflare challenge', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response('Denied', {
