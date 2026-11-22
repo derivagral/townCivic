@@ -165,11 +165,11 @@ gh workflow run refresh.yml
 
 Refresh reads the manifest, upserts transcript records into its existing database,
 and uses the existing snapshot/deploy workflow. It never requests MATV to import
-these pages. Direct MATV polling remains disabled; import deliberately includes
-registered transcript sources even when their network polling is disabled. An
+these pages. Direct MATV polling is enabled in Refresh; import also includes registered
+transcript sources when their network polling is disabled. An
 absent manifest is a no-op, so towns without uploads keep working as before.
 
-Repeat **local ingest → upload** for later batches or corrections. Uploads can
+Local ingest → upload remains an optional fallback for later batches or corrections. Uploads can
 contain a partial backfill; each complete validated page is independently usable.
 The report's `uploaded` counts newly registered raw pages, and `documents` is the
 cumulative page count, not the number of meetings. Successful inventory requests,
@@ -233,11 +233,38 @@ Manual checks also use fresh temporary storage; they do not resume another job's
 artifact automatically. Run the ingest CLI against the same persistent database to
 resume a real backfill. The PR check is deliberately a bounded connectivity test.
 
-The source remains disabled in the shared unattended refresh until runner access
-is verified. Explicit `--source` overrides that flag. Once verified, setting
-`MATV_TRANSCRIPTS.enabled` to `true` lets the existing refresh command fill the
-archive over successive bounded runs, then switch automatically to incremental
-synchronization. No RSS fallback will activate.
+GitHub-hosted access was verified on November 16, 2026: inventory discovery
+found 700 posts and two full content batches ingested 40 transcripts with HTTP 200.
+[Live check](https://github.com/derivagral/townCivic/actions/runs/43880255243).
+The source is now enabled in the shared Refresh, scheduled at 07:10 and 19:10 UTC.
+It ingests up to five batches (100 posts) per run, resumes its cached checkpoint,
+and then checks new/modified posts automatically. Refresh publishes the database
+and the existing Deploy workflow ships it. No manual local upload is required.
+The development environment still received a SiteGround challenge on the same day;
+a successful check establishes access from that runner, not every network forever.
+Future challenges fail visibly and prevent publication of that run.
+
+### GitHub Actions configuration
+
+No database password, WordPress login, Supabase service-role key, or YouTube key
+is needed for transcripts. They are stored in the pipeline's SQLite database,
+which is cached by Actions and published to the existing object store.
+
+| Kind     | Name                   | Value                                       |
+| -------- | ---------------------- | ------------------------------------------- |
+| Secret   | `S3_ACCESS_KEY_ID`     | Existing R2/S3 bucket read/write access key |
+| Secret   | `S3_SECRET_ACCESS_KEY` | Matching secret key                         |
+| Variable | `S3_BUCKET`            | Existing archive bucket name                |
+| Variable | `S3_ENDPOINT`          | Existing R2/S3 API endpoint                 |
+| Variable | `S3_REGION`            | `auto` for R2 (default)                     |
+
+The successful scheduled Refresh and Deploy already use these settings, so no
+new transcript secrets should be necessary. Keep the existing Deploy secrets
+(including `FLY_API_TOKEN`) and account configuration. After merge the next
+scheduled Refresh polls MATV, imports any prior local uploads, and updates the
+hosted site automatically. An initial scan of 700 posts takes up to seven
+successful runs at the current batch limit. Previously imported records remain
+available during the scan; matching permalinks are updated rather than duplicated.
 
 Undated archive recordings are ingested and searchable with `meetingDate: null`
 and no occurrence date. This includes year-only labels, two-digit years with no
